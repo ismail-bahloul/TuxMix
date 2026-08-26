@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+    "tuxmix-core",
+    "tuxmix-tui",
+    "tuxmix-gui",
+    "tuxmix-usb",
+    "tuxmix-sys",
+]

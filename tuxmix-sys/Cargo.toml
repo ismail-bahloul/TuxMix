@@ -1,0 +1,12 @@
+[package]
+name = "tuxmix-sys"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI for the TuxMix Babyface Pro FS proprietary audio driver (ALSA plugin backend)"
+license = "GPL-3.0"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+tuxmix-usb = { path = "../tuxmix-usb", features = ["driver"] }

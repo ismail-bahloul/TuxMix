@@ -1,0 +1,18 @@
+[package]
+name = "tuxmix-gui"
+version = "0.1.0"
+edition = "2021"
+description = "GUI for TuxMix — direct control of RME hardware DSP mixers on Linux"
+
+[features]
+default = ["alsa"]
+# ALSA class-compliant backend (Linux only) — pass-through to tuxmix-core.
+alsa = ["tuxmix-core/alsa"]
+
+[dependencies]
+tuxmix-core = { path = "../tuxmix-core", default-features = false, features = ["usb"] }
+iced = { version = "0.14", features = ["canvas", "tokio", "advanced"] }
+log = "0.4"
+env_logger = "0.11"
+rosc = "0.11"
+tokio = { version = "1", features = ["net", "sync", "macros"] }

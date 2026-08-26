@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=TuxMix
+GenericName=Audio Mixer
+Comment=Open-source TotalMix replacement for RME audio interfaces on Linux
+Exec=tuxmix
+Icon=tuxmix
+Terminal=false
+Categories=AudioVideo;Audio;Mixer;
+Keywords=RME;TotalMix;Babyface;Fireface;mixer;audio interface;

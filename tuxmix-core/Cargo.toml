@@ -1,0 +1,26 @@
+[package]
+name = "tuxmix-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core library for controlling RME audio interfaces (ALSA and proprietary USB backends)"
+
+[dependencies]
+log = "0.4"
+rand = "0.8"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+strum = { version = "0.26", features = ["derive"] }
+alsa = { version = "0.9", optional = true }
+tuxmix-usb = { version = "0.1.0", path = "../tuxmix-usb", optional = true }
+
+[features]
+default = ["alsa"]
+# ALSA class-compliant backend (Linux only).
+alsa = ["dep:alsa"]
+# Proprietary USB backend (the TotalMix protocol, see tuxmix-usb).
+usb = ["dep:tuxmix-usb", "tuxmix-usb/driver"]
+
+[[example]]
+name = "alsa-scan"
+required-features = ["alsa"]

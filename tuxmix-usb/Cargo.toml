@@ -1,0 +1,64 @@
+[package]
+name = "tuxmix-usb"
+version = "0.1.0"
+edition = "2021"
+description = "Proprietary USB protocol backend for the RME Babyface Pro FS (TotalMix-class control)"
+license = "GPL-3.0-or-later"
+
+# Deliberately dependency-free: the protocol layer must compile anywhere
+# (including machines without a C toolchain / linker). The libusb device
+# driver is added behind the `driver` feature when build tools exist.
+[dependencies]
+
+[features]
+default = []
+# Enables the libusb device driver (rusb + vendored libusb). Requires a
+# C toolchain (gcc on the GNU toolchain, MSVC Build Tools otherwise).
+driver = ["dep:rusb", "dep:thiserror", "dep:libusb1-sys", "dep:libc"]
+
+[dependencies.rusb]
+version = "0.9"
+optional = true
+features = ["vendored"]
+
+[dependencies.thiserror]
+version = "2"
+optional = true
+
+# rusb (and nusb, as of 0.2.7) don't expose isochronous transfer submission
+# — needed for the real-time audio stream that gates 48V phantom power on
+# this device (see device/iso.rs). `libusb1-sys` is already vendored
+# transitively via `rusb`; depending on it directly here lets the iso
+# module call `libusb_submit_transfer` through `DeviceHandle::as_raw()`
+# without duplicating rusb's own working control-transfer code. `libc` is
+# needed alongside it for the `timeval` type `libusb_handle_events_timeout`
+# expects (libusb1-sys doesn't re-export it).
+[dependencies.libusb1-sys]
+version = "0.7"
+optional = true
+
+[dependencies.libc]
+version = "0.2"
+optional = true
+
+# `demo` is dependency-free (map/protocol only) and builds with the
+# crate's own default features, but `probe` opens the real device via
+# `device::BabyfaceUsb`, which only exists behind `driver` — without
+# this, `cargo test`/`cargo build` on this crate (or the whole
+# workspace) fails trying to compile `probe` regardless of features
+# requested, since cargo builds every example by default.
+[[example]]
+name = "probe"
+required-features = ["driver"]
+
+[[example]]
+name = "hold48v"
+required-features = ["driver"]
+
+[[example]]
+name = "hold48v_stream"
+required-features = ["driver"]
+
+[[example]]
+name = "hold48v_iso"
+required-features = ["driver"]
