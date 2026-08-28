@@ -1,4 +1,4 @@
-use crate::channel::{ChannelId, InputChannel, OutputChannel, PlaybackChannel, Sensitivity};
+use crate::channel::{ChannelId, EqBandType, InputChannel, OutputChannel, PlaybackChannel, Sensitivity};
 use crate::error::Error;
 use crate::scene::Scene;
 
@@ -39,6 +39,11 @@ pub struct DeviceSettings {
     /// AN 1>2 engaged (0x17 wIdx=0x1000 flag).
     #[serde(default)]
     pub an12: bool,
+    /// Dim engaged on the Phones output (an absolute -20 dB cut,
+    /// independent of the Phones master's own volume). See
+    /// [`RmeDevice::set_dim`].
+    #[serde(default)]
+    pub dim: bool,
     /// FX send level in dB (-65..0, None = unset). 0 dB = max send.
     /// `Option` so old scenes (no send) stay untouched on apply.
     #[serde(default)]
@@ -187,6 +192,15 @@ pub trait RmeDevice {
         ))
     }
 
+    /// Dim the Phones output by a fixed -20 dB, independent of its
+    /// current master volume (disengage restores the pre-dim level).
+    fn set_dim(&mut self, on: bool) -> Result<(), Error> {
+        let _ = on;
+        Err(Error::InvalidChannel(
+            "Dim is not supported on this backend".into(),
+        ))
+    }
+
     /// Input-strip stereo link (the AN1/2 pair): `true` = linked (the
     /// default TotalMix state — gains/48V move together), `false` =
     /// split into individual AN1/AN2 buses. USB backend writes the
@@ -243,6 +257,72 @@ pub trait RmeDevice {
         let _ = (idx, raw);
         Err(Error::InvalidChannel(
             "Ref level is not supported on this backend".into(),
+        ))
+    }
+
+    // ── Hardware DSP EQ (3-band + low cut, analog inputs only) ──────
+    // The device DSP does the biquad math — these just carry the plain
+    // freq/Q/gain/type parameters, see `channel::InputEq`.
+
+    /// Enable/bypass an input's EQ strip. Errors if the input has no
+    /// EQ (only the 4 analog inputs do — see [`InputChannel::eq`]).
+    fn set_eq_enabled(&mut self, idx: usize, on: bool) -> Result<(), Error> {
+        let _ = (idx, on);
+        Err(Error::InvalidChannel(
+            "EQ is not supported on this backend".into(),
+        ))
+    }
+
+    /// Set one band's filter type (`band` is 0-2 for bands 1-3).
+    fn set_eq_band_type(
+        &mut self,
+        idx: usize,
+        band: usize,
+        band_type: EqBandType,
+    ) -> Result<(), Error> {
+        let _ = (idx, band, band_type);
+        Err(Error::InvalidChannel(
+            "EQ is not supported on this backend".into(),
+        ))
+    }
+
+    /// Set one band's center/corner frequency (20-20000 Hz).
+    fn set_eq_band_freq(&mut self, idx: usize, band: usize, freq_hz: u16) -> Result<(), Error> {
+        let _ = (idx, band, freq_hz);
+        Err(Error::InvalidChannel(
+            "EQ is not supported on this backend".into(),
+        ))
+    }
+
+    /// Set one band's Q factor (0.05-10.0).
+    fn set_eq_band_q(&mut self, idx: usize, band: usize, q: f32) -> Result<(), Error> {
+        let _ = (idx, band, q);
+        Err(Error::InvalidChannel(
+            "EQ is not supported on this backend".into(),
+        ))
+    }
+
+    /// Set one band's gain (-24.0..+24.0 dB).
+    fn set_eq_band_gain(&mut self, idx: usize, band: usize, gain_db: f32) -> Result<(), Error> {
+        let _ = (idx, band, gain_db);
+        Err(Error::InvalidChannel(
+            "EQ is not supported on this backend".into(),
+        ))
+    }
+
+    /// Set the low-cut filter's corner frequency (20-20000 Hz).
+    fn set_eq_low_cut_freq(&mut self, idx: usize, freq_hz: u16) -> Result<(), Error> {
+        let _ = (idx, freq_hz);
+        Err(Error::InvalidChannel(
+            "EQ is not supported on this backend".into(),
+        ))
+    }
+
+    /// Set the low-cut filter's slope (6, 12, 18, or 24 dB/octave).
+    fn set_eq_low_cut_slope(&mut self, idx: usize, slope_db_oct: u8) -> Result<(), Error> {
+        let _ = (idx, slope_db_oct);
+        Err(Error::InvalidChannel(
+            "EQ is not supported on this backend".into(),
         ))
     }
 

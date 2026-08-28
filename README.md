@@ -16,10 +16,12 @@ monitoring, EQ, FX sends, scene management.
 - **`tuxmix-core`** is the device model + control API (`RmeDevice`
   trait) with three backends: USB (libusb), ALSA (the kernel driver's
   controls), and mock (tests/scenes).
-- **`tuxmix-gui` / `tuxmix-tui`** are the interfaces.  **Work in
-  progress**: they are being rewritten on the final protocol
-  knowledge (the first versions were built before the RE was
-  complete and carried wrong scales/logic).
+- **`tuxmix-gui`** (iced) and **`tuxmix-tui`** (ratatui) are the
+  interfaces, both built on the final protocol knowledge.
+  **Functionally complete** — custom canvas faders, VU meters with
+  real ballistics, multi-select, live routing matrix. What's left is
+  visual polish, not re-architecture; see `GUI-NOTES.md` for the
+  prioritized list.
 - **`tuxmix-sys`** provides FFI bindings.
 
 ## The Linux audio stack
@@ -39,7 +41,10 @@ Two ways to get sound from the Babyface Pro FS:
 
 - The protocol layer (`tuxmix-usb` + `tuxmix-core`) is complete and
   hardware-validated (the laws are calibrated, not guessed).
-- The GUI/TUI are being rewritten.
+- The GUI/TUI are functionally complete; remaining work is visual
+  polish (see `GUI-NOTES.md`).
+- The ALSA backend (`tuxmix-core`'s `alsa` feature, driving the kernel
+  driver's controls) is hardware-validated as of 2026-08-28.
 - See the sibling driver repo for the kernel-side status.
 
 ## Build

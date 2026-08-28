@@ -16,6 +16,7 @@
 #[cfg(feature = "alsa")]
 pub mod babyface;
 pub mod channel;
+pub(crate) mod curves;
 pub mod device;
 pub mod error;
 #[cfg(feature = "alsa")]

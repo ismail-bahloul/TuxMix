@@ -27,7 +27,7 @@ interface other than the Babyface Pro FS. It only covers **ALSA
 simple-mixer-element (selem) devices** — USB class-compliant interfaces
 like the Babyface family. RME's newer MIDI-SysEx-based models (Fireface
 UCX II, UFX+/III) need a different I/O backend entirely and aren't in
-scope for this recipe — see [Architecture](README.md#architecture) in the
+scope for this recipe — see [What's inside](README.md#whats-inside) in the
 README if you want to help with that instead.
 
 1. **Get real `amixer scontents` output from your device.** Plug it in
@@ -76,11 +76,15 @@ README if you want to help with that instead.
 
 ## Other ways to help
 
-- **UI / UX**: improve the iced GUI or the ratatui TUI.
-- **Babyface Pro FS ALSA verification**: the existing mapping in
-  `babyface.rs` hasn't been checked against real hardware yet (see
-  [Release status](README.md#release-status)) — if you own one, comparing
-  it against real `amixer scontents` output is directly useful.
+- **UI / UX**: improve the iced GUI or the ratatui TUI — see
+  [Status](README.md#status) and `GUI-NOTES.md` for what's open.
+- **Babyface Pro FS ALSA verification**: `babyface.rs`'s mapping
+  (crosspoints, master volume/mute, phantom/pad/gain, loopback,
+  AN 1>2/link/MS/dim/width/FX send/pitch, EQ) is hardware-validated as
+  of 2026-08-28. Not yet wired: Sensitivity/Clock Source/SPDIF (no
+  matching ALSA control exists in the kernel driver at all) and
+  per-input EQ interaction edge cases — if you own the hardware,
+  poking at those is directly useful.
 - **MIDI SysEx backend**: help design the I/O layer for UCX II/UFX+/
   III-class devices — a bigger, separate effort from the recipe above.
 - **Testing**: run `cargo test --workspace` and report anything that

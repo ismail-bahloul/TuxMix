@@ -51,6 +51,12 @@ pub struct InputChannel {
     /// 3 = Boost (see `usb::REF_*`; labeled cap_reflevel2.pcap).
     #[serde(default)]
     pub ref_level: u16,
+    /// Hardware 3-band + low-cut DSP EQ. `Some` only for the 4 analog
+    /// inputs (AN1-AN4 on the Babyface Pro FS — the only channels with
+    /// an EQ strip); `None` for every other input type.
+    /// `#[serde(default)]` so old scene JSON without EQ still loads.
+    #[serde(default)]
+    pub eq: Option<InputEq>,
     pub mute: bool,
     pub solo: bool,
 }
@@ -59,6 +65,63 @@ pub struct InputChannel {
 pub enum Sensitivity {
     Minus10dBV,
     Plus4dBu,
+}
+
+/// One EQ band's type (`mixer.c`'s `bf_eq_type_texts`: "Off"/"Bell"/
+/// "Low Shelf"/"High Shelf" — enum items 0-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, Default)]
+pub enum EqBandType {
+    #[default]
+    Off,
+    Bell,
+    LowShelf,
+    HighShelf,
+}
+
+/// One of the 3 parametric bands in an [`InputEq`] strip.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct EqBand {
+    pub band_type: EqBandType,
+    /// 20 – 20000 Hz.
+    pub freq_hz: u16,
+    /// Q factor, 0.05 – 10.0 (ALSA raw is Q x 100).
+    pub q: f32,
+    /// -24.0 – +24.0 dB (ALSA raw is dB x 10).
+    pub gain_db: f32,
+}
+
+impl Default for EqBand {
+    fn default() -> Self {
+        Self {
+            band_type: EqBandType::Off,
+            freq_hz: 1000,
+            q: 0.7,
+            gain_db: 0.0,
+        }
+    }
+}
+
+/// Hardware 3-band parametric EQ + low cut on one analog input strip
+/// (`eq.c`: 3 bands, a shared enable, and a low-cut filter).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct InputEq {
+    pub enabled: bool,
+    pub bands: [EqBand; 3],
+    /// 20 – 20000 Hz.
+    pub low_cut_freq_hz: u16,
+    /// 6, 12, 18, or 24 dB/octave.
+    pub low_cut_slope_db_oct: u8,
+}
+
+impl Default for InputEq {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bands: [EqBand::default(); 3],
+            low_cut_freq_hz: 20,
+            low_cut_slope_db_oct: 6,
+        }
+    }
 }
 
 /// A single software playback channel (from the computer to the device).
@@ -113,6 +176,7 @@ impl InputChannel {
             gain_max: None,
             phase: false,
             ref_level: 0,
+            eq: None,
             mute: false,
             solo: false,
         }

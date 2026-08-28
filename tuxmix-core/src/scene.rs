@@ -113,6 +113,7 @@ impl Scene {
                 pitch_percent: 0.0,
                 ms_proc: false,
                 an12: false,
+                dim: false,
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,

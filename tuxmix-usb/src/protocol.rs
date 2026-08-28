@@ -143,8 +143,12 @@ pub fn set_crosspoint_balance(
     } else {
         map::crosspoint_l(out, src)
     };
-    // Linear attenuation as a placeholder until the dB taper is
-    // calibrated (see PROTOCOL.md: -40 dB = 0x0317, -20 dB = 0x139E).
+    // Linear-in-raw attenuation (CALIBRATION.md "Pan", cap_pan_stereo.pcap,
+    // 2026-08-22, hardware-confirmed): the fader-curve taper referenced by
+    // the old comment here (-40 dB = 0x0317, -20 dB = 0x139E) was a position
+    // estimate CALIBRATION.md later found to be wrong (0x0317 really about
+    // -21 dB, 0x139E about -1.5 dB on that curve) -- this formula was never
+    // a placeholder waiting on that curve, it IS the confirmed pan law.
     let varied = (fixed_volume as f32 * (1.0 - balance.abs())) as u16;
     vec![VendorRequest::new(0x12, varied, (vary_reg as u16) | f)]
 }
