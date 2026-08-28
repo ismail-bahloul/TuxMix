@@ -28,8 +28,9 @@ monitoring, EQ, FX sends, scene management.
 
 Two ways to get sound from the Babyface Pro FS:
 
-1. **Kernel driver** (sibling repo `babyface-pro-linux`): the
-   production path.  It exposes a real ALSA card (PipeWire
+1. **Kernel driver** (sibling repo
+   [`babyface-pro-linux`](https://github.com/ismail-bahloul/babyface-pro-linux)):
+   the production path.  It exposes a real ALSA card (PipeWire
    sink/source, low latency) whose mixer is the ALSA control set, and
    TuxMix can drive it through the ALSA backend.
 2. **This stack's USB backend** (libusb): the reference/development
