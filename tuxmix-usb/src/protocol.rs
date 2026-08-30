@@ -199,6 +199,60 @@ pub fn set_output_master_mute(
     }
 }
 
+/// Output master fader, ONE channel only (`side` = 0 for the pair's
+/// first/left channel, 1 for the second/right one) — for a stereo pair
+/// that's currently split into two independently controlled mono
+/// channels (see `RmeDevice::output_linked`). `set_output_master` above
+/// is still what a *linked* pair uses (writes both sides identically, in
+/// one call) — this is purely additive, not a replacement.
+pub fn set_output_master_channel(
+    out: Output,
+    side: usize,
+    volume_16: u16,
+    volume_8: u8,
+    flag: &mut FlagCounter,
+) -> Vec<VendorRequest> {
+    let f = flag.current();
+    flag.advance();
+    let (addr_8, addr_16) = if side == 0 {
+        (map::master_8_l(out), map::master_16_l(out))
+    } else {
+        (map::master_8_r(out), map::master_16_r(out))
+    };
+    vec![
+        VendorRequest::new(0x1A, volume_8 as u16, addr_8 as u16),
+        VendorRequest::new(0x12, volume_16, (addr_16 as u16) | f),
+    ]
+}
+
+/// Mute ONE channel of an output master — same `side` convention and
+/// same relationship to `set_output_master_mute` as
+/// `set_output_master_channel` has to `set_output_master`.
+pub fn set_output_master_mute_channel(
+    out: Output,
+    side: usize,
+    muted: bool,
+    restore_16: u16,
+    restore_8: u8,
+) -> Vec<VendorRequest> {
+    let (addr_8, addr_16) = if side == 0 {
+        (map::master_8_l(out), map::master_16_l(out))
+    } else {
+        (map::master_8_r(out), map::master_16_r(out))
+    };
+    if muted {
+        vec![
+            VendorRequest::new(0x1A, 0x003B, addr_8 as u16),
+            VendorRequest::new(0x12, 0x0000, addr_16 as u16),
+        ]
+    } else {
+        vec![
+            VendorRequest::new(0x1A, restore_8 as u16, addr_8 as u16),
+            VendorRequest::new(0x12, restore_16, addr_16 as u16),
+        ]
+    }
+}
+
 /// Mic preamp gain (8-bit register, `bReq = 0x1A`).
 ///
 /// `value` is the raw gain code (5 bits, 0-31 ≈ 0-62 dB in 2-dB steps);

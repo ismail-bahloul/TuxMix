@@ -4,6 +4,7 @@
 //! cargo run -p tuxmix-gui              # with real hardware
 //! cargo run -p tuxmix-gui -- --mock    # simulation
 //! cargo run -p tuxmix-gui -- --mock --osc   # + OSC control surface
+//! cargo run -p tuxmix-gui -- --backend usb  # force libusb over the kernel driver
 //! ```
 
 mod app;
@@ -37,6 +38,17 @@ fn main() -> iced::Result {
     let args: Vec<String> = std::env::args().collect();
     let mock = args.iter().any(|a| a == "--mock");
 
+    // `None` = auto-detect (ALSA/kernel-driver first, USB fallback — see
+    // `DeviceHandle::open_real`). An unrecognized value falls back to
+    // auto rather than silently opening nothing.
+    let backend = arg_value(&args, "--backend").and_then(|v| match v.as_str() {
+        "alsa" | "usb" => Some(v),
+        other => {
+            eprintln!("Unknown --backend value {other:?} (use alsa|usb), auto-detecting");
+            None
+        }
+    });
+
     // Opt-in, loopback-only OSC control surface — see osc.rs. Off unless
     // `--osc` is passed, so enabling it is always a deliberate choice.
     let osc_config = args.iter().any(|a| a == "--osc").then(|| osc::OscConfig {
@@ -52,7 +64,7 @@ fn main() -> iced::Result {
     });
 
     iced::application(
-        move || app::new(mock, osc_config),
+        move || app::new(mock, osc_config.clone(), backend.clone()),
         app::update,
         app::view,
     )

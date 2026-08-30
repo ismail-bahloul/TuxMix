@@ -117,6 +117,9 @@ impl Scene {
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,
+                input_link: true,
+                output_link: Vec::new(),
+                input_pair_link: Vec::new(),
             },
         }
     }

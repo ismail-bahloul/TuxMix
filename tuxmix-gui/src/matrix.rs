@@ -52,6 +52,7 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
                 range: (0.0, 2.0),
                 default_value: 1.0,
                 meter: MeterFrame::still(0.0),
+                meter_available: true,
                 height: CELL_H * scale,
                 show_meter: false,
                 modifiers: state.modifiers,

@@ -201,13 +201,28 @@ impl BabyfaceProUsb {
         let playbacks: Vec<PlaybackChannel> = (0..12)
             .map(|i| PlaybackChannel::new(i, &format!("PB{}", i + 1), 6))
             .collect();
+        // One `OutputChannel` per physical channel (matching the ALSA/
+        // profile backend's layout, `2*pair`/`2*pair+1` — see
+        // `RmeDevice::output_linked`'s doc comment), not one per pair —
+        // needed so a split pair can have its two channels controlled
+        // independently. Every hardware write and the front-panel
+        // emulation still address the device by *pair* (`Output`, the
+        // 6-variant enum in `tuxmix_usb::map`) — only this model-level
+        // list and the trait-level `ChannelId::Output` addressing are
+        // per-channel now.
         let outputs = vec![
-            OutputChannel::new(0, "AN1/2"),
-            OutputChannel::new(1, "PH3/4"),
-            OutputChannel::new(2, "AS1/2"),
-            OutputChannel::new(3, "ADAT3/4"),
-            OutputChannel::new(4, "ADAT5/6"),
-            OutputChannel::new(5, "ADAT7/8"),
+            OutputChannel::new(0, "AN1"),
+            OutputChannel::new(1, "AN2"),
+            OutputChannel::new(2, "PH3"),
+            OutputChannel::new(3, "PH4"),
+            OutputChannel::new(4, "AS1"),
+            OutputChannel::new(5, "AS2"),
+            OutputChannel::new(6, "ADAT3"),
+            OutputChannel::new(7, "ADAT4"),
+            OutputChannel::new(8, "ADAT5"),
+            OutputChannel::new(9, "ADAT6"),
+            OutputChannel::new(10, "ADAT7"),
+            OutputChannel::new(11, "ADAT8"),
         ];
         let settings = DeviceSettings {
             clock_source: "Internal".into(),
@@ -224,6 +239,9 @@ impl BabyfaceProUsb {
             fx_send_db: None,
             width: 0.0,
             sample_rate: 48_000,
+            input_link: true,
+            output_link: Vec::new(),
+            input_pair_link: Vec::new(),
         };
         let mut dev = Self {
             dev,
@@ -367,8 +385,20 @@ impl RmeDevice for BabyfaceProUsb {
         "Babyface Pro FS (USB)"
     }
 
+    /// Same physical device as `BabyfacePro` (the ALSA/kernel-driver
+    /// backend) — its own topology (`inputs` above) matches
+    /// `profiles::babyface_pro::PROFILE`'s channel count/types/order
+    /// exactly (only "AN3"/"AN4" vs "IN3"/"IN4" differ, a display label,
+    /// not a structural difference), so scenes should transfer between
+    /// the two backends rather than being rejected as "different models".
+    fn canonical_model(&self) -> &str {
+        crate::profiles::babyface_pro::PROFILE.model_name
+    }
+
     fn output_pair_count(&self) -> usize {
-        self.outputs.len()
+        // `outputs` is per-physical-channel now (2 per pair) — see the
+        // doc comment on `open()`'s `outputs` vec.
+        self.outputs.len() / 2
     }
 
     fn open() -> Result<Self, Error> {
@@ -408,22 +438,30 @@ impl RmeDevice for BabyfaceProUsb {
     }
 
     fn set_volume(&mut self, channel: ChannelId, output: usize, volume: f32) -> Result<(), Error> {
+        if let ChannelId::Output(o) = channel {
+            self.outputs[o].volume = volume;
+            // Output masters use their own (exponential) curve; the
+            // 8-bit register is the REAL volume (0.5 dB/step, 0xF3 = 0
+            // dB). 2.0 = +6 dB, the master's top. `o` is a physical
+            // channel index now (see the `outputs` doc comment in
+            // `open()`) — `pair`/`side` recover the register-level
+            // addressing (`Output`, one enum variant per pair, plus
+            // which side). This always writes ONE channel; a linked
+            // pair's "move both" behavior lives in
+            // `RmeDevice::set_output_volume`, which calls this twice.
+            let (pair, side) = (o / 2, o % 2);
+            let out = output_for(pair)?;
+            let db = 20.0 * volume.clamp(f32::EPSILON, 2.0).log10();
+            return self
+                .dev
+                .set_output_master_channel(out, side, master_db_to_raw(db), master_8bit(db))
+                .map_err(Into::into);
+        }
         let out = output_for(output)?;
         let src = match channel {
             ChannelId::Input(i) => input_source(i)?,
             ChannelId::Playback(c) => playback_source(c)?,
-            ChannelId::Output(o) => {
-                self.outputs[o].volume = volume;
-                // Output masters use their own (exponential) curve;
-                // the 8-bit register is the REAL volume (0.5 dB/step,
-                // 0xF3 = 0 dB). 2.0 = +6 dB, the master's top.
-                let db = 20.0 * volume.clamp(f32::EPSILON, 2.0).log10();
-                return Ok(self.dev.set_output_master(
-                    out,
-                    master_db_to_raw(db),
-                    master_8bit(db),
-                )?);
-            }
+            ChannelId::Output(_) => unreachable!("handled above"),
         };
         let raw = volume_to_raw(volume);
         self.dev.set_volume(out, src, raw)?;
@@ -495,10 +533,14 @@ impl RmeDevice for BabyfaceProUsb {
             ChannelId::Output(o) => {
                 self.outputs[o].mute = mute;
                 // Unmute restores the current volume (the 8-bit
-                // register is the real output volume).
+                // register is the real output volume). `o` is a
+                // physical channel index — see `set_volume`'s identical
+                // pair/side split above.
+                let (pair, side) = (o / 2, o % 2);
                 let db = 20.0 * self.outputs[o].volume.clamp(f32::EPSILON, 2.0).log10();
-                let reqs = tuxmix_usb::protocol::set_output_master_mute(
-                    output_for(o)?,
+                let reqs = tuxmix_usb::protocol::set_output_master_mute_channel(
+                    output_for(pair)?,
+                    side,
                     mute,
                     master_db_to_raw(db),
                     master_8bit(db),
@@ -519,7 +561,7 @@ impl RmeDevice for BabyfaceProUsb {
                     volume_to_raw(self.inputs[i].volumes[0])
                 };
                 self.dev.set_low_map_volume(src, low)?;
-                for o in 0..self.outputs.len() {
+                for o in 0..self.output_pair_count() {
                     let raw = if mute {
                         0
                     } else {
@@ -536,7 +578,7 @@ impl RmeDevice for BabyfaceProUsb {
                 // outputs (the capture: PB1-5's out0 pairs 0x0000 /
                 // 0x2000 = the active marker).
                 let src = Source::Playback(Playback(c / 2 + 1));
-                for o in 0..self.outputs.len() {
+                for o in 0..self.output_pair_count() {
                     let raw = if mute {
                         0
                     } else {
@@ -625,7 +667,7 @@ impl RmeDevice for BabyfaceProUsb {
             };
             let src = input_source(j)?;
             self.dev.set_low_map_volume(src, low)?;
-            for o in 0..self.outputs.len() {
+            for o in 0..self.output_pair_count() {
                 let raw = if solo || ch.mute {
                     0
                 } else {
@@ -650,7 +692,7 @@ impl RmeDevice for BabyfaceProUsb {
             };
             let src = playback_source(j)?;
             self.dev.set_low_map_volume(src, low)?;
-            for o in 0..self.outputs.len() {
+            for o in 0..self.output_pair_count() {
                 let raw = if solo || ch.mute {
                     0
                 } else {
@@ -732,8 +774,16 @@ impl RmeDevice for BabyfaceProUsb {
     // ── §9 controls (decoded on Windows 2026-08-23, see PROTOCOL.md) ──
 
     fn set_loopback(&mut self, out: usize, on: bool) -> Result<(), Error> {
-        output_for(out)?; // validate the index
-        self.outputs[out].loopback = on;
+        output_for(out)?; // validate the pair index
+        // Loopback is pair-level (both channels together) — `out` is a
+        // submix pair (0-5), so both physical channels of it get the
+        // same flag. `self.outputs` is per-physical-channel now (see the
+        // `outputs` doc comment in `open()`); the device's own 30-channel
+        // loopback map already addresses channels 1:1 (PROTOCOL.md:
+        // "AN1/2 output loopback = channels 0/1"), so no `/2` is needed
+        // when reading it back below anymore.
+        self.outputs[out * 2].loopback = on;
+        self.outputs[out * 2 + 1].loopback = on;
         // TotalMix ALWAYS writes the full 30-channel map on every toggle
         // (cap_loopback_off.pcap, 2026-08-23): 0x0001 on the active
         // channels, 0x0000 on the rest. A partial (2-channel-only) OFF
@@ -743,8 +793,7 @@ impl RmeDevice for BabyfaceProUsb {
         // not clear another strip's loopback.
         let mut reqs = Vec::with_capacity(30);
         for c in 0..30u16 {
-            let active =
-                (c as usize / 2) < self.outputs.len() && self.outputs[c as usize / 2].loopback;
+            let active = (c as usize) < self.outputs.len() && self.outputs[c as usize].loopback;
             reqs.push(tuxmix_usb::protocol::set_loopback(c, active));
         }
         self.dev.send_all(&reqs)?;
@@ -762,6 +811,7 @@ impl RmeDevice for BabyfaceProUsb {
 
     fn set_input_link(&mut self, linked: bool) -> Result<(), Error> {
         self.input_link = linked;
+        self.settings.input_link = linked;
         let reqs = tuxmix_usb::protocol::set_input_link(linked, self.settings.an12);
         self.dev.send_all(&reqs)?;
         Ok(())
@@ -805,7 +855,7 @@ impl RmeDevice for BabyfaceProUsb {
         // Negate (bitwise-NOT) the current fader value of EVERY output
         // the input routes into; out0 also gets the low-map mirror
         // (matching the capture: 0x0EA0 → 0xF15F).
-        for o in 0..self.outputs.len() {
+        for o in 0..self.output_pair_count() {
             let raw = volume_to_raw(self.inputs[idx].volumes[o]);
             let value = if invert { !raw } else { raw };
             if o == 0 {
@@ -920,7 +970,7 @@ impl RmeDevice for BabyfaceProUsb {
     fn capture_scene(&self) -> Scene {
         Scene {
             name: "capture".into(),
-            model: self.model_name().into(),
+            model: self.canonical_model().into(),
             inputs: self.inputs.clone(),
             playbacks: self.playbacks.clone(),
             outputs: self.outputs.clone(),
@@ -929,7 +979,7 @@ impl RmeDevice for BabyfaceProUsb {
     }
 
     fn apply_scene(&mut self, scene: &Scene) -> Result<(), Error> {
-        scene.check_compatible(self.model_name())?;
+        scene.check_compatible(self.canonical_model())?;
         // Write every crosspoint (standard + low map), then the masters
         // and the preamp block — mirroring a TotalMix scene load.
         for (i, inp) in scene.inputs.iter().enumerate() {
@@ -955,14 +1005,21 @@ impl RmeDevice for BabyfaceProUsb {
             }
         }
         for (o, out) in scene.outputs.iter().enumerate() {
-            let out_p = output_for(o)?;
+            // `o` is a physical channel index (see the `outputs` doc
+            // comment in `open()`) — write each channel independently
+            // so a saved split pair is restored faithfully rather than
+            // having its second channel's write clobber the first's.
+            let (pair, side) = (o / 2, o % 2);
+            let out_p = output_for(pair)?;
             // Output masters use their own (exponential) curve; the
             // 8-bit register is the REAL volume.
             let db = 20.0 * out.volume.clamp(f32::EPSILON, 1.0).log10();
             let raw = master_db_to_raw(db);
-            self.dev.set_output_master(out_p, raw, master_8bit(db))?;
+            self.dev
+                .set_output_master_channel(out_p, side, raw, master_8bit(db))?;
             if out.mute {
-                self.dev.set_output_master_mute(out_p, true, 0, 0)?;
+                self.dev
+                    .set_output_master_mute_channel(out_p, side, true, 0, 0)?;
             }
         }
         // Adopt the new state.
@@ -988,9 +1045,14 @@ impl RmeDevice for BabyfaceProUsb {
         // when set, since their writes would otherwise clobber fader
         // values or flip unset states. State is collected first (the
         // setters borrow self mutably).
-        let loopback: Vec<bool> = self.outputs.iter().map(|o| o.loopback).collect();
-        for (o, on) in loopback.into_iter().enumerate() {
-            self.set_loopback(o, on)?;
+        // `set_loopback` takes a submix PAIR index — read one
+        // representative channel per pair (both channels of a pair
+        // always carry the same flag, see `set_loopback`'s own body).
+        let loopback: Vec<bool> = (0..self.output_pair_count())
+            .map(|pair| self.outputs[pair * 2].loopback)
+            .collect();
+        for (pair, on) in loopback.into_iter().enumerate() {
+            self.set_loopback(pair, on)?;
         }
         if self.settings.an12 {
             self.set_an12(true)?;
@@ -1228,17 +1290,24 @@ impl BabyfaceProUsb {
             // Output level: the selected OUT's master fader, ±0.5 dB
             // per click (cap_set2.pcap: the wheel writes only the
             // 16-bit master 0x03E0+2·out, no 8-bit companion mid-run).
-            let o = match ps.out_sel() {
+            // The physical wheel has no per-channel selector for this —
+            // it always moves the whole pair together, regardless of
+            // any software split state, so this always writes/mirrors
+            // both of the pair's channels (unlike the software-fader
+            // path in `set_volume`, which respects `output_linked`).
+            let pair = match ps.out_sel() {
                 1 => 1, // Phones
                 2 => 5, // Opt = ADAT7/8
                 _ => 0,
             };
-            let db = 20.0 * self.outputs[o].volume.clamp(f32::EPSILON, 2.0).log10();
+            let db = 20.0 * self.outputs[pair * 2].volume.clamp(f32::EPSILON, 2.0).log10();
             let new_db = (db + 0.5 * delta as f32).clamp(-65.0, 6.0);
             let raw = master_db_to_raw(new_db);
-            self.outputs[o].volume = 10f32.powf(new_db / 20.0);
+            let new_vol = 10f32.powf(new_db / 20.0);
+            self.outputs[pair * 2].volume = new_vol;
+            self.outputs[pair * 2 + 1].volume = new_vol;
             self.dev
-                .set_output_master(output_for(o)?, raw, master_8bit(new_db))?;
+                .set_output_master(output_for(pair)?, raw, master_8bit(new_db))?;
         } else {
             // Gain mode: the SELECT-chosen channel(s) of the
             // IN-selected pair, ±1 dB per click (manual §5.1: SELECT
@@ -1268,6 +1337,26 @@ impl BabyfaceProUsb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_model_matches_alsa_backend_for_scene_sharing() {
+        // `BabyfaceProUsb::canonical_model()` returns the same string as
+        // the ALSA/kernel-driver backend's model name
+        // (`profiles::babyface_pro::PROFILE.model_name`) — this is what
+        // lets a scene captured on one backend apply cleanly on the
+        // other. The *display* name (`model_name()`, decorated as
+        // "Babyface Pro FS (USB)") stays backend-specific; only the
+        // canonical one has to match.
+        let mut scene = crate::scene::Scene::new("test");
+        scene.model = crate::profiles::babyface_pro::PROFILE.model_name.to_string();
+        assert!(scene
+            .check_compatible(crate::profiles::babyface_pro::PROFILE.model_name)
+            .is_ok());
+        // The pre-fix behavior (comparing against the decorated USB
+        // display name) would have rejected this — locking that in as a
+        // regression guard.
+        assert!(scene.check_compatible("Babyface Pro FS (USB)").is_err());
+    }
 
     #[test]
     fn volume_scale_calibrated() {

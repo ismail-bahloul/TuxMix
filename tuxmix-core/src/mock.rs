@@ -135,6 +135,11 @@ impl RmeDevice for MockBabyfacePro {
                 _ => None,
             };
             ch.gain = ch.gain_max.map(|_| 0);
+            // The 4 analog inputs have a hardware EQ strip (see
+            // `InputChannel::eq`'s doc comment and `babyface.rs`'s
+            // `eq_strip_name`, same `idx < 4` gate) — every other input
+            // type stays `None`.
+            ch.eq = (i < 4).then(InputEq::default);
         }
 
         Ok(Self {
@@ -160,6 +165,9 @@ impl RmeDevice for MockBabyfacePro {
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,
+                input_link: true,
+                output_link: Vec::new(),
+                input_pair_link: Vec::new(),
             },
             input_meters: vec![0.0; PROFILE.input_count()],
             playback_meters: vec![0.0; PROFILE.output_pair_count() * 2],
@@ -414,6 +422,16 @@ impl RmeDevice for MockBabyfacePro {
         Ok(())
     }
 
+    fn set_dim(&mut self, on: bool) -> Result<(), Error> {
+        self.settings.dim = on;
+        Ok(())
+    }
+
+    fn set_input_link(&mut self, linked: bool) -> Result<(), Error> {
+        self.settings.input_link = linked;
+        Ok(())
+    }
+
     fn set_phase(&mut self, idx: usize, invert: bool) -> Result<(), Error> {
         let inp = self
             .inputs
@@ -453,6 +471,116 @@ impl RmeDevice for MockBabyfacePro {
             )));
         }
         inp.ref_level = raw;
+        Ok(())
+    }
+
+    // ── Hardware DSP EQ (mocked: only the 4 analog inputs, same gate
+    // as `babyface.rs`'s `eq_strip_name`) ────────────────────────────
+
+    fn set_eq_enabled(&mut self, idx: usize, on: bool) -> Result<(), Error> {
+        if idx >= 4 {
+            return Err(Error::InvalidChannel(format!("Input {idx} has no EQ")));
+        }
+        let inp = self
+            .inputs
+            .get_mut(idx)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {idx}")))?;
+        inp.eq.get_or_insert_with(InputEq::default).enabled = on;
+        Ok(())
+    }
+
+    fn set_eq_band_type(
+        &mut self,
+        idx: usize,
+        band: usize,
+        band_type: EqBandType,
+    ) -> Result<(), Error> {
+        if idx >= 4 {
+            return Err(Error::InvalidChannel(format!("Input {idx} has no EQ")));
+        }
+        if band >= 3 {
+            return Err(Error::InvalidChannel(format!("EQ band {band}")));
+        }
+        let inp = self
+            .inputs
+            .get_mut(idx)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {idx}")))?;
+        inp.eq.get_or_insert_with(InputEq::default).bands[band].band_type = band_type;
+        Ok(())
+    }
+
+    fn set_eq_band_freq(&mut self, idx: usize, band: usize, freq_hz: u16) -> Result<(), Error> {
+        if idx >= 4 {
+            return Err(Error::InvalidChannel(format!("Input {idx} has no EQ")));
+        }
+        if band >= 3 {
+            return Err(Error::InvalidChannel(format!("EQ band {band}")));
+        }
+        let clamped = freq_hz.min(20_000);
+        let inp = self
+            .inputs
+            .get_mut(idx)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {idx}")))?;
+        inp.eq.get_or_insert_with(InputEq::default).bands[band].freq_hz = clamped;
+        Ok(())
+    }
+
+    fn set_eq_band_q(&mut self, idx: usize, band: usize, q: f32) -> Result<(), Error> {
+        if idx >= 4 {
+            return Err(Error::InvalidChannel(format!("Input {idx} has no EQ")));
+        }
+        if band >= 3 {
+            return Err(Error::InvalidChannel(format!("EQ band {band}")));
+        }
+        let clamped = q.clamp(0.05, 10.0);
+        let inp = self
+            .inputs
+            .get_mut(idx)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {idx}")))?;
+        inp.eq.get_or_insert_with(InputEq::default).bands[band].q = clamped;
+        Ok(())
+    }
+
+    fn set_eq_band_gain(&mut self, idx: usize, band: usize, gain_db: f32) -> Result<(), Error> {
+        if idx >= 4 {
+            return Err(Error::InvalidChannel(format!("Input {idx} has no EQ")));
+        }
+        if band >= 3 {
+            return Err(Error::InvalidChannel(format!("EQ band {band}")));
+        }
+        let clamped = gain_db.clamp(-24.0, 24.0);
+        let inp = self
+            .inputs
+            .get_mut(idx)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {idx}")))?;
+        inp.eq.get_or_insert_with(InputEq::default).bands[band].gain_db = clamped;
+        Ok(())
+    }
+
+    fn set_eq_low_cut_freq(&mut self, idx: usize, freq_hz: u16) -> Result<(), Error> {
+        if idx >= 4 {
+            return Err(Error::InvalidChannel(format!("Input {idx} has no EQ")));
+        }
+        let clamped = freq_hz.min(20_000);
+        let inp = self
+            .inputs
+            .get_mut(idx)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {idx}")))?;
+        inp.eq.get_or_insert_with(InputEq::default).low_cut_freq_hz = clamped;
+        Ok(())
+    }
+
+    fn set_eq_low_cut_slope(&mut self, idx: usize, slope_db_oct: u8) -> Result<(), Error> {
+        if idx >= 4 {
+            return Err(Error::InvalidChannel(format!("Input {idx} has no EQ")));
+        }
+        let inp = self
+            .inputs
+            .get_mut(idx)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {idx}")))?;
+        inp.eq
+            .get_or_insert_with(InputEq::default)
+            .low_cut_slope_db_oct = slope_db_oct;
         Ok(())
     }
 
@@ -614,6 +742,85 @@ mod tests {
     }
 
     #[test]
+    fn test_output_pair_linked_by_default() {
+        let dev = MockBabyfacePro::open().unwrap();
+        // No explicit entry yet — every pair reads as linked (TotalMix's
+        // own default), not "false"/unset.
+        for pair in 0..dev.output_pair_count() {
+            assert!(dev.output_linked(pair));
+        }
+    }
+
+    #[test]
+    fn test_linked_output_volume_moves_both_channels() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        dev.set_output_volume(0, 0, 0.5).unwrap();
+        assert!((dev.volume(ChannelId::Output(0), 0).unwrap() - 0.5).abs() < 1e-6);
+        assert!((dev.volume(ChannelId::Output(1), 0).unwrap() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_split_output_volume_moves_only_the_selected_channel() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        dev.set_output_linked(0, false).unwrap();
+        assert!(!dev.output_linked(0));
+        dev.set_output_volume(0, 0, 0.5).unwrap();
+        dev.set_output_volume(0, 1, 0.25).unwrap();
+        assert!((dev.volume(ChannelId::Output(0), 0).unwrap() - 0.5).abs() < 1e-6);
+        assert!((dev.volume(ChannelId::Output(1), 0).unwrap() - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_linked_output_mute_and_solo_move_both_channels() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        dev.set_output_mute(2, 0, true).unwrap();
+        assert!(dev.mute(ChannelId::Output(4)).unwrap());
+        assert!(dev.mute(ChannelId::Output(5)).unwrap());
+        dev.set_output_solo(2, 1, true).unwrap();
+        assert!(dev.solo(ChannelId::Output(4)).unwrap());
+        assert!(dev.solo(ChannelId::Output(5)).unwrap());
+    }
+
+    #[test]
+    fn test_input_pair_linked_by_default_and_moves_both_channels() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        assert!(dev.input_pair_linked(0));
+        dev.set_input_volume(0, 0, 0, 0.5).unwrap();
+        assert!((dev.volume(ChannelId::Input(0), 0).unwrap() - 0.5).abs() < 1e-6);
+        assert!((dev.volume(ChannelId::Input(1), 0).unwrap() - 0.5).abs() < 1e-6);
+        dev.set_input_mute(0, 0, true).unwrap();
+        assert!(dev.mute(ChannelId::Input(0)).unwrap());
+        assert!(dev.mute(ChannelId::Input(1)).unwrap());
+    }
+
+    #[test]
+    fn test_split_input_pair_moves_only_the_selected_channel() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        dev.set_input_pair_linked(0, false).unwrap();
+        dev.set_input_volume(0, 0, 0, 0.5).unwrap();
+        dev.set_input_volume(0, 1, 0, 0.25).unwrap();
+        assert!((dev.volume(ChannelId::Input(0), 0).unwrap() - 0.5).abs() < 1e-6);
+        assert!((dev.volume(ChannelId::Input(1), 0).unwrap() - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_playback_linked_reads_split_flag_inverted() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        assert!(dev.playback_linked(0));
+        dev.set_playback_volume(0, 0, 0, 0.5).unwrap();
+        assert!((dev.volume(ChannelId::Playback(0), 0).unwrap() - 0.5).abs() < 1e-6);
+        assert!((dev.volume(ChannelId::Playback(1), 0).unwrap() - 0.5).abs() < 1e-6);
+
+        dev.set_playback_linked(0, false).unwrap();
+        assert!(!dev.playback_linked(0));
+        assert!(dev.playbacks()[0].split);
+        dev.set_playback_volume(0, 0, 0, 0.75).unwrap();
+        dev.set_playback_volume(0, 1, 0, 0.1).unwrap();
+        assert!((dev.volume(ChannelId::Playback(0), 0).unwrap() - 0.75).abs() < 1e-6);
+        assert!((dev.volume(ChannelId::Playback(1), 0).unwrap() - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_mute_solo_toggle() {
         let mut dev = MockBabyfacePro::open().unwrap();
         assert!(!dev.mute(ChannelId::Input(0)).unwrap());
@@ -678,6 +885,41 @@ mod tests {
 
         let err = dev.apply_scene(&scene).unwrap_err();
         assert!(matches!(err, Error::SceneModelMismatch { .. }));
+    }
+
+    #[test]
+    fn test_dim_toggle() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        assert!(!dev.settings().dim);
+        dev.set_dim(true).unwrap();
+        assert!(dev.settings().dim);
+    }
+
+    #[test]
+    fn test_eq_only_on_first_four_inputs() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        dev.set_eq_enabled(3, true).unwrap();
+        assert!(dev.inputs()[3].eq.unwrap().enabled);
+
+        let err = dev.set_eq_enabled(4, true).unwrap_err();
+        assert!(matches!(err, Error::InvalidChannel(_)));
+    }
+
+    #[test]
+    fn test_eq_band_params_clamp_and_persist() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        dev.set_eq_band_type(0, 1, EqBandType::Bell).unwrap();
+        dev.set_eq_band_freq(0, 1, 30_000).unwrap(); // clamps to 20_000
+        dev.set_eq_band_q(0, 1, 50.0).unwrap(); // clamps to 10.0
+        dev.set_eq_band_gain(0, 1, 100.0).unwrap(); // clamps to 24.0
+
+        let band = dev.inputs()[0].eq.unwrap().bands[1];
+        assert_eq!(band.band_type, EqBandType::Bell);
+        assert_eq!(band.freq_hz, 20_000);
+        assert!((band.q - 10.0).abs() < 1e-6);
+        assert!((band.gain_db - 24.0).abs() < 1e-6);
+
+        assert!(dev.set_eq_band_type(0, 3, EqBandType::Bell).is_err());
     }
 
     #[test]

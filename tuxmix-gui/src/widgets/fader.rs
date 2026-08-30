@@ -133,6 +133,9 @@ pub struct Fader<Message> {
     pub range: (f32, f32),
     pub default_value: f32,
     pub meter: MeterFrame,
+    /// Whether `meter` reflects a real reading on this backend — see
+    /// `draw_meter`'s doc comment. Irrelevant when `show_meter` is `false`.
+    pub meter_available: bool,
     pub height: f32,
     pub show_meter: bool,
     pub modifiers: Modifiers,
@@ -392,6 +395,7 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
                 meter_rect,
                 self.meter.at(Instant::now()),
                 self.scale,
+                self.meter_available,
             );
             draw_ruler(&mut frame, meter_rect, self.scale);
         }
@@ -480,7 +484,16 @@ const HOT_THRESHOLD: f32 = 0.85;
 /// `HOT_THRESHOLD`, plus a separate clip "LED" above the track that lights
 /// up near 0 dBFS. Reads as a minimal modern level indicator, not a
 /// traffic light, while still giving continuous feedback as it climbs.
-fn draw_meter(frame: &mut Frame, r: Rectangle, level: f32, scale: f32) {
+/// Draws the meter column. `available` is a per-session backend capability
+/// (see `DeviceHandle::has_input_meters`/`has_playback_meters`), not a
+/// per-tick reading — when `false`, the channel has no real level data on
+/// this backend (e.g. playback meters on every real backend today; input
+/// meters too on the ALSA/kernel-driver backend, see `PROTOCOL.md`'s "VU
+/// meters: conclusion"). Rendering that as a normal meter pinned at 0 would
+/// read as "silence", which is a different claim than "not measured" — so
+/// this draws a dashed, uncolored track instead of pretending there's a
+/// live reading.
+fn draw_meter(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available: bool) {
     let l = level.clamp(0.0, 1.0);
     let pill_w = METER_PILL_W * scale;
     let radius = METER_RADIUS * scale;
@@ -496,6 +509,30 @@ fn draw_meter(frame: &mut Frame, r: Rectangle, level: f32, scale: f32) {
         &Path::new(|b| b.rounded_rectangle(track.position(), track.size(), radius.into())),
         Color::from_rgb8(0x08, 0x08, 0x0a),
     );
+
+    if !available {
+        // A handful of short dashes down the middle of the track, in a
+        // dim neutral gray — reads as "N/A" without needing text layout
+        // inside a canvas this narrow.
+        let dash_w = pill_w * 0.5;
+        let dash_h = 2.0 * scale;
+        let dash_x = track.x + (pill_w - dash_w) / 2.0;
+        let count = ((track.height / (dash_h * 2.5)).floor() as usize).max(1);
+        for i in 0..count {
+            let dash_y = track.y + track.height * (i as f32 + 0.5) / count as f32;
+            frame.fill(
+                &Path::new(|b| {
+                    b.rounded_rectangle(
+                        Point::new(dash_x, dash_y - dash_h / 2.0),
+                        Size::new(dash_w, dash_h),
+                        (dash_h / 2.0).into(),
+                    )
+                }),
+                Color::from_rgb8(0x3a, 0x3a, 0x3e),
+            );
+        }
+        return;
+    }
 
     if l > 0.0 {
         let fill_h = track.height * l;
@@ -722,6 +759,7 @@ where
 struct VuMeter {
     level: MeterFrame,
     scale: f32,
+    available: bool,
 }
 
 impl<Message> canvas::Program<Message> for VuMeter {
@@ -763,6 +801,7 @@ impl<Message> canvas::Program<Message> for VuMeter {
             meter_rect,
             self.level.at(Instant::now()),
             self.scale,
+            self.available,
         );
         draw_ruler(&mut frame, meter_rect, self.scale);
         vec![frame.into_geometry()]
@@ -773,8 +812,13 @@ pub fn vu_meter<'a, Message: 'a>(
     level: MeterFrame,
     height: f32,
     scale: f32,
+    available: bool,
 ) -> Element<'a, Message> {
-    Canvas::new(VuMeter { level, scale })
+    Canvas::new(VuMeter {
+        level,
+        scale,
+        available,
+    })
         .width(Length::Fixed(METER_RULER_W * scale))
         .height(Length::Fixed(height))
         .into()

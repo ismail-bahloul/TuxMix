@@ -13,6 +13,7 @@ use tuxmix_core::BabyfacePro;
 use tuxmix_core::{
     BabyfaceProUsb, ChannelId, ChannelType, MockBabyfacePro, RmeDevice, Scene, Sensitivity,
 };
+use tuxmix_core::channel::EqBandType;
 
 use crate::matrix;
 use crate::osc::{self, OscCommand, OscConfig, OscOutbound};
@@ -20,7 +21,7 @@ use crate::scenes::{list_scene_files, load_scene_file, save_scene_file};
 use crate::theme;
 use crate::widgets::fader;
 use crate::widgets::knob::{knob, Knob};
-use crate::widgets::strip;
+use crate::widgets::strip::{self, hint};
 
 pub const OUT_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "A3/A4", "A5/A6", "A7/A8"];
 
@@ -35,6 +36,25 @@ pub fn short_label(name: &str) -> &str {
     name.strip_prefix("PCM ")
         .or_else(|| name.strip_prefix("OUT "))
         .unwrap_or(name)
+}
+
+/// Combines a linked output pair's two per-channel names ("AN1"/"AN2",
+/// "PH3"/"PH4", "ADAT7"/"ADAT8") into the historical combined bus label
+/// ("AN1/2", "PH3/4", "ADAT7/8") — matches what `tuxmix-usb`'s output
+/// list used before it became per-channel (see `usb.rs`'s `open()`),
+/// and what TotalMix itself shows for a linked stereo bus. Falls back to
+/// `"{left}/{right}"` unmodified if `right` doesn't end in digits (not
+/// expected for this device's own channel names, but harmless).
+fn pair_bus_label(left: &str, right: &str) -> String {
+    let right_num: String = right
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .collect();
+    if right_num.is_empty() {
+        format!("{left}/{right}")
+    } else {
+        format!("{left}/{right_num}")
+    }
 }
 
 pub fn type_tag(t: ChannelType) -> (&'static str, iced::Color) {
@@ -191,6 +211,79 @@ impl RmeDevice for DeviceHandle {
     fn set_sample_rate(&mut self, rate: u32) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_sample_rate(rate))
     }
+    fn set_loopback(&mut self, out: usize, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_loopback(out, on))
+    }
+    fn set_ms_proc(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_ms_proc(on))
+    }
+    fn set_an12(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_an12(on))
+    }
+    fn set_dim(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_dim(on))
+    }
+    fn set_input_link(&mut self, linked: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_input_link(linked))
+    }
+    fn set_trim(&mut self, idx: usize, db: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_trim(idx, db))
+    }
+    fn set_phase(&mut self, idx: usize, invert: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_phase(idx, invert))
+    }
+    fn set_fx_send(&mut self, db: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_fx_send(db))
+    }
+    fn set_stereo_split(&mut self, pb: usize, split: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_stereo_split(pb, split))
+    }
+    fn set_width(&mut self, width: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_width(width))
+    }
+    fn set_ref_level(&mut self, idx: usize, raw: u16) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_ref_level(idx, raw))
+    }
+    fn set_eq_enabled(&mut self, idx: usize, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_eq_enabled(idx, on))
+    }
+    fn set_eq_band_type(
+        &mut self,
+        idx: usize,
+        band: usize,
+        band_type: tuxmix_core::channel::EqBandType,
+    ) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_eq_band_type(idx, band, band_type))
+    }
+    fn set_eq_band_freq(
+        &mut self,
+        idx: usize,
+        band: usize,
+        freq_hz: u16,
+    ) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_eq_band_freq(idx, band, freq_hz))
+    }
+    fn set_eq_band_q(&mut self, idx: usize, band: usize, q: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_eq_band_q(idx, band, q))
+    }
+    fn set_eq_band_gain(
+        &mut self,
+        idx: usize,
+        band: usize,
+        gain_db: f32,
+    ) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_eq_band_gain(idx, band, gain_db))
+    }
+    fn set_eq_low_cut_freq(&mut self, idx: usize, freq_hz: u16) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_eq_low_cut_freq(idx, freq_hz))
+    }
+    fn set_eq_low_cut_slope(
+        &mut self,
+        idx: usize,
+        slope_db_oct: u8,
+    ) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_eq_low_cut_slope(idx, slope_db_oct))
+    }
     fn capture_scene(&self) -> Scene {
         delegate!(self, capture_scene)
     }
@@ -203,14 +296,53 @@ impl RmeDevice for DeviceHandle {
 }
 
 impl DeviceHandle {
-    pub fn open_real() -> Option<Self> {
-        // ALSA class-compliant first (historical path), then the
-        // proprietary USB backend.
+    /// Opens the real hardware. `backend` forces a specific path
+    /// (`"alsa"` or `"usb"`) — anything else (including `None`) auto-
+    /// detects: ALSA (the kernel driver) first, falling back to the
+    /// direct USB backend if the kernel driver isn't loaded. The USB
+    /// backend refuses to open while the kernel driver owns the device
+    /// (see `tuxmix-usb`), so the two paths are mutually exclusive —
+    /// auto-detect never double-opens, it just wasn't ever *said* which
+    /// one won. Every path now logs that at `info` level so a failure
+    /// to find the device isn't a silent "which one did it even try?".
+    pub fn open_real(backend: Option<&str>) -> Option<Self> {
+        #[cfg_attr(not(feature = "alsa"), allow(unused_variables))]
+        let want_alsa = !matches!(backend, Some("usb"));
+        let want_usb = !matches!(backend, Some("alsa"));
+
         #[cfg(feature = "alsa")]
-        if let Ok(d) = BabyfacePro::open() {
-            return Some(DeviceHandle::Real(d));
+        if want_alsa {
+            match BabyfacePro::open() {
+                Ok(d) => {
+                    log::info!("Device backend: ALSA (kernel driver)");
+                    return Some(DeviceHandle::Real(d));
+                }
+                Err(e) if backend == Some("alsa") => {
+                    log::warn!("--backend alsa requested but ALSA open failed: {e:?}");
+                    return None;
+                }
+                Err(_) => {}
+            }
         }
-        BabyfaceProUsb::open().ok().map(DeviceHandle::Usb)
+        #[cfg(not(feature = "alsa"))]
+        if backend == Some("alsa") {
+            log::warn!("--backend alsa requested but this build has no `alsa` feature");
+            return None;
+        }
+
+        if want_usb {
+            match BabyfaceProUsb::open() {
+                Ok(d) => {
+                    log::info!("Device backend: USB (libusb)");
+                    return Some(DeviceHandle::Usb(d));
+                }
+                Err(e) if backend == Some("usb") => {
+                    log::warn!("--backend usb requested but USB open failed: {e:?}");
+                }
+                Err(_) => {}
+            }
+        }
+        None
     }
     pub fn open_mock() -> Self {
         DeviceHandle::Mock(MockBabyfacePro::open().expect("mock opens"))
@@ -241,6 +373,29 @@ impl DeviceHandle {
     }
     pub fn playback_meter(&self, idx: usize) -> f32 {
         self.playback_meters().get(idx).copied().unwrap_or(0.0)
+    }
+    /// Whether `input_meters()` is a real per-session reading rather than
+    /// a hardcoded zero vector — see `draw_meter`'s doc comment in
+    /// `widgets/fader.rs`. Mock always has it; the USB backend reads it
+    /// from the device (`meters()`); the ALSA/kernel-driver backend has
+    /// no meter readback at all yet (see `PROTOCOL.md`'s "VU meters:
+    /// conclusion" — the device has none, only host-side computation from
+    /// the ISO streams, which this backend doesn't capture).
+    pub fn has_input_meters(&self) -> bool {
+        match self {
+            DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
+            #[cfg(feature = "alsa")]
+            DeviceHandle::Real(_) => false,
+        }
+    }
+    /// Whether `playback_meters()` is real — true only for Mock. The USB
+    /// backend runs its ISO OUT stream in meter-only (silence) mode, so it
+    /// never sees real playback audio to compute a level from even though
+    /// it technically owns the stream — and only one process can hold that
+    /// stream at a time (see `tools/alsa/README.md`'s "Known limits"), so
+    /// real playback audio from another app never reaches it either.
+    pub fn has_playback_meters(&self) -> bool {
+        matches!(self, DeviceHandle::Mock(_))
     }
     /// Output meters, computed host-side like TotalMix: each output's
     /// level is the power sum of every routed source (inputs + playbacks)
@@ -341,6 +496,31 @@ pub enum Message {
     Gain(usize, u32),
     /// `true` = +4dBu, `false` = -10dBV.
     Sensitivity(usize, bool),
+
+    /// Hardware 3-band + low-cut EQ (analog inputs only) — `usize` is
+    /// always the input index; the `Eq*Band*` variants carry the band
+    /// index (0-2) as their second field. See `tuxmix_core::channel::InputEq`.
+    EqEnabled(usize, bool),
+    EqBandType(usize, usize, EqBandType),
+    EqBandFreq(usize, usize, u16),
+    EqBandQ(usize, usize, f32),
+    EqBandGain(usize, usize, f32),
+    EqLowCutFreq(usize, u16),
+    EqLowCutSlope(usize, u8),
+
+    /// Output-channel index (not the submix pair — converted in the
+    /// handler via `DeviceHandle::outputs_one_per_pair`).
+    LoopbackChanged(usize, bool),
+    /// Toggles the stereo link/split state of `cid`'s pair — dispatches
+    /// to `set_input_pair_linked`/`set_playback_linked`/
+    /// `set_output_linked` depending on which kind `cid` is.
+    StereoLinkChanged(ChannelId, bool),
+    /// Global device settings, all in the `device_panel` drawer.
+    PitchChanged(f32),
+    WidthChanged(f32),
+    MsProcChanged(bool),
+    An12Changed(bool),
+    InputLinkChanged(bool),
 
     VolumeChanged(ChannelId, usize, f32),
     FaderPressed(ChannelId, usize, f32, Option<(f32, f32)>),
@@ -591,11 +771,11 @@ impl MeterAnim {
     }
 }
 
-pub fn new(mock: bool, osc_config: Option<OscConfig>) -> TuxMix {
+pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -> TuxMix {
     let mut device = if mock {
         DeviceHandle::open_mock()
     } else {
-        DeviceHandle::open_real().unwrap_or_else(|| {
+        DeviceHandle::open_real(backend.as_deref()).unwrap_or_else(|| {
             eprintln!("No device found. Use --mock for simulation.");
             DeviceHandle::open_mock()
         })
@@ -706,6 +886,38 @@ fn channel_order(state: &TuxMix) -> Vec<ChannelId> {
 /// sitting at different points on that curve produces wildly different dB
 /// swings (a channel near the bottom barely moves while one near unity
 /// swings hard). dB delta is what actually reads as "moving together."
+/// Routes a volume write through the output-pair link logic
+/// (`RmeDevice::set_output_volume`) when `cid` is an Output channel —
+/// so a linked pair always moves both channels together regardless of
+/// which path triggered the write (fader drag, reset, typed dB, OSC,
+/// grouped multi-select) — otherwise a plain `set_volume`. The single
+/// choke point every output-channel volume write should go through.
+fn set_channel_volume(state: &mut TuxMix, cid: ChannelId, out: usize, v: f32) {
+    let _ = match cid {
+        ChannelId::Input(ch) => state.device.set_input_volume(ch / 2, ch % 2, out, v),
+        ChannelId::Playback(ch) => state.device.set_playback_volume(ch / 2, ch % 2, out, v),
+        ChannelId::Output(ch) => state.device.set_output_volume(ch / 2, ch % 2, v),
+    };
+}
+
+/// Same idea as `set_channel_volume`, for mute.
+fn set_channel_mute(state: &mut TuxMix, cid: ChannelId, m: bool) {
+    let _ = match cid {
+        ChannelId::Input(ch) => state.device.set_input_mute(ch / 2, ch % 2, m),
+        ChannelId::Playback(ch) => state.device.set_playback_mute(ch / 2, ch % 2, m),
+        ChannelId::Output(ch) => state.device.set_output_mute(ch / 2, ch % 2, m),
+    };
+}
+
+/// Same idea as `set_channel_volume`, for solo.
+fn set_channel_solo(state: &mut TuxMix, cid: ChannelId, s: bool) {
+    let _ = match cid {
+        ChannelId::Input(ch) => state.device.set_input_solo(ch / 2, ch % 2, s),
+        ChannelId::Playback(ch) => state.device.set_playback_solo(ch / 2, ch % 2, s),
+        ChannelId::Output(ch) => state.device.set_output_solo(ch / 2, ch % 2, s),
+    };
+}
+
 fn apply_grouped_volume(state: &mut TuxMix, cid: ChannelId, out: usize, v: f32) {
     if state.selected.len() > 1 && state.selected.contains(&cid) {
         let old = state.device.volume(cid, out).unwrap_or(v);
@@ -713,11 +925,11 @@ fn apply_grouped_volume(state: &mut TuxMix, cid: ChannelId, out: usize, v: f32) 
         for sel in state.selected.clone() {
             let cur = state.device.volume(sel, out).unwrap_or(0.0);
             let new_vol = db_to_vol(vol_to_db(cur) + delta_db).clamp(0.0, 2.0);
-            let _ = state.device.set_volume(sel, out, new_vol);
+            set_channel_volume(state, sel, out, new_vol);
             notify_osc(state, OscOutbound::Volume(sel, out, new_vol));
         }
     } else {
-        let _ = state.device.set_volume(cid, out, v);
+        set_channel_volume(state, cid, out, v);
         notify_osc(state, OscOutbound::Volume(cid, out, v));
     }
 }
@@ -928,22 +1140,22 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::Mute(cid, m) => {
             if state.selected.len() > 1 && state.selected.contains(&cid) {
                 for sel in state.selected.clone() {
-                    let _ = state.device.set_mute(sel, m);
+                    set_channel_mute(state, sel, m);
                     notify_osc(state, OscOutbound::Mute(sel, m));
                 }
             } else {
-                let _ = state.device.set_mute(cid, m);
+                set_channel_mute(state, cid, m);
                 notify_osc(state, OscOutbound::Mute(cid, m));
             }
         }
         Message::Solo(cid, s) => {
             if state.selected.len() > 1 && state.selected.contains(&cid) {
                 for sel in state.selected.clone() {
-                    let _ = state.device.set_solo(sel, s);
+                    set_channel_solo(state, sel, s);
                     notify_osc(state, OscOutbound::Solo(sel, s));
                 }
             } else {
-                let _ = state.device.set_solo(cid, s);
+                set_channel_solo(state, cid, s);
                 notify_osc(state, OscOutbound::Solo(cid, s));
             }
         }
@@ -963,6 +1175,57 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 tuxmix_core::Sensitivity::Minus10dBV
             };
             let _ = state.device.set_sensitivity(idx, s);
+        }
+        Message::EqEnabled(idx, on) => {
+            let _ = state.device.set_eq_enabled(idx, on);
+        }
+        Message::EqBandType(idx, band, t) => {
+            let _ = state.device.set_eq_band_type(idx, band, t);
+        }
+        Message::EqBandFreq(idx, band, freq) => {
+            let _ = state.device.set_eq_band_freq(idx, band, freq);
+        }
+        Message::EqBandQ(idx, band, q) => {
+            let _ = state.device.set_eq_band_q(idx, band, q);
+        }
+        Message::EqBandGain(idx, band, gain) => {
+            let _ = state.device.set_eq_band_gain(idx, band, gain);
+        }
+        Message::EqLowCutFreq(idx, freq) => {
+            let _ = state.device.set_eq_low_cut_freq(idx, freq);
+        }
+        Message::EqLowCutSlope(idx, slope) => {
+            let _ = state.device.set_eq_low_cut_slope(idx, slope);
+        }
+        Message::LoopbackChanged(i, on) => {
+            let pair = if state.device.outputs_one_per_pair() {
+                i
+            } else {
+                i / 2
+            };
+            let _ = state.device.set_loopback(pair, on);
+        }
+        Message::StereoLinkChanged(cid, linked) => {
+            let _ = match cid {
+                ChannelId::Input(i) => state.device.set_input_pair_linked(i / 2, linked),
+                ChannelId::Playback(i) => state.device.set_playback_linked(i / 2, linked),
+                ChannelId::Output(i) => state.device.set_output_linked(i / 2, linked),
+            };
+        }
+        Message::PitchChanged(v) => {
+            let _ = state.device.set_pitch(v);
+        }
+        Message::WidthChanged(v) => {
+            let _ = state.device.set_width(v);
+        }
+        Message::MsProcChanged(on) => {
+            let _ = state.device.set_ms_proc(on);
+        }
+        Message::An12Changed(on) => {
+            let _ = state.device.set_an12(on);
+        }
+        Message::InputLinkChanged(on) => {
+            let _ = state.device.set_input_link(on);
         }
         Message::VolumeChanged(cid, out, v) => {
             apply_grouped_volume(state, cid, out, v);
@@ -984,11 +1247,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 // relative move — every selected fader snaps to the same
                 // absolute value, unlike a drag which preserves balance.
                 for sel in state.selected.clone() {
-                    let _ = state.device.set_volume(sel, out, default_vol);
+                    set_channel_volume(state, sel, out, default_vol);
                     notify_osc(state, OscOutbound::Volume(sel, out, default_vol));
                 }
             } else {
-                let _ = state.device.set_volume(cid, out, default_vol);
+                set_channel_volume(state, cid, out, default_vol);
                 notify_osc(state, OscOutbound::Volume(cid, out, default_vol));
             }
             if state.drag_range.is_some_and(|(dc, _, _)| dc == cid) {
@@ -1099,7 +1362,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                         ChannelId::Output(i) => i,
                         _ => state.sel_out,
                     };
-                    let _ = state.device.set_volume(cid, out, v);
+                    set_channel_volume(state, cid, out, v);
                 }
                 state.editing = None;
             }
@@ -1137,19 +1400,19 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             OscCommand::Volume(cid, out, v) => apply_grouped_volume(state, cid, out, v),
             OscCommand::Pan(cid, out, p) => apply_grouped_pan(state, cid, out, p),
             OscCommand::Mute(cid, m) => {
-                let _ = state.device.set_mute(cid, m);
+                set_channel_mute(state, cid, m);
                 notify_osc(state, OscOutbound::Mute(cid, m));
             }
             OscCommand::Solo(cid, s) => {
-                let _ = state.device.set_solo(cid, s);
+                set_channel_solo(state, cid, s);
                 notify_osc(state, OscOutbound::Solo(cid, s));
             }
             OscCommand::OutputVolume(id, v) => {
                 let cid = ChannelId::Output(id);
                 // `out` must equal the output channel index (see
-                // `strip_params`); `set_volume(Output(i), i, v)` writes
-                // output_for(i) and updates outputs[i].volume.
-                let _ = state.device.set_volume(cid, id, v);
+                // `strip_params`); `set_channel_volume` routes this
+                // through the output-pair link logic.
+                set_channel_volume(state, cid, id, v);
                 notify_osc(state, OscOutbound::OutputVolume(id, v));
             }
         },
@@ -1408,10 +1671,57 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
     .spacing(theme::SPACE_MD * scale)
     .align_y(iced::Alignment::Center);
 
+    let modifiers = state.modifiers;
+    let pitch_row = row![
+        text("Pitch")
+            .color(theme::TEXT_SEC)
+            .size(theme::TEXT_XS * scale),
+        knob(Knob {
+            value: settings.pitch_percent,
+            range: (-5.0, 5.0),
+            label: format!("{:+.1}%", settings.pitch_percent),
+            modifiers,
+            scale,
+            on_change: Box::new(|v| Message::PitchChanged(v.clamp(-5.0, 5.0))),
+            on_reset: Box::new(|| Message::PitchChanged(0.0)),
+        }),
+        text("Width")
+            .color(theme::TEXT_SEC)
+            .size(theme::TEXT_XS * scale),
+        knob(Knob {
+            value: settings.width,
+            range: (-1.0, 1.0),
+            label: format!("{:+.2}", settings.width),
+            modifiers,
+            scale,
+            on_change: Box::new(|v| Message::WidthChanged(v.clamp(-1.0, 1.0))),
+            on_reset: Box::new(|| Message::WidthChanged(0.0)),
+        }),
+    ]
+    .spacing(theme::SPACE_MD * scale)
+    .align_y(iced::Alignment::Center);
+
+    let toggle_row = row![
+        text("Global")
+            .color(theme::TEXT_SEC)
+            .size(theme::TEXT_XS * scale),
+        spdif_toggle("MS Proc", settings.ms_proc, Message::MsProcChanged),
+        spdif_toggle("AN 1>2", settings.an12, Message::An12Changed),
+        spdif_toggle(
+            "Input Link",
+            settings.input_link,
+            Message::InputLinkChanged
+        ),
+    ]
+    .spacing(theme::SPACE_MD * scale)
+    .align_y(iced::Alignment::Center);
+
     container(
-        column![header, clock_row, rate_row, spdif_row]
-            .spacing(theme::SPACE_LG * scale)
-            .width(Length::Fill),
+        column![
+            header, clock_row, rate_row, spdif_row, pitch_row, toggle_row
+        ]
+        .spacing(theme::SPACE_LG * scale)
+        .width(Length::Fill),
     )
     .style(theme::top_bar)
     .padding(theme::SPACE_MD * scale)
@@ -1594,7 +1904,11 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
             .size(theme::TEXT_XL * scale),
         device_chip,
         tab_toggle,
-        iced::widget::Space::new().width(Length::Fill),
+        // A small flexible pusher rather than the whole remaining width —
+        // `session` below claims the bulk of it (`FillPortion(20)`), so
+        // this just keeps it from being flush against `tab_toggle` on a
+        // wide window without competing with it for space on a narrow one.
+        iced::widget::Space::new().width(Length::FillPortion(1)),
     ]
     .spacing(theme::SPACE_XXL)
     .align_y(iced::Alignment::Center);
@@ -1609,7 +1923,20 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
                 .on_press(Message::ToggleOscLog),
         );
     }
-    bar = bar.push(session);
+    // `session` (Scene/Save/load/Submix/Clock) has no natural upper bound
+    // on its own width — at the default 1280px window it used to overflow
+    // past the window's right edge entirely, making the Clock Source
+    // button (which opens `device_panel`) unreachable without resizing
+    // wider first. A horizontal scrollable clips it to whatever room
+    // `FillPortion(20)` actually leaves it and offers a scrollbar instead
+    // of silently running off-screen — same overflow idiom `responsive_row`
+    // already uses for strip rows, applied here too.
+    bar = bar.push(
+        scrollable(session)
+            .direction(scrollable::Direction::Horizontal(theme::thin_scrollbar()))
+            .style(theme::scrollable)
+            .width(Length::FillPortion(20)),
+    );
 
     container(bar)
         .style(theme::top_bar)
@@ -1650,6 +1977,7 @@ fn strip_params<'a>(
         vol: 0.0,
         pan: 0,
         meter: fader::MeterFrame::still(0.0),
+        meter_available: false,
         has_48v: false,
         has_pad: false,
         phantom: false,
@@ -1659,6 +1987,10 @@ fn strip_params<'a>(
         gain_max: 0,
         has_sensitivity: false,
         sensitivity_plus4: false,
+        has_eq: false,
+        eq_enabled: false,
+        loopback: false,
+        stereo_linked: false,
         open_flyout: state.flyout_open.and_then(|(c, k)| (c == cid).then_some(k)),
         mute: false,
         solo: false,
@@ -1688,6 +2020,7 @@ fn strip_params<'a>(
                     .get(i)
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
+                meter_available: state.device.has_input_meters(),
                 has_48v,
                 has_pad: has_48v,
                 phantom: ch.phantom,
@@ -1697,6 +2030,9 @@ fn strip_params<'a>(
                 gain_max: ch.gain_max.unwrap_or(0),
                 has_sensitivity: ch.sensitivity.is_some(),
                 sensitivity_plus4: ch.sensitivity == Some(Sensitivity::Plus4dBu),
+                has_eq: ch.eq.is_some(),
+                eq_enabled: ch.eq.is_some_and(|e| e.enabled),
+                stereo_linked: state.device.input_pair_linked(i / 2),
                 mute: ch.mute,
                 solo: ch.solo,
                 default_vol: 1.0,
@@ -1715,6 +2051,8 @@ fn strip_params<'a>(
                     .get(i)
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
+                meter_available: state.device.has_playback_meters(),
+                stereo_linked: state.device.playback_linked(i / 2),
                 mute: ch.mute,
                 solo: ch.solo,
                 default_vol: 1.0,
@@ -1733,6 +2071,13 @@ fn strip_params<'a>(
                     .get(i)
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
+                // Host-computed from routed sources — only as real as
+                // whichever of input/playback meters feed it (see
+                // `DeviceHandle::output_meters`).
+                meter_available: state.device.has_input_meters()
+                    || state.device.has_playback_meters(),
+                loopback: ch.loopback,
+                stereo_linked: state.device.output_linked(i / 2),
                 mute: ch.mute,
                 solo: ch.solo,
                 default_vol: 1.0,
@@ -1912,13 +2257,11 @@ fn route_popover(state: &TuxMix, width: f32) -> Element<'_, Message> {
         .into()
 }
 
-/// The settings flyout's content — 48V/PAD, sensitivity, and gain, gated
-/// exactly like the strip itself used to gate them inline (built from the
-/// same `strip_params()` every strip already uses, so that has_48v/etc.
-/// logic isn't duplicated here). Non-`Input` channels never have this
-/// flyout open in the first place (see `header_row`'s `has_settings`
-/// gate), so the early-return is just a defensive fallback, not a real
-/// path.
+/// The settings flyout's content — every channel kind gets the STEREO
+/// link/split toggle; Input additionally gets 48V/PAD/sensitivity/gain,
+/// gated exactly like the strip itself used to gate them inline (built
+/// from the same `strip_params()` every strip already uses, so that
+/// has_48v/etc. logic isn't duplicated here).
 ///
 /// Gain used to be excluded: a `Knob` (Canvas widget) placed inside this
 /// flyout back when it was a `Stack`-based overlay broke input handling
@@ -1928,12 +2271,31 @@ fn route_popover(state: &TuxMix, width: f32) -> Element<'_, Message> {
 /// moved in with the rest.
 fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message> {
     let scale = state.ui_scale;
-    let ChannelId::Input(idx) = cid else {
-        return container(iced::widget::Space::new()).into();
-    };
     let p = strip_params(state, cid, state.sel_out);
 
     let mut col = column![].spacing(theme::SPACE_SM * scale);
+
+    // Stereo link/split — every channel kind has this (TotalMix shows
+    // the button on every strip, not just AN1/2 or hardware outputs; see
+    // `RmeDevice::{input_pair,playback,output}_linked`'s doc comments for
+    // why this is a pure display/control-grouping concept, not tied to
+    // a specific hardware register).
+    col = col.push(
+        button(text("STEREO").size(theme::TEXT_SM * scale))
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+            .width(Length::Fill)
+            .style(theme::toggle_button(p.stereo_linked, theme::ACCENT))
+            .on_press(Message::StereoLinkChanged(cid, !p.stereo_linked)),
+    );
+
+    let ChannelId::Input(idx) = cid else {
+        return container(col)
+            .padding(theme::SPACE_SM * scale)
+            .width(Length::Fixed(width))
+            .style(theme::top_bar)
+            .clip(true)
+            .into();
+    };
 
     if p.has_gain {
         let gain_max = p.gain_max;
@@ -2010,6 +2372,168 @@ fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, M
         .into()
 }
 
+/// The EQ flyout's content: enable toggle, 3 parametric bands (type/freq/
+/// Q/gain), and the low-cut filter (freq/slope) — analog inputs only
+/// (`ch.eq: Some(_)`, see `InputChannel::eq`). Same "pushes the row"
+/// shape as `settings_popover`, just wider (`strip::EQ_FLYOUT_W`) to fit
+/// 3 knobs per band row.
+///
+/// Frequency knobs are linear over 20-20000 Hz for now, not log-scaled —
+/// a real audio frequency control wants log, but that's a `Knob` widget
+/// enhancement (visual polish), not part of this pass, which is about
+/// making the control reachable at all.
+fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message> {
+    let scale = state.ui_scale;
+    let ChannelId::Input(idx) = cid else {
+        return container(iced::widget::Space::new()).into();
+    };
+    let Some(eq) = state.device.inputs()[idx].eq else {
+        return container(iced::widget::Space::new()).into();
+    };
+    let modifiers = state.modifiers;
+
+    let mut col = column![].spacing(theme::SPACE_SM * scale);
+
+    col = col.push(
+        button(text("EQ Enabled").size(theme::TEXT_SM * scale))
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+            .width(Length::Fill)
+            .style(theme::toggle_button(eq.enabled, theme::ACCENT))
+            .on_press(Message::EqEnabled(idx, !eq.enabled)),
+    );
+
+    for band in 0..3 {
+        let b = eq.bands[band];
+        let type_label = match b.band_type {
+            EqBandType::Off => "Off",
+            EqBandType::Bell => "Bell",
+            EqBandType::LowShelf => "Low Shelf",
+            EqBandType::HighShelf => "High Shelf",
+        };
+        let next_type = match b.band_type {
+            EqBandType::Off => EqBandType::Bell,
+            EqBandType::Bell => EqBandType::LowShelf,
+            EqBandType::LowShelf => EqBandType::HighShelf,
+            EqBandType::HighShelf => EqBandType::Off,
+        };
+        col = col.push(
+            row![
+                text(format!("Band {}", band + 1))
+                    .size(theme::TEXT_SM * scale)
+                    .color(theme::TEXT_SEC),
+                button(text(type_label).size(theme::TEXT_XS * scale))
+                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+                    .style(theme::plain_button)
+                    .on_press(Message::EqBandType(idx, band, next_type)),
+            ]
+            .spacing(theme::SPACE_TIGHT)
+            .align_y(iced::Alignment::Center)
+            .width(Length::Fill),
+        );
+        col = col.push(
+            row![
+                container(hint(
+                    knob(Knob {
+                        value: b.freq_hz as f32,
+                        range: (20.0, 20_000.0),
+                        label: format!("{}Hz", b.freq_hz),
+                        modifiers,
+                        scale,
+                        on_change: Box::new(move |v| {
+                            Message::EqBandFreq(idx, band, v.round().clamp(20.0, 20_000.0) as u16)
+                        }),
+                        on_reset: Box::new(move || Message::EqBandFreq(idx, band, 1000)),
+                    }),
+                    "Band frequency",
+                    scale,
+                ))
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+                container(hint(
+                    knob(Knob {
+                        value: b.q,
+                        range: (0.05, 10.0),
+                        label: format!("{:.2}", b.q),
+                        modifiers,
+                        scale,
+                        on_change: Box::new(move |v| Message::EqBandQ(idx, band, v.clamp(0.05, 10.0))),
+                        on_reset: Box::new(move || Message::EqBandQ(idx, band, 0.7)),
+                    }),
+                    "Band Q",
+                    scale,
+                ))
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+                container(hint(
+                    knob(Knob {
+                        value: b.gain_db,
+                        range: (-24.0, 24.0),
+                        label: format!("{:+.1}", b.gain_db),
+                        modifiers,
+                        scale,
+                        on_change: Box::new(move |v| {
+                            Message::EqBandGain(idx, band, v.clamp(-24.0, 24.0))
+                        }),
+                        on_reset: Box::new(move || Message::EqBandGain(idx, band, 0.0)),
+                    }),
+                    "Band gain",
+                    scale,
+                ))
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+            ]
+            .spacing(theme::SPACE_TIGHT)
+            .width(Length::Fill),
+        );
+    }
+
+    col = col.push(
+        text("Low Cut")
+            .size(theme::TEXT_SM * scale)
+            .color(theme::TEXT_SEC),
+    );
+    col = col.push(
+        container(hint(
+            knob(Knob {
+                value: eq.low_cut_freq_hz as f32,
+                range: (20.0, 20_000.0),
+                label: format!("{}Hz", eq.low_cut_freq_hz),
+                modifiers,
+                scale,
+                on_change: Box::new(move |v| {
+                    Message::EqLowCutFreq(idx, v.round().clamp(20.0, 20_000.0) as u16)
+                }),
+                on_reset: Box::new(move || Message::EqLowCutFreq(idx, 20)),
+            }),
+            "Low-cut frequency",
+            scale,
+        ))
+        .width(Length::Fill)
+        .center_x(Length::Fill),
+    );
+    let mut slope_row = row![].spacing(theme::SPACE_TIGHT).width(Length::Fill);
+    for slope in [6u8, 12, 18, 24] {
+        slope_row = slope_row.push(
+            button(text(format!("{slope}")).size(theme::TEXT_XS * scale))
+                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
+                .width(Length::Fill)
+                .style(theme::toggle_button(
+                    eq.low_cut_slope_db_oct == slope,
+                    theme::ACCENT,
+                ))
+                .on_press(Message::EqLowCutSlope(idx, slope)),
+        );
+    }
+    col = col.push(slope_row);
+
+    container(col)
+        .padding(theme::SPACE_SM * scale)
+        .width(Length::Fixed(width))
+        .style(theme::top_bar)
+        .clip(true)
+        .into()
+}
+
 /// Layers the open route flyout on top of a strip row, positioned by
 /// left-padding computed from `open_x` (the open strip's right edge within
 /// the row — see `mixer_view`). `None` (nothing open, or the open flyout
@@ -2072,13 +2596,23 @@ fn with_flyout<'a>(
 }
 
 fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
+    // Grouped by pair, TotalMix-style: a linked pair (the default) shows
+    // as ONE strip driving both channels; a split pair shows its two
+    // channels independently — see `RmeDevice::input_pair_linked`. Pairs
+    // never straddle a channel-type boundary (the device profile always
+    // groups same-type channels together), so iterating by pair instead
+    // of by individual channel doesn't change where the type dividers
+    // land.
     let mut input_strips = row![].spacing(theme::SPACE_MD);
     let mut input_width = 0.0f32;
     let mut input_item_count = 0usize;
     let mut input_open_x: Option<f32> = None;
     let mut prev_type: Option<ChannelType> = None;
-    for (i, ch) in state.device.inputs().iter().enumerate() {
-        if prev_type.is_some_and(|t| t != ch.channel_type) {
+    let n_input_pairs = state.device.inputs().len() / 2;
+    for pair in 0..n_input_pairs {
+        let l = pair * 2;
+        let ch_type = state.device.inputs()[l].channel_type;
+        if prev_type.is_some_and(|t| t != ch_type) {
             // `rule::vertical` hardcodes `height: Length::Fill` with no way
             // to override it — inside this row (itself `Length::Shrink`,
             // sized to its tallest strip), that Fill child was pulling the
@@ -2093,61 +2627,147 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             input_width += 1.0;
             input_item_count += 1;
         }
-        prev_type = Some(ch.channel_type);
-        let cid = ChannelId::Input(i);
-        let strip_widget = strip::strip(strip_params(state, cid, state.sel_out));
-        let mut item_width = rendered_strip_width(state, cid);
-        // Settings pushes the row instead of overlaying it (see
-        // `with_flyout`'s doc comment for why) — done here, by widening
-        // this loop iteration's own item, rather than in `with_flyout`,
-        // since ordinary `row!` layout already pushes every later sibling
-        // over for free once this one item is wider.
-        if state.flyout_open == Some((cid, strip::FlyoutKind::Settings)) {
-            // Same width as the strip itself (see the reference design),
-            // not the Route flyout's own fixed `FLYOUT_W` — a dropdown
-            // list of bus names and a settings panel of knobs/buttons
-            // don't need to match each other's width, just their own
-            // strip's.
-            let panel_w = item_width;
-            input_strips = input_strips.push(
-                row![strip_widget, settings_popover(state, cid, panel_w)].spacing(theme::SPACE_MD),
-            );
-            item_width += panel_w + theme::SPACE_MD;
-        } else {
-            input_strips = input_strips.push(strip_widget);
-        }
-        input_width += item_width;
-        input_item_count += 1;
-        if state.flyout_open.map(|(c, _)| c) == Some(cid) {
-            // Gaps placed so far (`item_count - 1`, spacing is between
-            // items) plus the content accumulated up to and including this
-            // strip is exactly its right edge on screen.
-            input_open_x = Some(input_width + (input_item_count - 1) as f32 * theme::SPACE_MD);
+        prev_type = Some(ch_type);
+
+        let linked = state.device.input_pair_linked(pair);
+        let pair_channels = [l, l + 1];
+        let shown: &[usize] = if linked { &pair_channels[..1] } else { &pair_channels[..] };
+        for &ch_idx in shown {
+            let cid = ChannelId::Input(ch_idx);
+            let mut params = strip_params(state, cid, state.sel_out);
+            if linked {
+                // Combined "AN1/2"-style label for the linked bus. EQ
+                // (idx < 4 only) still only reaches this representative
+                // (left) channel while shown combined — split the pair
+                // to reach the right channel's own EQ.
+                if let Some(right) = state.device.inputs().get(l + 1) {
+                    params.name = pair_bus_label(&params.name, &right.name);
+                }
+            }
+            let strip_widget = strip::strip(params);
+            let mut item_width = rendered_strip_width(state, cid);
+            // Settings/EQ push the row instead of overlaying it (see
+            // `with_flyout`'s doc comment for why) — done here, by
+            // widening this loop iteration's own item, rather than in
+            // `with_flyout`, since ordinary `row!` layout already pushes
+            // every later sibling over for free once this one item is
+            // wider.
+            if state.flyout_open == Some((cid, strip::FlyoutKind::Settings)) {
+                // Same width as the strip itself (see the reference
+                // design), not the Route flyout's own fixed `FLYOUT_W` —
+                // a dropdown list of bus names and a settings panel of
+                // knobs/buttons don't need to match each other's width,
+                // just their own strip's.
+                let panel_w = item_width;
+                input_strips = input_strips.push(
+                    row![strip_widget, settings_popover(state, cid, panel_w)]
+                        .spacing(theme::SPACE_MD),
+                );
+                item_width += panel_w + theme::SPACE_MD;
+            } else if state.flyout_open == Some((cid, strip::FlyoutKind::Eq)) {
+                // Unlike Settings, sized to fit 3 knobs per band row rather
+                // than matching the (much narrower) strip width — see
+                // `strip::EQ_FLYOUT_W`'s doc comment.
+                let panel_w = strip::EQ_FLYOUT_W;
+                input_strips = input_strips.push(
+                    row![strip_widget, eq_popover(state, cid, panel_w)].spacing(theme::SPACE_MD),
+                );
+                item_width += panel_w + theme::SPACE_MD;
+            } else {
+                input_strips = input_strips.push(strip_widget);
+            }
+            input_width += item_width;
+            input_item_count += 1;
+            if state.flyout_open.map(|(c, _)| c) == Some(cid) {
+                // Gaps placed so far (`item_count - 1`, spacing is between
+                // items) plus the content accumulated up to and including this
+                // strip is exactly its right edge on screen.
+                input_open_x =
+                    Some(input_width + (input_item_count - 1) as f32 * theme::SPACE_MD);
+            }
         }
     }
     input_width += input_item_count.saturating_sub(1) as f32 * theme::SPACE_MD;
 
+    // Same pair-grouping idea, no channel-type dividers to worry about.
     let mut pb_strips = row![].spacing(theme::SPACE_MD);
     let mut pb_width = 0.0f32;
+    let mut pb_item_count = 0usize;
     let mut pb_open_x: Option<f32> = None;
-    for i in 0..state.device.playbacks().len() {
-        let cid = ChannelId::Playback(i);
-        pb_strips = pb_strips.push(strip::strip(strip_params(state, cid, state.sel_out)));
-        pb_width += rendered_strip_width(state, cid);
-        if state.flyout_open.map(|(c, _)| c) == Some(cid) {
-            pb_open_x = Some(pb_width + i as f32 * theme::SPACE_MD);
+    let n_pb_pairs = state.device.playbacks().len() / 2;
+    for pair in 0..n_pb_pairs {
+        let l = pair * 2;
+        let linked = state.device.playback_linked(pair);
+        let pair_channels = [l, l + 1];
+        let shown: &[usize] = if linked { &pair_channels[..1] } else { &pair_channels[..] };
+        for &ch_idx in shown {
+            let cid = ChannelId::Playback(ch_idx);
+            let mut params = strip_params(state, cid, state.sel_out);
+            if linked {
+                if let Some(right) = state.device.playbacks().get(l + 1) {
+                    params.name = pair_bus_label(&params.name, &right.name);
+                }
+            }
+            let strip_widget = strip::strip(params);
+            let mut item_width = rendered_strip_width(state, cid);
+            if state.flyout_open == Some((cid, strip::FlyoutKind::Settings)) {
+                let panel_w = item_width;
+                pb_strips = pb_strips.push(
+                    row![strip_widget, settings_popover(state, cid, panel_w)]
+                        .spacing(theme::SPACE_MD),
+                );
+                item_width += panel_w + theme::SPACE_MD;
+            } else {
+                pb_strips = pb_strips.push(strip_widget);
+            }
+            pb_width += item_width;
+            pb_item_count += 1;
+            if state.flyout_open.map(|(c, _)| c) == Some(cid) {
+                pb_open_x = Some(pb_width + (pb_item_count - 1) as f32 * theme::SPACE_MD);
+            }
         }
     }
-    pb_width += state.device.playbacks().len().saturating_sub(1) as f32 * theme::SPACE_MD;
+    pb_width += pb_item_count.saturating_sub(1) as f32 * theme::SPACE_MD;
 
+    // Grouped by pair, TotalMix-style: a linked pair (the default) shows
+    // as ONE bus strip driving both channels; a split pair shows its two
+    // channels as independent strips — see `RmeDevice::output_linked`.
+    // Outputs have no Route flyout (a single master, not a per-submix
+    // crosspoint), only Settings (the STEREO toggle) — pushed the same
+    // way Input/Playback do, no `with_flyout`/open_x tracking needed.
     let mut out_strips = row![].spacing(theme::SPACE_MD);
     let mut out_width = 0.0f32;
-    for i in 0..state.device.outputs().len() {
-        let cid = ChannelId::Output(i);
-        out_strips = out_strips.push(strip::strip(strip_params(state, cid, state.sel_out)));
-        out_width += rendered_strip_width(state, cid);
+    let mut out_item_count = 0usize;
+    for pair in 0..state.device.output_pair_count() {
+        let l = pair * 2;
+        let linked = state.device.output_linked(pair);
+        let pair_channels = [l, l + 1];
+        let shown: &[usize] = if linked { &pair_channels[..1] } else { &pair_channels[..] };
+        for &ch_idx in shown {
+            let cid = ChannelId::Output(ch_idx);
+            let mut params = strip_params(state, cid, state.sel_out);
+            if linked {
+                if let Some(right) = state.device.outputs().get(l + 1) {
+                    params.name = pair_bus_label(&params.name, &right.name);
+                }
+            }
+            let strip_widget = strip::strip(params);
+            let mut item_width = rendered_strip_width(state, cid);
+            if state.flyout_open == Some((cid, strip::FlyoutKind::Settings)) {
+                let panel_w = item_width;
+                out_strips = out_strips.push(
+                    row![strip_widget, settings_popover(state, cid, panel_w)]
+                        .spacing(theme::SPACE_MD),
+                );
+                item_width += panel_w + theme::SPACE_MD;
+            } else {
+                out_strips = out_strips.push(strip_widget);
+            }
+            out_width += item_width;
+            out_item_count += 1;
+        }
     }
-    out_width += state.device.outputs().len().saturating_sub(1) as f32 * theme::SPACE_MD;
+    out_width += out_item_count.saturating_sub(1) as f32 * theme::SPACE_MD;
 
     // `page()`'s own horizontal padding, plus a small safety margin so a
     // borderline-fitting row biases toward scrolling instead of clipping.
@@ -2318,7 +2938,7 @@ mod tests {
 
     #[test]
     fn scale_clamps_to_min_when_window_is_very_narrow() {
-        let mut state = new(true, None);
+        let mut state = new(true, None, None);
         state.window_width = 50.0;
         recompute_ui_scale(&mut state);
         assert_eq!(state.ui_scale, crate::theme::SCALE_MIN);
@@ -2326,7 +2946,7 @@ mod tests {
 
     #[test]
     fn scale_clamps_to_max_when_window_is_very_wide() {
-        let mut state = new(true, None);
+        let mut state = new(true, None, None);
         state.window_width = 20_000.0;
         recompute_ui_scale(&mut state);
         assert_eq!(state.ui_scale, crate::theme::SCALE_MAX);
@@ -2334,7 +2954,7 @@ mod tests {
 
     #[test]
     fn width_scale_exactly_fits_the_widest_row_at_the_solved_boundary() {
-        let mut state = new(true, None);
+        let mut state = new(true, None, None);
         let (scaling, fixed) = widest_row_width_parts(&state);
         // Inverse of `recompute_ui_scale`'s own `available_width` math —
         // the exact window width that makes `scale == 1.0` the answer.
@@ -2351,7 +2971,7 @@ mod tests {
 
     #[test]
     fn scale_grows_monotonically_with_window_width() {
-        let mut state = new(true, None);
+        let mut state = new(true, None, None);
         state.window_width = 600.0;
         recompute_ui_scale(&mut state);
         let narrow = state.ui_scale;
@@ -2373,11 +2993,11 @@ mod tests {
 
     #[test]
     fn collapsing_a_strip_shrinks_the_row_it_belongs_to() {
-        let state = new(true, None);
+        let state = new(true, None, None);
         let (before, _) =
             row_width_parts(&state, state.device.inputs().len(), ChannelId::Input, None);
 
-        let mut collapsed_state = new(true, None);
+        let mut collapsed_state = new(true, None, None);
         collapsed_state.collapsed.insert(ChannelId::Input(0));
         let (after, _) = row_width_parts(
             &collapsed_state,

@@ -53,17 +53,27 @@ const ICON_BTN_H: f32 = 14.0;
 /// reference design), not a fixed constant — see `FlyoutKind`.
 pub(crate) const FLYOUT_W: f32 = 140.0;
 
+/// Width (at `scale == 1.0`) of the EQ flyout — wide enough for 3 knobs
+/// (freq/Q/gain) side by side per band (`knob()`'s own intrinsic width is
+/// `DIAMETER + 2*MARGIN` from `widgets/knob.rs`, roughly 56px at scale 1),
+/// unlike Settings which matches the strip's own (much narrower) width.
+pub(crate) const EQ_FLYOUT_W: f32 = 220.0;
+
 /// Which flyout (at most one, and only one per strip) is open — the gear
 /// icon opens `Settings` (48V/PAD/Sensitivity, moved out of the strip's
 /// own vertical flow so it doesn't grow/shrink the whole card; Gain stays
 /// inline instead — see `app.rs::settings_popover`'s doc comment for why),
-/// the route trigger opens `Route` (which output bus). Both render as the
-/// same kind of animated panel sliding out over the strip's right
-/// neighbor — see `app.rs::with_flyout`.
+/// the route trigger opens `Route` (which output bus), and the EQ trigger
+/// (analog inputs only) opens `Eq` (3-band + low-cut, see
+/// `app.rs::eq_popover`). All render as the same kind of animated panel
+/// sliding out over the strip's right neighbor — see `app.rs::with_flyout`
+/// (Route) and `mixer_view`'s input loop (Settings/Eq, which push the row
+/// instead).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlyoutKind {
     Route,
     Settings,
+    Eq,
 }
 
 /// The full (uncollapsed) width for a given channel — every channel kind
@@ -110,6 +120,9 @@ pub struct StripParams<'a> {
     pub vol: f32,
     pub pan: i8,
     pub meter: MeterFrame,
+    /// Whether `meter` is a real reading on the active backend — see
+    /// `fader::draw_meter`'s doc comment.
+    pub meter_available: bool,
     pub has_48v: bool,
     pub has_pad: bool,
     pub phantom: bool,
@@ -124,6 +137,19 @@ pub struct StripParams<'a> {
     pub has_sensitivity: bool,
     /// `true` = +4dBu, `false` = -10dBV.
     pub sensitivity_plus4: bool,
+    /// Whether this input has an EQ strip at all (the 4 analog inputs
+    /// only — see `InputChannel::eq`).
+    pub has_eq: bool,
+    /// Whether the EQ is currently engaged — lights up the trigger button
+    /// even when its flyout isn't open, like the 48V/PAD toggles.
+    pub eq_enabled: bool,
+    /// Output-only: `OutputChannel::loopback`.
+    pub loopback: bool,
+    /// Whether this channel's pair is currently a linked stereo bus
+    /// (`RmeDevice::{input_pair,playback,output}_linked`, whichever
+    /// matches `cid`'s kind) — TotalMix's default, shown/toggled from
+    /// the Settings flyout for every channel kind.
+    pub stereo_linked: bool,
     /// Which flyout (if any) is currently open *for this strip* — lights
     /// up the matching trigger (gear icon for `Settings`, the route
     /// button for `Route`); `app.rs` owns the actual popover content.
@@ -164,7 +190,11 @@ fn centered_label<'a>(s: &'a str, size: f32) -> Element<'a, Message> {
 /// PAD) that read as pro-audio jargon to anyone not already fluent in it.
 /// A short delay so it doesn't flash on every incidental mouse-over while
 /// moving across the strip toward something else.
-fn hint<'a>(content: impl Into<Element<'a, Message>>, label: &'a str, scale: f32) -> Element<'a, Message> {
+pub(crate) fn hint<'a>(
+    content: impl Into<Element<'a, Message>>,
+    label: &'a str,
+    scale: f32,
+) -> Element<'a, Message> {
     tooltip(
         content,
         container(text(label).size(theme::TEXT_XS * scale).color(theme::TEXT_PRIMARY))
@@ -250,7 +280,12 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         text(short_label(&p.name).to_string()).size(theme::TEXT_SM * scale),
         mute_btn,
         solo_btn,
-        container(vu_meter(p.meter, COLLAPSED_METER_H * scale, scale))
+        container(vu_meter(
+            p.meter,
+            COLLAPSED_METER_H * scale,
+            scale,
+            p.meter_available,
+        ))
             .width(Length::Fill)
             .center_x(Length::Fill),
         expand_btn,
@@ -311,7 +346,10 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     let scale = p.scale;
     let btn_h = 18.0 * scale;
 
-    let has_settings = p.has_48v || p.has_pad || p.has_sensitivity || p.has_gain;
+    // Every channel kind has at least the STEREO link/split toggle now
+    // (see `app.rs::settings_popover`) — 48V/PAD/Sensitivity/Gain are
+    // just the input-only additions to the same panel.
+    let has_settings = true;
     let header = header_row(&p.name, p.type_tag, scale);
 
     let mute_btn = hint(
@@ -390,6 +428,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         range: p.drag_range.unwrap_or((0.0, 2.0)),
         default_value: default_vol,
         meter: p.meter,
+        meter_available: p.meter_available,
         height: fader_h,
         show_meter: true,
         modifiers: p.modifiers,
@@ -423,6 +462,19 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
                 .style(theme::toggle_button(settings_open, theme::ACCENT))
                 .on_press(Message::ToggleFlyout(cid, FlyoutKind::Settings)),
             if settings_open { "Hide settings" } else { "Show settings (48V/PAD/Sensitivity)" },
+            scale,
+        ));
+    }
+    if p.has_eq {
+        let eq_open = p.open_flyout == Some(FlyoutKind::Eq);
+        icon_col = icon_col.push(hint(
+            button(centered_label("EQ", theme::TEXT_MICRO * scale))
+                .padding(0)
+                .width(ICON_BTN_W * scale)
+                .height(ICON_BTN_H * scale)
+                .style(theme::toggle_button(eq_open || p.eq_enabled, theme::ACCENT))
+                .on_press(Message::ToggleFlyout(cid, FlyoutKind::Eq)),
+            if eq_open { "Hide EQ" } else { "Show EQ (3-band + low cut)" },
             scale,
         ));
     }
@@ -491,6 +543,29 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
                 .style(theme::toggle_button(p.open_flyout == Some(FlyoutKind::Route), theme::ACCENT))
                 .on_press(Message::ToggleFlyout(cid, FlyoutKind::Route)),
                 "Change output bus",
+                scale,
+            ))
+            .padding(iced::Padding {
+                top: theme::SPACE_MD * scale,
+                ..iced::Padding::ZERO
+            })
+            .width(Length::Fill)
+            .center_x(Length::Fill),
+        );
+    } else if let ChannelId::Output(i) = cid {
+        // Outputs have no route trigger (a single master, not a
+        // per-submix crosspoint) — the same row slot shows the loopback
+        // toggle instead (`OutputChannel::loopback`, bReq 0x15: feeds the
+        // input signal back into this output's own playback path). The
+        // STEREO link/split toggle lives in the Settings flyout now
+        // (`app.rs::settings_popover`), same as every other channel kind.
+        rows = rows.push(
+            container(hint(
+                button(text("LOOP").size(theme::TEXT_XS * scale))
+                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+                    .style(theme::toggle_button(p.loopback, theme::ACCENT))
+                    .on_press(Message::LoopbackChanged(i, !p.loopback)),
+                "Loopback — feed the input signal back into this output",
                 scale,
             ))
             .padding(iced::Padding {

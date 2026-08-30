@@ -208,6 +208,36 @@ impl BabyfaceUsb {
         self.send_all(&reqs)
     }
 
+    /// Set ONE channel (`side`: 0=left, 1=right) of an output's master
+    /// fader — for a pair currently split into two independent mono
+    /// channels. See [`protocol::set_output_master_channel`].
+    pub fn set_output_master_channel(
+        &mut self,
+        out: Output,
+        side: usize,
+        volume_16: u16,
+        volume_8: u8,
+    ) -> Result<(), Error> {
+        let reqs =
+            protocol::set_output_master_channel(out, side, volume_16, volume_8, &mut self.flag);
+        self.send_all(&reqs)
+    }
+
+    /// Mute/unmute ONE channel (`side`: 0=left, 1=right) of an output
+    /// master. See [`protocol::set_output_master_mute_channel`].
+    pub fn set_output_master_mute_channel(
+        &mut self,
+        out: Output,
+        side: usize,
+        muted: bool,
+        restore_16: u16,
+        restore_8: u8,
+    ) -> Result<(), Error> {
+        let reqs =
+            protocol::set_output_master_mute_channel(out, side, muted, restore_16, restore_8);
+        self.send_all(&reqs)
+    }
+
     /// Write the full preamp state for one mic (48V, PAD, four gains).
     /// `mic` is 0-3 (AN1-AN4); see [`protocol::set_preamp`].
     pub fn set_preamp(

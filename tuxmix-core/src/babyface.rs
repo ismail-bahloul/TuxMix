@@ -546,8 +546,11 @@ impl RmeDevice for BabyfacePro {
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,
+                input_link: true,
+                output_link: Vec::new(),
+                input_pair_link: Vec::new(),
             },
-            linked: false,
+            linked: true,
         };
         device.attach_mixer_elements();
         Ok(device)
@@ -1072,6 +1075,7 @@ impl RmeDevice for BabyfacePro {
             selem.set_playback_switch(SelemChannelId::mono(), linked as i32)?;
         }
         self.linked = linked;
+        self.settings.input_link = linked;
         Ok(())
     }
 
@@ -1150,7 +1154,7 @@ impl RmeDevice for BabyfacePro {
     fn capture_scene(&self) -> Scene {
         Scene {
             name: "Untitled".into(),
-            model: self.profile.model_name.to_string(),
+            model: self.canonical_model().to_string(),
             inputs: self.inputs.clone(),
             playbacks: self.playbacks.clone(),
             outputs: self.outputs.clone(),
@@ -1159,7 +1163,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn apply_scene(&mut self, scene: &Scene) -> Result<(), Error> {
-        scene.check_compatible(self.profile.model_name)?;
+        scene.check_compatible(self.canonical_model())?;
         for (i, saved) in scene.inputs.iter().enumerate() {
             for (out, &v) in saved.volumes.iter().enumerate() {
                 self.set_volume(ChannelId::Input(i), out, v)?;
