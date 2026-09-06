@@ -45,7 +45,12 @@ Two ways to get sound from the Babyface Pro FS:
 - The GUI/TUI are functionally complete; remaining work is visual
   polish (see `GUI-NOTES.md`).
 - The ALSA backend (`tuxmix-core`'s `alsa` feature, driving the kernel
-  driver's controls) is hardware-validated as of 2026-08-28.
+  driver's controls) is hardware-validated as of 2026-08-28. Input/
+  Playback Mute and Solo on this backend didn't actually reach the
+  hardware until 2026-09-06 (they were in-memory only, a silent gap
+  the USB backend never had) — now ported from the USB backend's own
+  hardware-validated crosspoint-zeroing behavior and hardware-validated
+  in turn.
 - See the sibling driver repo for the kernel-side status.
 
 ## Build

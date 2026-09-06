@@ -477,3 +477,1223 @@ verified (build + tests + headless visual/pixel checks).
 
 The Done items alone already make TuxMix the most versatile RME
 controller on any platform — P2/P3 are about going further, not catching up.
+
+---
+
+## 8. Resize & scale — decisions (2026-09-02)
+
+Recording the conclusion of the resize/scale thread so it doesn't get
+re-litigated blind:
+
+- **Model: fixed geometry + scroll, manual zoom only.** After trying every
+  resize-driven scaling (unbounded = huge strips; a cap = "rescale plateau";
+  shrink-to-fit = tiny controls), the chosen behaviour is the pro standard:
+  strips keep a fixed, legible size; a window too narrow for a row scrolls
+  horizontally, too short scrolls vertically; and zoom is an explicit,
+  sticky user action — Ctrl+molette, Ctrl+=/Ctrl+- and Ctrl+0
+  (`ZoomIn`/`ZoomOut`/`ZoomReset` → `zoom`, bounded by `SCALE_MIN`..`SCALE_MAX`).
+  A window drag never touches `ui_scale`, so it's cheap and fluid by design.
+- **`RESIZE_THROTTLE` (16 ms) kept**: it still coalesces `Resized` events in
+  `apply_pending_resize` (a drag fires them faster than the display can
+  present) so `window_width`/scroll decisions update ~once per frame instead
+  of rebuilding on every single event.
+- **Real fix for the empty space on the right** (kept from the adaptive era):
+  strip-width bookkeeping counts *rendered* strips per pair (linked → 1,
+  split → 2), not every channel — over-counting linked rows ~2× used to
+  shrink everything and leave the gap.
+- **Open (needs eyes + hardware):** whether narrow windows should shrink to
+  `SCALE_MIN` before scrolling (current) or stop at a readable floor and
+  give each row its own draggable horizontal scrollbar (TotalMix v2 shows a
+  per-row scrollbar once a row overflows). Both are cheap to switch; pick
+  after looking at a live `--mock` window drag on a real screen.
+
+---
+
+## 9. Bus/channel-strip visual redesign (2026-09-02) — palette + fader/meter/knob pass
+
+First concrete pass at the "make it look like TotalMix" redesign, using
+real sampled colors from the live 2026-08-30 screenshots (`Totalmix UI
+Screenshots/`, now copied into the repo checkout itself — no NTFS mount
+needed) rather than guessing. Verified live via the `run` skill (KDE
+XWayland + `xdotool` + `spectacle`, same technique as the 2026-08-29
+session), not just build+test.
+
+**Palette (`theme.rs`)** — every color sampled by pixel-picking the real
+screenshots (`python3`/PIL `getcolors()` on cropped regions, not eyeballed):
+`BG_DEEP`→`#14171a`, `SURFACE`→`#384147` (a cool blue-gray strip card —
+previously near-black, almost the same shade as the background, so cards
+barely read as separate from the page), `BORDER`→`#4a545c`, `ACCENT`→`#d48354`
+(a muted terracotta orange — TotalMix's own dominant "engaged" color,
+used almost everywhere something is lit: stereo link, EQ on, route/
+settings open, the submix picker, 48V/PAD). `MUTE_COLOR`→`#17bfcf` (cyan)
+and `SOLO_COLOR`→ the same orange as `ACCENT` — this cyan/orange pairing
+is TotalMix's own specific signature (confirmed via a clean zoomed crop
+of its sidebar M/S/F buttons), previously red/amber here. `PHANTOM`
+(48V) also moved to the same orange (real TotalMix's `+48V` pill is
+orange, not red) — dropped the separate "danger red" in favor of
+matching the reference. Left `MGREEN`/`MRED` (meter hot-zone gradient)
+untouched — TotalMix's own ruler ticks use the same red-top/green-lower
+convention, so these were already directionally right.
+
+**Pan knob arc (`widgets/knob.rs`)** — added `Knob::arc_from_center: bool`,
+a filled orange arc from 12 o'clock (the range's center/default position)
+round to the current value, matching a confirmed live-screenshot detail
+(the "L57" pan knob showing a gold arc swept toward the panned side).
+Enabled for every *bipolar/centered* knob (Pan, Pitch, Width, EQ band
+gain — all default to the middle of a symmetric range) and left off for
+one-sided ranges with no meaningful center (Gain, EQ freq/Q, low-cut
+freq) — inferred consistently rather than confirmed pixel-by-pixel for
+every one of those sites, flagged here in case a future screenshot shows
+otherwise for Width/Pitch specifically.
+
+**Fader dB ticks (`widgets/fader.rs`)** — floor changed from -65 to -60
+and the ticks now exactly match the real ruler's set: `0, -6, -10, -20,
+-40, -60` (dropped the unlabeled +6 top tick to match what the reference
+actually shows).
+
+**Fader/meter/ruler reorder + a real layout bug fix (`widgets/fader.rs`,
+`widgets/strip.rs`)** — the biggest structural change. TotalMix's real
+layout is `[fader][ruler][meter]` left-to-right; ours had `[meter+ruler]
+[fader]`. Reordering (`Fader::layout_x`, replacing the old `track_x`)
+incidentally **fixed a real, live bug**, not just a cosmetic mismatch:
+the old code centered the *track alone* on the canvas width and tucked
+the meter/ruler to its left assuming there'd be room, but at the strip's
+actual on-screen width (`STRIP_W=80`) that pushed the meter/ruler column
+to a *negative* x — almost entirely clipped off the card. Confirmed via
+live screenshot: the ruler's tick labels were rendering as stray
+parenthesis-shaped fragments (only the rightmost curve of each digit
+survived the clip). Centering the *whole three-part group* on the
+canvas width instead fixes this unconditionally, not just for the
+default strip width.
+
+Reordering also exposed a second instance of the same class of bug: the
+settings-gear/EQ/collapse buttons sit in a side column *next to* the
+fader (`row![fader_widget, icon_col]`), eating into the same width
+budget — with the meter now on the *right*, its two-digit ticks
+("10"/"20"/"40"/"60") started rendering underneath those buttons instead
+of off-canvas. **First fix attempt (wrong, corrected by the user):**
+moved gear/EQ/collapse into a row *below* the fader instead, reasoning
+(incorrectly) that a narrower crop of the reference showed them there.
+The user caught this directly — a fuller zoom on an actual strip shows
+the gear/EQ column sitting on the *right flank*, beside the fader/meter,
+spanning roughly the fader's lower half, not underneath it. Reverted:
+gear/EQ/collapse are back in `row![fader_widget, icon_col]` beside the
+fader. The *actual* fix for the width collision was widening `STRIP_W`
+80→96 (see its own doc comment) — the real shortfall was that 80px never
+had room for `[track+ruler+meter]` *and* a side icon column together at
+these widget sizes, regardless of which side anything was on; moving
+things to a new row had just been treating the symptom.
+
+**Verified live**: QUICK and MIXER views both screenshotted after each
+change (`--mock`, KDE XWayland via `env -u WAYLAND_DISPLAY DISPLAY=:0`).
+Confirmed: strip cards now read as visibly separate blue-gray panels
+against the near-black page; the fader's dB ruler shows full two-digit
+labels with no clipping/occlusion; pan knobs render (arc is zero-length
+and invisible at the default centered value, as expected — not yet
+visually confirmed with a knob actually turned off-center); gear/EQ/
+collapse column sits cleanly beside the fader on every strip, at the
+wider `STRIP_W`, with no clipping. `cargo test -p tuxmix-gui`: 27/27
+throughout, including after the revert.
+
+**Explicitly deferred, not attempted this pass** (scope was "get the
+fader/meter/knob structure and palette right first," per the user's own
+framing of Bus design as the starting point):
+- The real TotalMix meter is a **monochrome amber peak-hold line + small
+  decaying marker**, not a filled green→red bar — kept our own gradient
+  fill since it's arguably more informative and the peak-hold mechanic is
+  a real chunk of new interaction/animation state, not a palette tweak.
+- **Mute-by-solo vs. explicit-mute** visual distinction (real TotalMix
+  shows an implicitly-muted-via-another-channel's-solo button as an
+  *outlined* cyan badge, vs. a *solid-filled* badge for an explicit press)
+  — noticed in the same live screenshot the M/S colors came from, not
+  implemented; would need a new "why is this muted" concept in the data
+  model, not just a color swap.
+- Didn't re-verify Mute/Solo *active* colors with an actual click in this
+  session — interactive `xdotool` clicks on the running mock instance hit
+  coordinate drift (clicks landed on the wrong strip/control repeatedly,
+  possibly a HiDPI scaling mismatch between the screenshot pixel grid and
+  the window's own coordinate space) and cost more time than the check
+  was worth; the colors themselves are exercised by nothing but the
+  `theme.rs` constant values, so this is a "should look right" not a
+  "confirmed via screenshot" for the active states specifically (unlike
+  the palette/knob-arc/layout fixes above, all of which *were* screenshot-
+  confirmed).
+- Matrix view and Quick view weren't given their own pass beyond
+  inheriting the shared `strip()`/`fader()`/`knob()` widget changes.
+
+**Collapsed-strip redesign, same session, right after the above.** User
+flagged that the collapsed/narrow strip state should also match TotalMix
+("regarde les Bus collapsé pour comprendre"). Pixel-measured a live
+collapsed strip in the reference (`Screenshot 2026-08-30 124715.png`):
+narrow strips there are ~29px against ~75px full strips (a ~0.39 ratio)
+— ours were 60/80=0.75, roughly double the real proportion, and the name
+was plain horizontal text (fits fine at that width, but not at a
+TotalMix-accurate narrower one). Two changes in `widgets/strip.rs`:
+
+- `COLLAPSED_W` 60→44 (keeping the same ~0.39-ish ratio against the now-
+  wider `STRIP_W=96`, capped from going narrower only by the existing
+  `vu_meter` widget's own fixed width — matching TotalMix's exact ratio
+  would need a narrower meter too, not attempted this pass).
+- New `RotatedLabel` canvas widget (`rotated_label()`) — the collapsed
+  strip's name is now rotated -90° (reads bottom-to-top), matching the
+  reference exactly; a plain `text()` doesn't fit at 44px width for
+  most channel names and iced's `text()` has no rotation of its own, so
+  this is a small dedicated `canvas::Program` using `Frame::rotate`.
+  `COLLAPSED_METER_H`'s tuning offset (76→30) was re-derived to
+  compensate for the taller name canvas, same "measure a collapsed and
+  full strip side by side" methodology as the original number.
+
+Verified live: rotated name renders correctly ("IN3/4" reading bottom-
+to-top, centered), collapsed strip visibly narrower and much closer to
+the reference proportion, collapsed/full strip heights still closely
+matched (a few px off, same tolerance as the pre-existing tuning).
+`cargo test -p tuxmix-gui`: 27/27.
+
+**Output-strip height parity — same session, next user catch.** *"je
+crois que les Bus ont pas tous la même hauteur et largeur, et écart
+entre eux, alors qu'il le faudrait comme sur totalmix nn ?"* Checked all
+three (width, height, gap) rather than assuming: width and the gap
+between cards were already uniform (`full_width()` returns the same
+`STRIP_W` for every channel kind, and every row-building site in
+`app.rs` uses the same unscaled `theme::SPACE_MD` — confirmed via pixel
+measurement after ruling out a red herring: per-channel-type background
+tinting was throwing off a naive brightness-threshold column scan,
+making gaps look inconsistent when they weren't). Height was the one
+real bug: Output strips skipped the pan-knob row entirely (`if
+!matches!(cid, ChannelId::Output(_))`), making them measurably shorter
+than Input/Playback strips (~257px vs ~307px in a live screenshot).
+
+The real TotalMix reference (`Screenshot 2026-08-30 124744.png`,
+Hardware Outputs section) shows every output strip *with* a knob in
+that exact spot, labeled "C" same as an input's pan. Checked what that
+knob actually is before assuming it's literally pan: `RmeDevice::
+set_pan`'s signature is `(channel, output)` — built for routing a
+channel's signal *into* a submix, meaningless for an output channel
+itself — and neither `tuxmix-core` nor `tuxmix-usb`'s protocol layer
+(`tuxmix-usb/src/{device,protocol}.rs`) has anything resembling an
+output-master **balance** register, which is what that knob almost
+certainly really is on real hardware. Rather than fake a knob that
+would silently do nothing, `widgets/strip.rs::full_strip` now always
+pushes the pan row, but for `ChannelId::Output` it's an empty
+`iced::widget::Space` sized off the knob's own real footprint
+(new `widgets/knob.rs::BOX_SIZE` constant, `pub(crate)`, replacing a
+second hand-copied `DIAMETER + MARGIN * 2.0` — exists specifically so
+this spacer can't drift out of sync with the real knob's size) — height
+parity now, honest about not having a working control there yet.
+
+**Flagged, not implemented — needs a future session on the protocol
+level, not just the GUI:** confirm against real hardware / the sibling
+`babyface-pro-linux` protocol docs whether the Babyface Pro FS actually
+exposes an output-balance register at all before building a real control
+for this slot. Until then this stays a blank spacer, not a fake knob.
+
+Verified live (resized to 1200px tall to see all three sections at
+once): Hardware Outputs cards now visibly match Input/Playback height
+almost exactly (a live-screenshot pixel measurement still showed ~16px
+off, but a direct crop-by-crop visual comparison of the two cards'
+bottom edges shows them landing at the same relative position — the
+16px reading is most likely leftover measurement noise from the same
+per-type-tint issue as the gap check above, not a real residual gap).
+`cargo build --workspace` + `cargo test -p tuxmix-gui`: 27/27.
+
+**Meter/fader order — corrected back, same session, 4th user catch.**
+User: *"c pas plutôt le VU meter qui est à gauche et le fader qui est au
+centre... les indicateurs de dB en chiffres sont sur le VU lui-même et
+les '-' qui montrent les paliers sont partagés sur le VU et sur le fader
+nn ?"* Section 9's own earlier entry ("Fader/meter/ruler reorder") had
+put the meter on the *right* of the fader (`[fader][ruler][meter]`) —
+wrong, and this time confirmed wrong with hard evidence rather than
+another crop guess: an 8x zoom on a live strip (`crop_ruler_full_height.
+png`, cropping `(0,180)`-`(45,510)` from `Screenshot 2026-08-30
+124744.png`) shows an actual **solid green meter-fill segment** sitting
+low in the numbers/ruler column, immediately left of the fader rail —
+unambiguous proof that column is a real, live VU meter, not just static
+tick labels, and that it sits on the strip's *left*, with the fader to
+its right. Exactly matches the user's description: dB numbers printed
+on the meter itself, tick dashes shared between the meter and the fader
+rail immediately next to it.
+
+Reverted `Fader::layout_x` (`widgets/fader.rs`) to put the meter+ruler
+group first (left) and the track second (right) — the mirror image of
+what section 9's entry above describes, keeping the *actual* fix from
+that entry (centering the whole 3-part group on `bounds_width`, not just
+the track alone, so nothing clips regardless of which side anything is
+on). `is_over_track`'s boundary check flipped to match (track-clickable
+zone is now everything *right* of the meter, not everything left of it).
+No `widgets/strip.rs` changes needed — the icon column already sits as
+the fader row's trailing sibling, so `[meter][fader][icons]` falls out
+automatically once the canvas's own internal order is fixed.
+
+**Not resolved, still an open question**: the reference also shows a
+separate thin orange peak-hold line + decaying marker further right,
+between the fader and the T/gear/EQ column (visible in the same 8x zoom)
+— unclear whether the user considers that part of "the VU meter" too, or
+a distinct element. Not implemented either way this pass (already
+tracked as the deferred "real TotalMix meter is a monochrome peak-hold
+line" item above) — flagging so the *order* fix isn't mistaken for
+having also resolved that separate, still-open item.
+
+Verified live: `cargo test -p tuxmix-gui` 27/27, and a screenshot
+confirms the meter (with its own dB numbers) now renders left of the
+fader on every strip.
+
+**Numbers overlaid on the meter, not beside it — 5th user catch, same
+session, immediately after.** User: *"ça a tout décalé sur la droite...
+il faudrait que les indications de niveau en dB soient superposés au VU
+meter."* Root cause: `draw_meter` drew a slim 7px pill anchored to the
+meter rect's own left edge, and `draw_ruler` drew its numbers *beside*
+that pill (in the same 30px-wide rect, but their own lane to its right)
+— so the combined column was sized for "pill width + gap + label width"
+added together, wider than it needed to be, pushing the fader (and
+everything after it) further right than the reference. The file's own
+`METER_RULER_W` doc comment already *claimed* "the meter is a
+translucent wash... ruler ticks drawn on top of it" — true of the
+design intent, not of what the code actually did; the pill-beside-
+numbers layout must have drifted in at some earlier point without that
+comment being corrected.
+
+Fixed both functions to match the comment's own (correct) description:
+`draw_meter`'s fill now spans the *entire* rect width (`FILL_ALPHA`
+constant, 0.55, added so the translucent color doesn't blot out text
+drawn on top of it), `draw_ruler`'s numbers are now centered in that
+same rect instead of offset into their own lane, and the tick dash moved
+to the rect's own right edge (immediately before the fader track begins
+— the "shared between meter and fader" position the user described).
+`METER_RULER_W` narrowed 30→22 and `GAP` 6→4 now that the column only
+needs to fit a 2-digit label, not a pill-plus-label combination —
+`METER_PILL_W` became unused and was deleted rather than left as dead
+code.
+
+Verified live: `cargo test -p tuxmix-gui` 27/27, and a screenshot
+confirms the "0/6/10/20/40/60" labels now render directly on the green/
+red meter fill (legible, verified via a 4x zoom crop) with the fader
+sitting noticeably closer to it than before — no more dead gap between
+meter and fader.
+
+**Meter narrowed further — 6th user catch, right after.** *"il faut que
+les VU soient plus fins (moins larges)."* `METER_RULER_W` 22→17 —
+tighter than what the overlay fix alone needed, since that fix's own
+value (22) was still sized with some of the old pill-plus-label slack
+left in it. 17px is the tightest this goes before actually clipping a
+2-digit label at `theme::TEXT_MICRO`, confirmed via a live 5x zoom crop
+(digits sit right up against the column edge but stay fully rendered).
+Verified: `cargo test -p tuxmix-gui` 27/27.
+
+**Pan knob drag color + Output balance knob — two independent fixes,
+same message from the user.**
+
+1. *"Quand on bouge le potard du pan ca s'allume en blanc, ca fait
+   qu'on voit plus rien."* `widgets/knob.rs`'s `draw()` flipped the
+   face to near-white (`0xf0f1f4`) while dragging, mirroring the fader
+   cap's own drag-lit look — but a knob is small enough that the label
+   text fills most of the face, so the flip blew the label away
+   entirely, and the tick/arc/label all had their own compensating
+   "go dark instead" branches bolted on to cope. Replaced with one
+   subtle change instead of two opposing ones: face lightens by a small
+   blend (`theme::blend(SURFACE, WHITE, 0.18)`, new `DRAG_LIGHTEN`
+   constant) rather than flipping to near-white, so it stays dark
+   enough that the tick/arc/label never need a dragging-only color of
+   their own — removed all three of those branches, one visual state to
+   reason about instead of two. `theme::blend` made `pub(crate)` (was
+   private) so `widgets/knob.rs` could reuse it instead of duplicating
+   the lerp math a second time.
+
+2. *"sur les hardware outputs ya pas le potard de pan sur chaque bus."*
+   The empty `Space` spacer added in the height-parity fix above (see
+   its own entry) technically matched TotalMix's *height*, but the user
+   caught that a blank gap doesn't read as "control not built yet" the
+   way an actually-present, visibly-inert knob does. Added
+   `Knob::interactive: bool` — when `false`, `update()` returns `None`
+   immediately (before the `match`) so all mouse handling is genuinely
+   unreachable, `mouse_interaction()` stays `Idle`, and `draw()` dims
+   the border/tick/label to 40% alpha and skips the arc entirely (no
+   real value to point at). Output strips now get a real `Knob` in that
+   slot — same "C" label TotalMix shows, visibly dimmed, `on_change`/
+   `on_reset` wired to `unreachable!()` since `interactive: false`
+   makes them provably uncallable rather than silent no-ops. The
+   now-unused `knob::BOX_SIZE`/`Space` plumbing from the earlier fix was
+   removed along with it (`BOX_SIZE` reverted from `pub(crate)` back to
+   private — nothing outside `knob.rs` needs it anymore).
+
+Verified live: `cargo test -p tuxmix-gui` 27/27; a drag on AN1/2's pan
+knob screenshotted mid-drag shows a legible "C" on a gently-lightened
+(not blown-out) face; Hardware Outputs strips all show a dimmed pan
+knob in the same spot Input/Playback strips show a working one.
+
+**Collapse icon: chevron → "—".** User: *"pour faire un 'moins'?"*, then
+*"c'est pas mieux un '—' plutôt ?"* Swapped the full strip's collapse
+button (`widgets/strip.rs`'s `icon_col`) from "▼" to a plain hyphen
+first, then to an em dash (U+2014) at the user's follow-up — reads as a
+deliberate "minus" mark rather than a stray dash-shaped artifact at this
+size. `TEXT_SM` (was `TEXT_MICRO`, too small for either glyph to read
+clearly). Pairs with the collapsed strip's own "+" expand button
+(unchanged). Verified via a 6x zoom crop each time. `cargo test
+-p tuxmix-gui` 27/27.
+
+**Collapse button relocated next to the dB readout, plain "-" again —
+and a real layout bug found and fixed along the way.** User: *"il
+faudrait remettre - plutôt... et le mettre plus bas, à côté du display
+de la valeur du volume en dB comme sur les screens de totalmix."*
+Confirmed against the reference: TotalMix shows "0.0" then a small "-"
+pill on the *same row*, near the bottom of the strip — not up in the
+gear/EQ icon column. Moved the collapse trigger out of `icon_col`
+entirely into its own row alongside the dB display (`row![db_display,
+Space::Fill, collapse_btn]`), reverted the glyph back to a plain "-"
+now that it's sitting in the exact spot/shape the reference uses.
+
+**Real bug, not just a relocation:** the first version of this button
+used `centered_label("-", ...)` with no explicit `.width()`/`.height()`
+pinned on the surrounding `button()` — every *other* `centered_label`
+button in this file pins that down explicitly, because `centered_label`
+wraps its text in `container(...).center(Length::Fill)`, which needs a
+bounded parent to fill. Without that pin, the result wasn't just a
+mis-sized button — **every strip in the app rendered as a blank card**
+(section headers still showed, since those are separate from strip
+building). Confirmed live in both QUICK and MIXER views, and bisected
+by temporarily short-circuiting pieces of the new row until the exact
+line was isolated, rather than guessing. Fixed by using a plain
+`text("-")` instead of `centered_label` for this specific button — it's
+meant to size to its own content anyway (pill-style, like the route/
+LOOP buttons elsewhere on the strip), not fill a fixed box the way the
+gear/EQ icon buttons do.
+
+**Lesson**: `centered_label` is only safe inside a button/container that
+gives it an explicit, bounded size — every future use needs that same
+pin, or reach for a plain `text()` instead when the button should size
+to its content. Verified: `cargo test -p tuxmix-gui` 27/27, and a fresh
+screenshot after the fix shows strips rendering normally again with the
+"-" sitting next to "0.0 dB" at the bottom of each strip.
+
+---
+
+## 10. Right sidebar ("control strip") — 2026-09-03
+
+TotalMix's right-hand panel: device chip, Undo/Redo, an M/S/F row, "FX
+show %", an Options panel (routing/meters/show/2-row/solo-mode), a
+Snapshots panel (Mix 1-8 + store), a Groups panel (4 mute/solo/fader
+groups + edit/clear), a Mixer Layout panel (Layout 1-6 + store,
+all/submix). Full scope, functions included — user chose "tout d'un
+coup" over phasing it, after confirming: (1) the M/S/F row and several
+Options rows would be visual skeleton only (no real TotalMix semantics
+to confirm from a static screenshot — see below), (2) two Options rows
+("routing: free", "meters: RMS") don't map to this app's architecture
+at all and should render disabled/dimmed, same treatment as the Output
+strip's inert balance knob.
+
+New files: `tuxmix-gui/src/sidebar.rs` (all sidebar rendering — mirrors
+the existing `matrix.rs` precedent of a self-contained view region
+getting its own module) and `tuxmix-gui/src/layouts.rs` (Mixer Layout
+persistence, mirroring `scenes.rs`'s own file-per-slot pattern —
+`~/.local/share/tuxmix/layouts/Layout N.json`, plain serde since
+`ChannelId` already derives `Serialize`/`Deserialize`; needed adding
+`serde_json` as a direct `tuxmix-gui` dependency, previously only
+pulled in transitively through `tuxmix-core`). `app.rs::view()` changed
+from `column![top, content]` to `column![top, row![content, sidebar::
+sidebar(state)]]`.
+
+**What's real, and what it's built on:**
+- **Snapshots** — genuinely new work only in the sense of wiring; the
+  underlying mechanism is the *existing* scene save/load
+  (`scenes.rs::save_scene_file`/`load_scene_file`,
+  `RmeDevice::capture_scene`/`apply_scene`), just 8 fixed slot names
+  ("Mix 1".."Mix 8") instead of a user-typed one.
+- **Undo/Redo** — `Vec<Scene>` stacks (`TuxMix::undo_stack`/
+  `redo_stack`, capped at 50), using the same capture/apply pair.
+  `is_undoable()` (a blacklist of UI-only messages, defaulting to
+  "capture" for anything not explicitly excluded) decides which
+  messages push a pre-action snapshot at the very top of `update()`,
+  before the big `match`. Fader drags snapshot once, on `FaderPressed`
+  (not on every `VolumeChanged` during the drag — that would flood the
+  stack with one entry per mouse-move). Known, accepted gap: knob-driven
+  values (pan, gain, trim, EQ params) have no distinct "drag start"
+  message the way faders do, so a knob drag pushes one snapshot per
+  tick rather than one per gesture. Also known: `Scene` only captures
+  *device* state, so sidebar-only concepts (group membership, which
+  snapshot/layout slot is selected, panel collapse) aren't touched by
+  undo/redo at all — `is_undoable` excludes their messages not just to
+  reduce noise but because capturing around them would be a no-op.
+- **Groups** — `sidebar::Group { members: Vec<ChannelId>, mute_linked,
+  solo_linked, fader_linked }`, 4 of them in `TuxMix::groups`.
+  Membership assignment reuses the *existing* multi-select
+  (`state.selected`, Ctrl/Shift-click) as the picker: `edit` toggles
+  `group_editing`, then clicking a group's `M1`/`S1`/`1` cell assigns
+  the current selection as that group's members and engages that link.
+  Propagation is a **generalization of code that already existed** —
+  `apply_grouped_volume`/`apply_grouped_pan` already did relative-delta
+  multi-select propagation before this session; the Mute/Solo handlers
+  did absolute (non-delta) multi-select propagation. New shared
+  `propagation_set(state, cid, link)` unions "multi-selected, if `cid`
+  is part of one" with "member of a `link`-engaged group `cid` belongs
+  to," and all four handlers (Mute, Solo, `apply_grouped_volume`,
+  `apply_grouped_pan`) now go through it — meaning fader-linked groups
+  get the *real* relative-delta behavior TotalMix has, not a simplified
+  lockstep fallback (the original implementation plan assumed lockstep
+  would be needed; the existing selection-delta code turned out to be
+  directly reusable once generalized).
+- **Mixer Layout** — a layout is just `TuxMix::collapsed` (which strips
+  are collapsed; no strip-reordering exists yet, so that's the whole
+  story), persisted via `layouts.rs`. Recall clears `collapse_anim`
+  too, so a stale in-flight collapse/expand animation can't fight the
+  bulk-applied target state.
+
+**What's deliberately skeleton** (per the user's own framing —
+built to match the reference shape, not wired to guessed-at behavior):
+the M/S/F row (no `on_press` at all — S shown lit, M cyan-bordered,
+purely as a static visual matching the reference's own screenshot, not
+read from any state), "FX show %" (fully static — no FX/reverb/echo
+processing exists in this app), and three Options-panel pairs (`show:
+names/trim`, `2 row/2 row in`, `solo/pfl mode: excl. solo/live`, plus
+the Mixer Layout panel's own `all/submix` row) — these DO respond to
+clicks (toggle which side is highlighted, `sidebar::SkeletonPairs`) so
+they don't read as dead buttons, they just don't change anything else.
+`solo/pfl mode` specifically was scoped to skeleton rather than real
+because real non-exclusive solo would mean touching `usb.rs`'s
+hardcoded exclusive-solo logic (`usb.rs:603-618`) — the kind of
+hardware-adjacent backend change this project has repeatedly flagged
+and scoped into its own dedicated session rather than folding into a
+GUI pass (see the 2026-08-29 stereo-link-migration entry above for the
+same caution applied to a different feature).
+
+**A real bug in the first draft, caught by inspection before it shipped
+further**: `segmented_row` (the shared 2-way toggle row builder) always
+derives the right side's highlight as `!left_active` — correct for a
+genuine exclusive pair, wrong for "both sides are simply off," which is
+what the `meters: post fx / RMS` row needed (both disabled). Passing
+`left_active: false` there lit "RMS" instead of leaving both dim,
+confirmed via a live screenshot before being fixed with a dedicated
+`disabled_segmented_row` (40% text alpha, no `on_press` on either
+side, same dim treatment as the Output strip's inert balance knob).
+
+**Verification — mixed, and said so rather than overclaiming.**
+`cargo build --workspace` + `cargo test --workspace`: 133/133 (10 new
+tests added directly against `app::update()` — undo/redo revert+reapply
++ redo-cleared-on-new-action, UI-only messages don't grow the undo
+stack, group mute/solo/fader propagation including a negative case
+(solo-link doesn't leak into mute), group clear, layout recall).
+Visually confirmed live (`--mock`, resized to see all four panels at
+once) that the whole sidebar renders correctly against the reference
+crop, and that the `disabled_segmented_row` fix actually looks dim in
+practice, not just in code.
+
+**Whole-sidebar collapse ("rabattable"), same session, right after.**
+User wanted the sidebar itself foldable — distinct from the existing
+per-panel "−" headers (`sidebar_panels_open`), which only collapse
+content *within* an expanded sidebar. New `TuxMix::sidebar_open: bool`
+(default `true`) + `Message::ToggleSidebar`. `sidebar::sidebar()`
+branches early: collapsed renders just a `COLLAPSED_WIDTH` (22px) rail
+with a "‹" expand button — not nothing, which would leave no way back
+— expanded gets a "›" collapse button as its own first row, above the
+device chip. Verified live both ways: screenshotted the real default
+(expanded, confirmed the new "›" button renders), then temporarily
+flipped the `new()` default to `false` in code, rebuilt, and
+screenshotted again to confirm the collapsed rail actually reclaims the
+width and shows the "‹" button correctly — reverted the default
+immediately after. Also added a unit test (`toggle_sidebar_flips_and_
+is_not_undoable`) following this session's own pivot to testing
+`update()` directly rather than fighting synthetic clicks (see below).
+`cargo test --workspace`: 134/134.
+
+**Top bar decluttered — the device chip was a straight duplicate, the
+rest wasn't.** User asked whether the top bar's own elements were still
+needed now that the sidebar exists. Checked rather than assuming either
+"yes, keep everything" or "no, remove everything": the top bar has 5
+things — the device identity chip, the Quick/Mixer/Matrix view tabs, and
+a "session" toolbar (Scene name/Save/load picker, Submix picker, Clock
+Source button). Of those, only the **device chip** is a genuine, content-
+identical duplicate of the sidebar's own `sidebar::device_chip`. The
+other four have no sidebar equivalent at all: the view tabs are core
+navigation; the Submix picker selects which of the 6 output buses is
+being edited (the sidebar's `routing: submix` in Options is a fixed
+architecture readout, not a per-bus selector); the Clock Source button
+opens the existing clock/sample-rate/SPDIF drawer; and Scene Save/Load
+is a genuinely different feature from the new Snapshots panel — arbitrary
+user-named presets vs. TotalMix's own fixed 8 numbered slots, not a
+subset of it.
+
+Removed just the device chip from `top_bar` (`app.rs`) — but it carried
+information (the connected/simulated status dot + label) the sidebar's
+own chip didn't have yet, so that moved over too rather than being lost:
+`sidebar::device_chip` now shows the same "● Babyface Pro FS (mock) /
+Simulated" the top bar used to. `theme::TEXT_LG` (the "device name gets
+slight emphasis" type-scale tier) moved with it rather than being
+deleted as dead code — same size, same purpose, just relocated, keeping
+the 6-tier type scale's own design intact (`GUI-NOTES.md`'s type-scale
+section is explicit that it's meant to be a complete, named vocabulary,
+not a formula with gaps in it). Net effect: the top bar is shorter (one
+fewer chip, and it was already the one flagged for overflow risk on
+narrow windows back in the 2026-08-29 audit — this should help that too,
+not just declutter), the sidebar's own device chip does slightly more
+work, nothing was actually lost.
+
+Verified: `cargo build --workspace` + `cargo test --workspace` 134/134,
+and a live screenshot confirms the top bar now reads as title + tabs +
+session tools with no duplicate identity chip, while the sidebar's own
+chip correctly shows the status dot/label it absorbed.
+
+**Two follow-up fixes, same day: device-chip overflow, and Scene
+save/load merged into Snapshots.** (1) The sidebar's device chip
+(absorbed from the top bar, above) overflowed its box in `--mock`: user
+caught it directly ("le nom de la babyface ça dépasse de la case et
+c'est sale comme ça"). Root cause: `model_name()` grows a `" (mock)"`
+suffix for scene-compatibility checks (`mock.rs`), and that suffix
+alone pushed `"Babyface Pro FS (mock)"` past the ~150px text budget
+left in the 210px-wide sidebar chip once the status dot, dropdown
+arrow, padding, and spacing are accounted for. Fixed by stripping the
+suffix for *display only* (`strip_suffix(" (mock)")` in
+`sidebar::device_chip` — `model_name()` itself is untouched, still used
+verbatim for scene compatibility) since the status line right below
+already says "Simulated," making the suffix redundant there anyway; the
+name text also got an explicit `.width(Length::Fill)` so it's bounded
+instead of able to overflow again for any future longer device name.
+(2) User: now that Snapshots lives in the sidebar, fold the top bar's
+separate Scene save/load chip into it — same underlying mechanism
+(`save_scene_file`/`load_scene_file`), no reason for two homes. Checked
+first that this was actually true rather than assumed: confirmed
+`Message::SnapshotClicked`/`SnapshotStore` already call the exact same
+`load_scene_file`/`save_scene_file` functions as the top bar's
+`SceneLoad`/`SceneSave`, just with fixed `"Mix N"` names instead of a
+free-form one — a real, not superficial, duplication. Moved the
+text_input/Save button/load `pick_list` (unchanged `Message` variants:
+`SceneNameChanged`, `SceneSave`, `SceneLoad`) into
+`sidebar::snapshots_panel`, stacked vertically below the Mix 1-8 slots
+behind a thin divider (the sidebar's 210px width doesn't fit the top
+bar's horizontal layout), and removed them from `app.rs::top_bar`'s
+`session` chip entirely, leaving just Submix + Clock Source there.
+Verified: 134/134 tests, live screenshot confirms the top bar now only
+has Submix/Clock, the sidebar's Snapshots panel has both the Mix 1-8
+slots and the free-named save/load row beneath them, and the device
+chip reads "Babyface Pro FS" cleanly with no overflow.
+
+**Free-named Scene save/load removed outright, same day.** Right after
+merging it into the Snapshots panel (above), user: "name save et load
+tu peux supprimer, vu qu'on en a plus besoin" — the 8 fixed Mix 1-8
+slots cover the need, no reason to keep the free-form variant at all.
+Removed for real, not just hidden: the text_input/save/load block out
+of `sidebar::snapshots_panel`; `Message::SceneNameChanged`/`SceneSave`/
+`SceneLoad` and their `update()` handlers and `is_undoable()` blacklist
+entries; `TuxMix::scene_name`/`scene_list` fields and their `new()`
+init; the now-fully-unused `scenes::list_scene_files()` function
+(deleted, not just unreferenced — nothing else called it, checked with
+a repo-wide grep first). `load_scene_file`/`save_scene_file` stay —
+Mix 1-8 still use them directly, untouched. 134/134 tests, clean
+build (no dead-code warnings from the removal), live screenshot
+confirms the Snapshots panel now ends cleanly at "store" after Mix 8.
+
+**Device-chip font size, and M/S in the M/S/F row made real.** Two more
+user catches, same day. (1) The device name at `TEXT_LG` (15px) still
+read as too big for the sidebar's dense 210px column, even after the
+overflow fix above — dropped to `TEXT_MD` (13px, the "default body
+text" tier), which left `TEXT_LG` with zero remaining callers, so it
+was deleted outright rather than kept as unused dead weight (per this
+project's own stance on backwards-compat cruft). (2) The M/S/F row
+(`sidebar::msf_row`) was deliberately built as pure visual skeleton
+back when the sidebar first shipped — no `on_press` at all, since a
+static reference screenshot couldn't confirm TotalMix's real semantics
+there. User asked to make M and S real; asked back what exactly they
+should do (real semantics still unconfirmed) rather than guess, via
+`AskUserQuestion` — user picked "Mute/Solo globaux": **M** toggles
+every channel's mute at once (all Input/Playback/Output channels;
+lights when all are already muted, so a second press undoes the
+first), **S** clears every currently-active solo (one-shot, not a
+toggle — there's no sensible "solo everything," lights when at least
+one channel is soloed so there's visibly something to clear). **F**
+stays skeleton — nothing in this app corresponds to TotalMix's own
+third button there either.
+
+New `Message::GlobalMuteToggle`/`GlobalSoloClear`, handled in
+`app.rs::update()` by iterating `all_channel_ids()` (a new helper:
+every `ChannelId::Input`/`Playback`/`Output` the device currently
+exposes) through the *existing* `set_channel_mute`/`set_channel_solo`
+choke points — no new device-layer code, this is pure orchestration
+like Groups was. Two new `pub(crate)` helpers
+(`all_channels_muted`/`any_channel_soloed`, reading straight off
+`RmeDevice::inputs()/playbacks()/outputs()`'s own `mute`/`solo` fields)
+drive both the toggle direction and the buttons' lit state, shared
+between `app.rs` (the handler) and `sidebar.rs` (the button styling).
+Neither new message is undo-blacklisted — same as plain `Mute`/`Solo`,
+a global mute/solo-clear is exactly as undoable as a per-channel one.
+3 new unit tests (`update()`-driven, continuing this session's
+click-testing-limitation workaround): mute-toggle mutes everything then
+unmutes on a second press, solo-clear clears solos without touching
+mute state, and mute-toggle is undoable. 137/137 tests, live screenshot
+confirms the smaller device name and the row's baseline (unlit)
+rendering; the toggle/clear behavior itself is verified by the new
+unit tests rather than a synthetic click, per this sandbox's own
+documented click-testing limitation.
+
+**Global "S" made a real toggle, not one-way.** Right after M/S
+shipped, user: "le S doit pouvoir toggle les anciens S nn ?" — a fair
+catch, since `GlobalMuteToggle` was already symmetric (mute-all, then
+unmute-all on a second press) but `GlobalSoloClear` was one-way
+(clear, with no way back short of re-soloing channels by hand).
+Renamed `Message::GlobalSoloClear` → `GlobalSoloToggle` and gave it a
+memory: new `TuxMix::last_cleared_solos: Vec<ChannelId>`. First press
+with something soloed clears every soloed channel and remembers
+exactly which ones; a press with *nothing* currently soloed restores
+solo on that remembered set instead (real "solo everything" has no
+sane meaning, so restoring the prior set is the toggle's other
+direction rather than that). Soloing something new between two presses
+correctly replaces the remembered set rather than resurrecting a stale
+one, since the handler always re-derives "what's soloed right now"
+before deciding which branch to take. Caught and fixed a test bug
+while adding coverage for this: a test using `Input(8)` alone expected
+only that channel in the cleared set, but every input pair is
+hardware-linked by default in mock (`mock.rs`'s own
+`test_input_pair_linked_by_default_and_moves_both_channels`), so
+soloing channel 8 mirrors onto channel 9 too — the test's assumption
+was wrong, not the code; fixed the assertion to check set membership
+instead of an exact channel list, and documented the linked-pair
+behavior inline so it doesn't get re-discovered as a false bug later.
+2 new tests (restore-after-clear, replace-stale-set-on-new-solo) plus
+the existing clear test renamed to match — 139/139 total. Live
+screenshot confirms baseline rendering unaffected (both buttons unlit
+with nothing soloed, matching before).
+
+**Global "M" reworked to match "S"'s precise-restore behavior, not just
+blanket unmute-all.** Right after the S-toggle fix, user: "le M
+centralisé ça marche comme ça, de la même manière que le S" — the
+original `GlobalMuteToggle` was a toggle already, but a blunt one:
+second press unmuted *everything*, even a channel that had been muted
+independently (by hand, before the global press) and had nothing to do
+with the global action. Rewrote it to the same shape as
+`GlobalSoloToggle`: first press mutes only the channels that *aren't*
+already muted and remembers exactly which ones it touched
+(`TuxMix::last_globally_muted`); second press (once everything reads
+muted) restores mute-off on exactly that remembered set, leaving any
+independently-pre-muted channel untouched. New test
+`global_mute_toggle_leaves_a_pre_muted_channel_muted_after_restoring`
+covers the actual distinction (pre-mute one linked pair, global-mute
+toggle twice, assert that pair is still muted while everything else
+came back off) — the earlier, less precise test
+(`..._mutes_everything_then_unmutes_on_second_press`) still passes
+unchanged since it starts from a fully-unmuted baseline, where the old
+and new logic happen to produce the same result. 140/140 tests, live
+screenshot confirms baseline rendering unaffected.
+
+**Matrix view: channel-type color coding, a bounded consistency pass —
+not a full redesign.** After the hardware-validation audit wrapped up,
+picked this up as the other flagged-but-deferred item ("Matrix view
+and Quick view only inherited the shared widget changes, no dedicated
+pass" — [[project_gui_tui_audit_2026_08]]). Checked Quick view first:
+turned out to need nothing — it already renders via `strip::strip(...)`
+directly (`app.rs::quick_view`, just scaled up 2x), so it inherited the
+full redesign automatically, no separate work required. Matrix view
+(`matrix.rs`) was the real gap: every column header rendered in flat
+`TEXT_SEC` gray regardless of channel type, unlike every other view in
+the app (Mixer strips, the sidebar) which color-codes by type. No
+TotalMix reference screenshot of the actual Matrix/routing-grid view
+exists in `Totalmix UI Screenshots/` (checked a sample before starting,
+per this session's own hard rule about not inventing layout facts) —
+so this was deliberately scoped to *safe, already-verified* colors
+(`app::type_tag()` for inputs, `app::PB_TAG` for playbacks — the exact
+same functions/constants Mixer strips already use) rather than a
+structural redesign guessing at proportions with nothing to check
+against. Verified live via `--mock`: AN1/AN2 read cyan (Mic), IN3/IN4
+and AS1/AS2 orange (Instrument/Line), ADAT3-8 purple, every "PCM ..."
+playback column teal — a real, immediately visible readability win
+over the previous flat gray. 140/140 tests, clean build.
+
+**Matrix view rebuilt from scratch against a real TotalMix screenshot,
+superseding the "bounded consistency pass" above the same day.** User
+shared an actual TotalMix Matrix-window screenshot right after that
+color-coding pass shipped — revealing the whole structure was wrong,
+not just the colors: real TotalMix has individual output *channels* as
+columns (Out 1..12), individual input/playback *channels* as rows
+(In 1..12, Pb 1..12), bare numeric dB cells (blank when unrouted, not
+a fader), two-level headers (per-channel + per-pair-group), and a
+separate master "Outputs" row — our version had output *pairs* as rows
+and a tiny fader per cell, backwards on both axes. Confirmed before
+rebuilding: no such reference screenshot existed in `Totalmix UI
+Screenshots/` when the color-coding pass shipped (checked two samples,
+found none), so that pass's own "no reference, so don't guess
+structure" reasoning was sound at the time — this wasn't a mistake to
+avoid, just new information arriving mid-stream.
+
+Asked the user how far to take it (`AskUserQuestion`) rather than
+assume "faithful" meant redoing the interaction model too — picked the
+full rebuild. Rewrote `matrix.rs` entirely:
+- **Row groups**: the two Mic-type inputs (AN1, AN2) are each their own
+  physical jack, shown solo; every other input type is an inherent
+  hardware pair (Instrument, Line, ADAT), shown as a 2-row group —
+  derived from `ChannelType`, not guessed, and reuses `pair_bus_label`
+  (made `pub(crate)`) for the combined name so the wording matches what
+  Mixer strips already call a linked pair.
+- **Playback groups**: one pair per hardware output bus, labeled with
+  this app's own verified `OUT_LABELS` — not TotalMix's own
+  instance-specific renaming in the reference screenshot (its "Main" is
+  that user's own label for what this hardware's ALSA/USB surface
+  actually calls "PH3/4"; copying it would have overridden a
+  previously-verified fact with an unrelated screenshot's cosmetic
+  choice).
+- **Cells**: bare "-9.8"-style text, blank when the crosspoint is at
+  (near-)zero, matching TotalMix leaving unrouted cells empty rather
+  than printing "-inf" everywhere.
+- **L/R column placement**: our own per-channel model stores one
+  volume *per output pair*, not per individual physical output channel
+  — matching real hardware, which (per `babyface.rs`'s own crosspoint
+  comment) has no way to route a non-mono source differently into a
+  pair's left vs right side at all. Each row's value is shown in
+  whichever single column (left/right) that channel naturally feeds
+  (`idx % 2`, the same convention `set_channel_volume` already uses
+  everywhere), leaving the pair's other column blank for that row. The
+  4 true-mono sources (AN1-4) are the one real exception — genuinely
+  independent L/R — decoded on the fly from the same (volume, pan) pair
+  the fader/pan knob already edit, so both of their columns show real,
+  distinct values.
+- **Master "Outputs" row**: each output channel's own master volume,
+  visually separated by a divider from the crosspoint grid above it.
+
+**Known, explicitly-flagged gap, not silently dropped**: cells are
+display-only this pass — no click-to-type or scroll-to-adjust.
+TotalMix's own editing gesture on a grid this dense is a real,
+separate interaction-design question that deserves its own pass with
+the user's input on the exact mechanism, not a rushed guess bolted onto
+a structural rebuild already this large.
+
+**Verified twice, mock and real hardware** (the card was still
+connected from this same day's earlier audit): mock showed every
+cell densely populated at first, which read as a possible bug — turned
+out to be `InputChannel::new`'s own default (`volumes: vec![1.0;
+outputs]`, i.e. mock ships with every crosspoint at unity into every
+output, not a realistic sparse routing table). Re-checked against the
+real card to be sure: AN1/AN2 correctly showed blank at the AN1/2 pair
+(matching their `-∞ dB` Quick-view reading) while other pairs showed
+real, pre-existing `-6.0` routes — confirming the density was real
+hardware state, not a rendering bug, and that the natural-side L/R
+column split was behaving correctly (alternating filled/blank columns
+per row, as designed). One screenshot-capture mistake along the way:
+`spectacle -a` grabbed an unrelated browser window instead of TuxMix
+once (focus race after `windowactivate`) — caught immediately, the
+image was discarded unread rather than analyzed, and the capture was
+redone after explicitly confirming `getactivewindow` matched TuxMix
+first. 140/140 tests, clean build (first try — the type-based
+row-grouping and `pair_bus_label` reuse meant no surprises).
+
+**Matrix cells made click-drag interactive, closing the gap flagged in
+the rebuild above — same day.** User picked "clic-glisser vertical,
+comme un mini-fader caché" over scroll-to-adjust (scroll was already
+spoken for by the grid's own horizontal/vertical scrolling — a
+scroll-on-cell gesture would fight it). Extended `widgets/fader.rs`'s
+`Fader<Message>` with two new fields rather than a parallel widget:
+`show_track: bool` (skips drawing the groove/cap entirely when
+`false`, while every press/drag/release/wheel/double-click handler in
+`canvas::Program::update` stays fully live — the whole canvas still
+counts as "over track") and `label: Option<String>` (drawn centered via
+the same `Frame::fill_text` the ruler ticks already use). Only one
+other call site existed (`strip.rs`'s own strip fader) so extending the
+struct instead of adding a new type was cheap — updated it with
+`show_track: true, label: None` and nothing else about it changed.
+
+Matrix cells now build a `Fader` with `show_track: false` and their own
+bare dB text as `label` — a fully working drag hidden behind the
+number, not a second visible control fighting the numeric display for
+attention. Kept this view's own pre-existing convention (`on_press`/
+`on_drag` write `Message::VolumeChanged` directly, not `strip.rs`'s
+`FaderPressed`) — Matrix edits were never undo-tracked before this
+pass either, and changing that is a separate decision from wiring up
+the drag itself. Only the column a channel can actually reach is
+interactive (`idx % 2`, matching `set_channel_volume`'s own left/right
+convention); the other column of that pair — genuinely unreachable on
+this hardware for every source except the 4 true-mono AN1-4 inputs —
+stays a plain static cell, not a dead-but-visually-identical fader.
+The master "Outputs" row got the same treatment for free (each output
+channel's real master volume).
+
+Caught and fixed one visual inconsistency before calling this done: the
+Fader canvas sizes itself to the *track's* own width (`TRACK_W`, 26px)
+when `show_meter` is `false`, narrower than a plain cell's 40px slot —
+left bare, interactive cells looked like a different, unbordered kind
+of thing next to their bordered static neighbors. Wrapped the fader in
+a `container` matching `cell()`'s own size/border/background exactly.
+**Known residual gap**: the click/drag *hit target* is still only the
+inner ~26px canvas, not the full 40px visual cell (the container's
+extra padding is click-through) — a real, if minor, target-size
+mismatch, not chosen deliberately; left for a future pass rather than
+reaching for a `Stack` to fix it (this codebase's own documented
+click-handling scar tissue). 140/140 tests, clean build (first try),
+live screenshot confirms consistent cell chrome. Not click-verified
+for the actual drag gesture itself — this sandbox's synthetic-click
+limitation applies here same as everywhere else — but the underlying
+`Fader` press/drag/release mechanics are the exact same, already-proven
+code path every strip fader already uses, just re-skinned.
+
+**Real VU meter signal added for the ALSA backend — AN1/AN2 only, a
+genuine correctness constraint, not a scope shortcut.** User: "il
+faudrait qu'on mette le signal dans les VU meter". Before this, the
+ALSA/kernel-driver backend's meters were 100% fake — the driver
+exposes no meter register at all, unlike the USB backend, which
+computes real peaks host-side from the raw isochronous stream it
+already owns (`tuxmix-usb`'s `input_peaks()`). Confirmed the user
+wanted the real thing (not a fake animation) and that it was worth
+doing now despite being a genuinely different kind of work (a
+real-time audio capture thread, not ALSA mixer controls).
+
+Went to implement full input coverage and hit a real, not just
+big-scope, blocker: the capture-channel-to-physical-input mapping is
+**disputed inside the sibling repo's own documentation**.
+`tools/usbdump/PROTOCOL.md` (the original RE) says capture words 0/1 =
+AN1/2 (confirmed by an actual mic test), but words 2/3 are described
+as *contextual* — IN3/4 at idle, or the PH3/4 output bus's loopback
+signal if that's engaged, not a fixed channel at all — and the same
+document explicitly flags an earlier "words 2/3 = AN3/AN4" reading as
+wrong. `KERNEL-DRIVER.md` (newer, 2026-08-25) describes the tail end
+differently again (words 12/13 = a fixed-gain playback tap, not
+ADAT7/8). Asked the user how to handle this rather than guess — a
+wrong mapping would show a level moving on the *wrong* input, worse
+than no level at all. Scoped down to AN1/AN2 only, the one mapping
+both documents and a live test agree on.
+
+**Implementation**: new `tuxmix-core/src/capture_meter.rs`
+(`alsa`-feature-gated) opens the card's own ALSA capture PCM directly
+— just 2 channels requested, which (per the kernel driver's own
+`babyface_capture_copy`, walking its channel map for `i in
+0..channels_requested`) lands exactly on device words 0/1 without
+needing to open all 12 and discard the rest. Runs its own thread
+(`snd_pcm_readi` blocks) reading small 256-frame periods so `Drop` can
+stop it quickly rather than being stuck in a long blocking read;
+peaks accumulate in a `Mutex<[f32; 2]>`, drained (and reset) once per
+poll, mirroring `tuxmix-usb`'s own draining convention exactly.
+`BabyfacePro` now overrides `RmeDevice::meters()` (previously unused
+by this backend — the default `None`), returning a full-length vec
+with only indices 0/1 ever populated. `DeviceHandle::has_input_meters`
+(app.rs) gained a per-channel sibling, `has_input_meter(idx)` — the
+Mixer view's per-strip `meter_available` now checks the specific
+channel instead of one blanket flag, so IN3/4 onward correctly keep
+showing the dashed "N/A" meter treatment instead of a fabricated
+silent reading.
+
+**Verified against the real card** (still connected): launched
+without `--mock`, confirmed no startup errors, and a zoomed screenshot
+crop shows AN1/2's meter column rendering as a real (solid black,
+currently-silent) meter while IN3/4's right next to it still shows the
+dashed N/A pattern — the per-channel gate working exactly as designed.
+Also confirmed the new background thread shuts down cleanly: killed
+the process and checked `ps` immediately after — no lingering/zombie
+process, meaning the `Drop`-triggered stop-flag-then-join shutdown
+path works, not just the happy path. 140/140 tests, clean build (both
+`cargo build -p tuxmix-core --features alsa` alone and the full
+workspace) on the first real attempt — every `alsa` crate API guess
+(`HwParams::any`, `Format::S32LE`, `PCM::state()`/`recover()`) landed
+right without needing a second pass.
+
+**Known, deliberately scoped gap**: IN3/4, AS1/2, ADAT3-8, and every
+playback channel still read "N/A" on the ALSA backend — not a bug,
+a direct consequence of the disputed/contextual mapping above.
+Resolving it for real would need either empirical testing with an
+actual signal plugged into each of those inputs, or reconciling
+`PROTOCOL.md` against `KERNEL-DRIVER.md` at the driver-source level —
+both out of scope for this pass, flagged rather than guessed past.
+
+**Real crash in the new capture thread, caught by the user within
+seconds of running it for real.** `thread '<unnamed>' panicked at
+.../num/mod.rs:426:5: attempt to negate with overflow`. Root cause:
+`capture_meter.rs`'s peak loop called `buf[...].abs()` on raw `i32`
+audio samples — `i32::abs()` panics in debug builds on exactly
+`i32::MIN`, a real bit pattern that showed up in practice within
+seconds of real capture, not a theoretical edge case. Fixed with
+`unsigned_abs()` (returns `u32`, has no such hole — `i32::MIN`'s
+magnitude fits fine, just not as a same-signed `i32`), reworking the
+per-buffer peak accumulator to `u32` throughout rather than patching
+just the one call. While investigating, also added a real, separate
+fix rather than declaring the panic fix sufficient and moving on:
+`pcm.prepare()` alone doesn't start a capture stream collecting
+samples the way a playback stream auto-starts on its first write —
+without an explicit `pcm.start()`, `readi` was erroring immediately
+every call (empty ring buffer), `recover()` "succeeding" (a legitimate
+no-op from ALSA's own point of view), and the loop spinning as fast as
+the CPU allowed instead of ever actually blocking on real audio.
+Caught independently by checking CPU usage after the panic fix rather
+than assuming a clean exit meant a clean fix — found ~70% CPU, then
+ruled out it being new/caused by this session's own work at all by
+comparing against `--mock` (which never touches ALSA capture and
+showed the *same* ~70%, confirming this specific CPU level predates
+today entirely and is a separate, out-of-scope characteristic — not
+conflated with the actual bug being fixed). Verified the real fix by
+running the app against the real card, unattended, for ~55 seconds
+straight (`ps`-checked at 25s and 55s) — no panic, log stayed empty
+both times. 140/140 tests, clean build.
+
+**Real, pre-existing meter/ruler scale bug found by the user's own
+sanity check ("t'es sûr que l'échelle est bonne ?"), same day.** Good
+question to ask right after real signal started flowing for the first
+time — this bug existed in `draw_meter`/`draw_ruler` before today, but
+every real backend showed "N/A" dashes until this session's AN1/AN2
+work, so it never had real data to expose it. Root cause:
+`draw_meter`'s fill height was `track.height * l` — `l` being raw
+*linear* amplitude (1.0 = 0 dBFS) — while `draw_ruler`'s dB gridlines
+(and the fader track right next to the meter) are positioned on the
+*tapered* curve (`db_to_t`/`vol_to_t`, the same power curve the fader
+itself travels). Checked the actual numbers rather than eyeballing it:
+a genuine -6 dBFS signal (linear amplitude 0.5) should top out right at
+the ruler's "-6" gridline, but the old linear fill only reached 50% up
+the column while `vol_to_t(0.5)` ≈ 0.63 — the fill was landing well
+*below* where its own label said it was, and the gap widens further
+down the scale (the whole point of a tapered curve is compressing the
+quiet end). Fixed by filling to `track.height * vol_to_t(l)` instead —
+now the meter and the ruler agree by construction, not by coincidence.
+
+Also found, in the same investigation, a smaller **second** issue:
+`draw_meter`'s fill track reserves a strip at the top for the clip LED
+(`CLIP_H`+`CLIP_GAP`) that `draw_ruler`'s tick positions never
+accounted for — a few-px offset stacked on top of the curve mismatch.
+Extracted the inset into a named `meter_track()` helper and *tried*
+applying it to both functions — but that would have fixed the meter/
+ruler pairing at the cost of breaking the ruler/fader-cap pairing
+instead (`draw_track`'s own cap position uses the full, uninset
+canvas height, and was already correctly aligned with the ruler before
+touching any of this). Reverted `draw_ruler` back to measuring off the
+full rect deliberately, leaving that small, pre-existing gap alone
+rather than trading one alignment bug for another under time pressure
+— documented in both functions' own comments so it doesn't read as an
+oversight later.
+
+New test `meter_fill_curve_is_tapered_not_linear` locks in the fix
+(asserts the tapered `t` differs from raw linear 0.5 by a real margin,
+and that it matches `db_to_t` fed the same dB value the ruler itself
+uses) — a case chosen specifically to fail against the old linear
+code, not just any assertion. 141/141 tests, clean build, and a mock
+screenshot with a genuinely non-zero meter reading (mock's own
+synthetic level) confirms the fill still renders sensibly (green
+mid-scale, red near the top with the clip LED lit) after the curve
+change — not just "compiles."
+
+**EQ frequency knobs were linear over a 3-decade range — same class of
+bug as the meter, found by continuing the same audit lens.** After
+fixing the meter's scale, kept looking for the same "wrong curve"
+pattern elsewhere rather than treating that as a one-off. `Knob`'s
+`value_to_t`/`t_to_value` are purely linear (`(value-lo)/(hi-lo)`) —
+correct for pan/gain/Q/pitch/width/trim (already-additive quantities:
+dB, percent, a linear position), but the EQ Band Freq and Low Cut Freq
+knobs pass `range: (20.0, 20_000.0)` — three decades — through that
+same linear map. A linear knob over 20 Hz-20 kHz squeezes the entire
+bass/low-mid range (20 Hz-2 kHz, most of what EQ work actually targets)
+into a sliver of the drag travel while the top octave alone eats
+roughly a quarter of it — the standard, well-known reason every real
+piece of audio software maps frequency controls logarithmically, never
+linearly.
+
+Added `Knob::log_scale: bool` rather than a second widget or a
+special-cased branch scattered through call sites: `value_to_t`/
+`t_to_value` switch to natural-log interpolation when set (falls back
+to linear if `range`'s low end isn't strictly positive, rather than
+taking `ln` of a non-positive number). Only 2 of the 8 `Knob{}`
+call sites got `log_scale: true` (EQ Band Freq, Low Cut Freq); the
+other 6 (pitch, width, gain, trim, Q, band gain, plus the 2 pan knobs
+in `strip.rs` missed on the first pass and caught by the compiler)
+got `log_scale: false` — correctly staying exactly as they were.
+3 new tests, including one specifically checking the log-mapped
+midpoint lands at the *geometric* mean (~632 Hz for 20-20,000 Hz), not
+the arithmetic one (10,010 Hz) — the exact number that would still
+pass if the fix silently degraded back to linear. 144/144 tests, clean
+build (first try once the 2 missed `strip.rs` call sites were added —
+the compiler caught both immediately via the new required field, no
+silent gap possible), live screenshot confirms no crash/regression.
+
+**Not click-verified.** Attempting to actually click Snapshot/Group/
+Layout controls this session hit something worse than the earlier
+"coordinate drift" — `xdotool getactivewindow` after a synthetic click
+returned a *different* window ID than TuxMix's, even immediately after
+`windowactivate --sync` and a direct click on the title bar. This
+sandbox appears to mix native-Wayland windows (this coding session's own
+terminal) with XWayland ones (the iced-rendered TuxMix window) in a way
+`xdotool` — an X11 tool — can observe and nominally "activate" but not
+reliably move real input *focus* to, at the Wayland-compositor level
+synthetic clicks actually need. This is a deeper, session-spanning
+environment limitation, not a per-click coordinate offset (see the
+`project_bus_redesign_2026_09` memory for the earlier, milder version of
+this problem and how this session's understanding of it evolved).
+
+**How this gap was actually closed**: rather than keep fighting
+synthetic clicks, added unit tests that call `app::update()` directly
+with the real `Message` variants a click would send — same code path,
+no window/focus/coordinate cooperation needed from the environment.
+This is *more* reliable than a screenshot-based click test would have
+been even in a cooperative environment (a passing visual check can't
+distinguish "worked for the right reason" from "worked by coincidence"
+the way an assertion on the resulting `TuxMix` state can) — worth
+reaching for this approach earlier next time a GUI feature's *logic*
+(not its rendering) needs verifying, rather than defaulting to
+screenshot-driven interaction tests.
+
+**Trim ("T") button added on Hardware Inputs.** User: *"au-dessus du
+bouton de la roue crantée faudrait mettre un bouton T pour le talkback,
+sur les hardware inputs et les software playback comme sur totalmix."*
+Checked before building anything: `RmeDevice::set_trim(idx, db)` already
+exists (`tuxmix-core/src/device.rs`, -65..+6 dB on the master curve) —
+this is **Trim**, not Talkback (no talkback concept exists anywhere in
+the codebase); flagged the naming mismatch to the user, who confirmed
+Trim was right. Also checked scope before implementing on both sections
+as asked: `usb.rs`'s `set_trim` calls `input_source(idx)`, which only
+maps to real hardware input sources (An1-4/As12/Adat34/56/78) — Software
+Playback indices don't resolve through it at all. Asked the user how to
+handle that gap rather than shipping something broken on Playback; they
+picked "Trim, Hardware Inputs only."
+
+**Implementation** (mirrors the existing Gain/EQ wiring shape exactly,
+nothing novel):
+- `tuxmix-core`: `InputChannel.trim: f32` (new field, `#[serde(default)]`
+  for old scene JSON) — `set_trim` had no getter and no backend persisted
+  the value anywhere, unlike every other setter in the trait (`set_gain`
+  et al always write into the channel struct); added that write to
+  `usb.rs`'s real override and to a new `mock.rs` override (the trait
+  default is a silent no-op with nowhere to store a value, which would've
+  made the "T" button look broken in `--mock`).
+- `widgets/strip.rs`: `FlyoutKind::Trim`, `StripParams::has_trim`/`trim`,
+  a "T" trigger in `icon_col` *above* the gear icon (per the user's own
+  placement), gated on `has_trim` — `true` unconditionally for every
+  `ChannelId::Input`, unlike `has_gain` (Mic/Instrument only) or `has_eq`
+  (analog-only), matching the reference showing "T" on ADAT/AS strips
+  too. Lights up whenever trim ≠ 0, same "shows live state" idea as the
+  EQ trigger's `eq_open || eq_enabled`.
+- `app.rs`: `Message::TrimChanged`/`TrimReset`, a `trim_popover` (one
+  `Knob`, -65..+6 dB, `arc_from_center: false` since the range isn't
+  centered around 0 the way Pan's is) — same "pushes the row" shape as
+  `settings_popover`/`eq_popover`, wired into `mixer_view`'s *input* loop
+  only (not the Playback loop, per the scope decision above), sized off
+  the existing `strip::FLYOUT_W` (Route's own width) rather than a new
+  constant, since it's a single knob with nothing wider to fit.
+
+**Verified**: `cargo build --workspace` + `cargo test --workspace`
+124/124. Visually confirmed live (MIXER view, `--mock`) that "T" renders
+above the gear icon on every Hardware Input (analog and ADAT/AS alike)
+and is absent from every Software Playback and Hardware Output strip —
+exactly the intended gating. **Not confirmed**: actually clicking "T" to
+open the flyout — every synthetic click attempt this session landed on
+the wrong element (see the `project_bus_redesign_2026_09` memory's note
+on `xdotool`/screenshot coordinate drift in this sandbox, which got
+worse, not better, over the session). The flyout wiring itself is a
+direct, mechanical copy of the already-proven Settings/EQ pattern (same
+message, same `state.flyout_open` check, same row-push mechanism) —
+high confidence, just not click-verified end-to-end. Worth a real click
+test next time this file is open in an environment where that works.
+
+**Fader centering + dB readout moved under the fader, not the meter.**
+User: *"le fader sur le bus [devrait être] parfaitement centré (...un
+tout petit peu à droite)... et la valeur des dB [devrait être] centrée
+juste en dessous du fader et non du VU meter."* Measured before fixing:
+a live screenshot pixel measurement put the fader cap's center 1.5-2px
+right of the card's true center — small, but real and in the direction
+the user described, not imagined.
+
+**Root cause**: `Fader::layout_x` centered the `[meter+track]` *group*
+on the canvas's own `bounds_width` — correct for keeping the meter
+on-screen (that was the original fix this replaced), but the canvas
+itself is narrower than the strip's full content width, because
+`icon_col` (gear/EQ/T) is a `row!` sibling that shrinks the canvas's
+`Length::Fill` allocation without the canvas ever knowing that
+sibling exists. Self-centering on a narrower-than-true-content canvas,
+plus the track sitting toward the *right* side of the meter+track group
+rather than at the group's own center, compounded into a small but
+real rightward bias.
+
+**Fix**: new `Fader::reserved_right` field — the width `icon_col`
+claims outside the canvas — lets `layout_x` center the *track itself*
+(not the group) on `(bounds_width + reserved_right) / 2`, which reduces
+to exactly `content_width / 2` (the strip's true center) once
+`reserved_right` correctly accounts for everything the canvas doesn't
+know about. The meter is then positioned `GAP` to the track's left,
+with the same negative-x safety clamp the original fix had (shift the
+whole group right instead of letting the meter clip). Matrix view's
+compact fader (no meter, no `icon_col` sibling) passes `reserved_right:
+0.0` and takes an early-return branch that reproduces its old
+self-centering exactly — unaffected by this change.
+
+For the dB readout: it previously sat in `row![db_display, Space::Fill,
+collapse_btn]` — left-anchored under roughly where the *meter* is, not
+the fader (TotalMix-accurate positionally, per the actual reference
+screenshot, but not what the user asked for this time). Restructured
+into a **symmetric** row instead: a blank spacer on the left exactly
+`collapse_btn`'s own width (now pinned via `.width(ICON_BTN_W * scale)`,
+previously content-sized), `db_display` centered in a `Length::Fill`
+container between the two, `collapse_btn` on the right. Because both
+bookends are equal width with equal gaps, the centered container's
+midpoint is the row's true center — which, now that the fader row above
+is centered the same way, is exactly where the fader sits. No `Stack`
+needed (deliberately avoided — this file has direct prior experience
+with `Stack`-based overlays breaking click handling; a plain symmetric
+`row!` sidesteps that risk entirely).
+
+Verified: `cargo build --workspace` + `cargo test --workspace` 124/124,
+and a live screenshot pixel measurement confirms the fader cap now sits
+within 0.5px of the card's true center (down from 1.5-2px), with "0.0
+dB" visibly centered directly under the fader's own rail in a 4x zoom
+crop.
+
+**Hardware Inputs gap uniformity — real bug this time, not the
+tint-color measurement illusion from earlier in this file.** User: *"que
+sur les hardware input... y'ait le même écart partout que sur les
+hardware outputs et software playbacks."* Section 9's own "width/height/
+gap" entry above had checked this once already and concluded the gaps
+*were* uniform, blaming an apparent inconsistency on per-channel-type
+background tinting confusing a crude brightness-threshold pixel scan —
+that conclusion was **wrong**. Re-measured properly this time (a hard
+darkness threshold, `sum(rgb) < 100`, cleanly separating card from page
+background regardless of tint) and found a real, reproducible pattern:
+gaps between AN1/2↔IN3/4↔AS1/2↔ADAT3/4 (each a different `ChannelType`)
+measured 13px, while ADAT3/4↔ADAT5/6↔ADAT7/8 (same type, ADAT) measured
+6px.
+
+**Root cause**: `mixer_view`'s Hardware Inputs loop (`app.rs`) inserted
+a 1px `rule::vertical` divider every time `channel_type` changed between
+consecutive pairs — a deliberate, intentional feature (a group divider
+between Mic/Instrument/Line/ADAT sections). Since the row's own
+`.spacing(theme::SPACE_MD)` applies on *both* sides of that extra
+child, a divided gap came out to `SPACE_MD + 1 + SPACE_MD` (~13px)
+against a plain `SPACE_MD` (~6px) everywhere else — exactly the
+measured pattern. Software Playback's own loop already had a comment
+noting it deliberately has "no channel-type dividers to worry about",
+confirming Input was the *only* section with this asymmetry, not an
+illusion affecting all three equally.
+
+Removed the divider insertion entirely — every gap on every row (all
+three sections) is now the same plain `SPACE_MD`. Verified via the same
+darkness-threshold pixel scan: all 5 Hardware Input gaps now measure
+exactly 6px, matching Playback/Outputs precisely (down from 13px at 3 of
+the 5 transitions). `cargo build --workspace` + `cargo test --workspace`
+124/124.
+
+**Lesson, worth remembering**: the first "gap consistency" investigation
+in this file used a weak measurement method, got a plausible-sounding
+"it's just measurement noise" answer, and moved on — the user re-raised
+the exact same complaint later in the session and this time it turned
+out to be a real bug the weak method had actually missed. A pixel
+measurement that produces a boring/expected answer isn't automatically
+trustworthy just because it's convenient; the method matters as much as
+the result, especially for anything below ~15px where a threshold choice
+can flip the conclusion.
+
+**Collapse animation growing the strip's height mid-transition.** User:
+*"pendant que ça se minimise le bus augmente de hauteur un peu et après
+ça se remet normal."* Root cause: `strip()`'s dispatch renders
+`full_strip` (not `collapsed_strip`) for the *entire* ~160ms width
+animation (`CollapseAnim::is_settling`), only switching to
+`collapsed_strip` once it's fully settled — so every `text()` inside
+`full_strip` is exposed to the animated, shrinking width the whole time.
+iced's `text()` defaults to word-wrapping (`Wrapping::Word`); once the
+animated width dropped below what a long channel name ("Instr. 3/4",
+"ADAT7/8") needs on one line, it wrapped to two lines, growing that
+row's — and so the whole card's — height for the remainder of the
+animation, snapping back once the width animation finished and the name
+had room again (or once it switched to `collapsed_strip`, which uses the
+rotated-canvas name label, immune to this since it's not a `text()`
+widget at all).
+
+**Fix**: added `.wrapping(advanced_text::Wrapping::None)` to every plain
+`text()` in `full_strip`/`header_row` that sits in the animated-width
+flow — the header name/type-tag, the dB readout, the route button's bus
+label, "LOOP". None of these are ever *meant* to wrap (every label in
+this card is a deliberate single line), so this is a correctness fix for
+the whole card's animation, not a narrow patch for one label — text that
+doesn't fit now gets clipped by the card's own existing `.clip(true)`
+instead of wrapping and pushing the card taller.
+
+**Not directly observed mid-animation** — the transition is ~160ms,
+well under what a screenshot round-trip in this sandbox can reliably
+catch (and this session's own `xdotool` coordinate-drift problems, see
+the Trim-button entry above, make even *triggering* the collapse
+reliably via synthetic click a coin flip). Verified instead: resting-
+state rendering (both expanded and, by inspection, the always-single-
+line label set) is visually unchanged after the fix — `cargo build
+--workspace` + `cargo test --workspace` 124/124. The fix itself is a
+direct, well-understood application of iced's own documented `Wrapping`
+API to the exact failure mode described, not a guess.
