@@ -20,6 +20,20 @@ The GUI is **functionally complete and well-architected**:
 **What it needs is visual polish, not re-architecture.** The codebase is
 healthy; the skin is what's rough.
 
+**2026-09-06 update**: most of the polish this section called for has
+since happened (§9/§10) — palette, fader/meter/knob redesign, the right
+sidebar, and a from-scratch Matrix view in both the GUI and TUI. A
+hardware-audit pass on top of that found and fixed several real
+correctness bugs (not just cosmetic ones) that had nothing to do with
+visual polish: ALSA-backend Mute/Solo were silent no-ops, Hardware
+Output VU meters read the wrong pair (or a permanent zero) in both
+UIs, and the EQ frequency controls (a knob in the GUI, keyboard
+stepping in the TUI) mapped a 3-decade range linearly instead of
+logarithmically. See §7's updated roadmap table and the hardware-audit
+entries scattered through the rest of this file for the specifics —
+this top section is kept as the original framing, not rewritten, since
+it was accurate for what it was assessing at the time.
+
 ---
 
 ## 1. Visual polish — high impact, low effort
@@ -450,6 +464,13 @@ polished and usable than oscmix's equivalent controls.
 
 ## 7. Priority roadmap
 
+**This table predates the 2026-09 redesign (§9/§10) and the hardware-
+audit pass that followed it — updated 2026-09-06 rather than left to
+mislead a future read as "Undo/Redo: not for v0.1" when it's been
+shipped for days.** For what actually changed and why, §9/§10 and the
+hardware-audit entries scattered through this file are the real record;
+this table is just the priority-tier summary kept in sync with them.
+
 ```
 Priority │ Feature                       │ Effort   │ Why
 ─────────┼───────────────────────────────┼──────────┼──────────────────────────────
@@ -459,6 +480,10 @@ Priority │ Feature                       │ Effort   │ Why
    Done  │ TUI polish + doc              │ —        │ dB readout, PAD key, dedup, doc, tests
    Done  │ Output strip distinction      │ —        │ Wider/taller/bigger-buttons, measured via pixel edges
    Done  │ Strip visual polish           │ —        │ Bg gradient + hover glow, both pixel-verified
+   Done  │ Undo/Redo                     │ —        │ §10: Vec<Scene> stacks, is_undoable() gate
+   Done  │ Right sidebar (control strip) │ —        │ §10: device chip, M/S, Snapshots, Groups, Layout
+   Done  │ Matrix view rebuild (GUI+TUI) │ —        │ Real TotalMix axes, both UIs; hidden-fader cells (GUI)
+   Done  │ Real ALSA mute/solo/metering  │ —        │ Hardware-audit pass: silent no-ops fixed, AN1/AN2 VU
    P2    │ MIDI-triggered scene crossfade│ 1-2 wks  │ Crossfade is unique; MIDI trigger alone isn't
    P2    │ Drag-to-reorder strips        │ 5-8 hrs  │ Usability for large sessions
    P2    │ Color tagging                 │ 3-4 hrs  │ Studio workflow standard
@@ -466,14 +491,14 @@ Priority │ Feature                       │ Effort   │ Why
    P3    │ Fullscreen mode               │ < 1 hr   │ Common studio setup
    P3    │ Web UI (tablet)               │ weeks    │ Tablet control, big differentiator
    P3    │ Headless + HTTP API           │ 1 wk     │ Broadcast/theatre integration
-   P3    │ Undo/Redo                     │ medium   │ Important but not for v0.1
+   P3    │ Non-exclusive solo/PFL mode   │ medium   │ Needs usb.rs's exclusive-solo logic touched — see §10
 ```
 
-**P0/P1** = all done as of this pass — every polish item and unique
-differentiator originally scoped in this document is implemented and
-verified (build + tests + headless visual/pixel checks).
-**P2** = usability improvements for power users — the next open tier.
-**P3** = ambitious but unlocks entirely new audiences and use cases.
+**P0/P1** = all done. **P2** = usability improvements for power users —
+the next open tier, untouched by the 2026-09 work above (still real
+gaps, not stale entries). **P3** = ambitious, unlocks new audiences, or
+(the last row) scoped out of every pass so far for a specific,
+documented reason rather than just not gotten to yet.
 
 The Done items alone already make TuxMix the most versatile RME
 controller on any platform — P2/P3 are about going further, not catching up.
