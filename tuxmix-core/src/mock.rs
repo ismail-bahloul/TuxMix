@@ -161,6 +161,8 @@ impl RmeDevice for MockBabyfacePro {
                 pitch_percent: 0.0,
                 ms_proc: false,
                 an12: false,
+                eq_for_record: false,
+                optical_out_spdif: false,
                 dim: false,
                 fx_send_db: None,
                 width: 0.0,
@@ -439,6 +441,34 @@ impl RmeDevice for MockBabyfacePro {
 
     fn set_dim(&mut self, on: bool) -> Result<(), Error> {
         self.settings.dim = on;
+        Ok(())
+    }
+
+    fn set_eq_for_record(&mut self, on: bool) -> Result<(), Error> {
+        self.settings.eq_for_record = on;
+        Ok(())
+    }
+
+    fn set_optical_out_format(&mut self, spdif: bool) -> Result<(), Error> {
+        self.settings.optical_out_spdif = spdif;
+        Ok(())
+    }
+
+    fn set_cue(&mut self, idx: usize, on: bool) -> Result<(), Error> {
+        if idx >= self.output_pair_count() {
+            return Err(Error::InvalidChannel(format!("Output {idx}")));
+        }
+        for out in self.outputs.iter_mut() {
+            out.cue = false;
+        }
+        if on {
+            if let Some(l) = self.outputs.get_mut(idx * 2) {
+                l.cue = true;
+            }
+            if let Some(r) = self.outputs.get_mut(idx * 2 + 1) {
+                r.cue = true;
+            }
+        }
         Ok(())
     }
 

@@ -111,6 +111,21 @@ fn input_source(idx: usize) -> Result<Source, Error> {
     }))
 }
 
+/// The low-map raw value one playback pair should hold while output
+/// `cued_idx` has CUE engaged (or restored, if `on` is `false`) — a
+/// pure function so the actual exclusivity/restore logic is testable
+/// without a real USB handle. Muted (`0x0000`) unless CUE is off
+/// entirely (everything restores to `0x2000`) or `pb_pair` is the
+/// dedicated source for the output being cued (`PROTOCOL.md`'s
+/// "CUE on outputs", cap_cue.pcap, hardware-verified).
+fn cue_low_map_value(pb_pair: usize, cued_idx: usize, on: bool) -> u16 {
+    if !on || pb_pair == cued_idx {
+        0x2000
+    } else {
+        0x0000
+    }
+}
+
 /// The protocol source for a core playback channel index (12 channels,
 /// 6 stereo pairs). Both channels of a pair map to the same source.
 fn playback_source(idx: usize) -> Result<Source, Error> {
@@ -235,6 +250,8 @@ impl BabyfaceProUsb {
             pitch_percent: 0.0,
             ms_proc: false,
             an12: false,
+            eq_for_record: false,
+            optical_out_spdif: false,
             dim: false,
             fx_send_db: None,
             width: 0.0,
@@ -978,6 +995,51 @@ impl RmeDevice for BabyfaceProUsb {
         Ok(())
     }
 
+    fn set_eq_for_record(&mut self, on: bool) -> Result<(), Error> {
+        self.dev.set_eq_for_record(on)?;
+        self.settings.eq_for_record = on;
+        Ok(())
+    }
+
+    fn set_optical_out_format(&mut self, spdif: bool) -> Result<(), Error> {
+        self.dev.set_optical_out_spdif(spdif)?;
+        self.settings.optical_out_spdif = spdif;
+        Ok(())
+    }
+
+    fn set_cue(&mut self, idx: usize, on: bool) -> Result<(), Error> {
+        // CUE always targets the AN1/2 monitor bus's own low-map
+        // registers, whichever output strip's button was pressed —
+        // `idx` only selects which playback pair (`PB{idx+1}`, the
+        // same numbering `output_for`/`OUT_LABELS` already use) stays
+        // live as this output's dedicated CUE source. See
+        // `PROTOCOL.md`'s "CUE on outputs" (cap_cue.pcap,
+        // hardware-verified): 0x0000 = muted, 0x2000 = active/restored.
+        if idx >= self.output_pair_count() {
+            return Err(Error::InvalidChannel(format!("Output {idx}")));
+        }
+        let n_pairs = self.playbacks.len() / 2;
+        for pb_pair in 0..n_pairs {
+            let raw = cue_low_map_value(pb_pair, idx, on);
+            let src = playback_source(pb_pair * 2)?;
+            self.dev.set_low_map_volume(src, raw)?;
+        }
+        // Exclusive: engaging CUE on `idx` silently disengages whichever
+        // other output had it (there's only one AN1/2 bus to share).
+        for out in self.outputs.iter_mut() {
+            out.cue = false;
+        }
+        if on {
+            if let Some(l) = self.outputs.get_mut(idx * 2) {
+                l.cue = true;
+            }
+            if let Some(r) = self.outputs.get_mut(idx * 2 + 1) {
+                r.cue = true;
+            }
+        }
+        Ok(())
+    }
+
     fn capture_scene(&self) -> Scene {
         Scene {
             name: "capture".into(),
@@ -1348,6 +1410,26 @@ impl BabyfaceProUsb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cue_engaged_mutes_every_pair_except_the_dedicated_source() {
+        let cued = 3; // ADAT3/4's own dedicated CUE source (PB4)
+        for pb_pair in 0..6 {
+            let raw = cue_low_map_value(pb_pair, cued, true);
+            if pb_pair == cued {
+                assert_eq!(raw, 0x2000, "the dedicated source must stay active");
+            } else {
+                assert_eq!(raw, 0x0000, "pb{pb_pair} should be muted while cue is on");
+            }
+        }
+    }
+
+    #[test]
+    fn cue_disengaged_restores_every_pair_regardless_of_which_was_cued() {
+        for pb_pair in 0..6 {
+            assert_eq!(cue_low_map_value(pb_pair, 2, false), 0x2000);
+        }
+    }
 
     #[test]
     fn canonical_model_matches_alsa_backend_for_scene_sharing() {

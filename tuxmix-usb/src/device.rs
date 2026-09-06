@@ -89,6 +89,17 @@ pub struct BabyfaceUsb {
     sample_rate: u32,
     /// Whether interface 1 (DSP bulk 0x0A) is claimed.
     dsp_claimed: bool,
+    /// The 3 flags packed into the settings keepalive word
+    /// (`protocol::settings_word`) — tracked here (not just written
+    /// through, forgotten) because the word is a single register: any
+    /// setter that recomposed it from just its own flag, assuming the
+    /// other two off, would silently reset whichever of the other two
+    /// happened to be on. Defaults match the device's own power-on
+    /// state (`PROTOCOL.md`: "default (ADAT optical, EQ-record off,
+    /// clock Internal)").
+    clock_optical: bool,
+    eq_record: bool,
+    spdif_out: bool,
 }
 
 impl BabyfaceUsb {
@@ -126,6 +137,9 @@ impl BabyfaceUsb {
             streams: None,
             sample_rate: 48_000,
             dsp_claimed: false,
+            clock_optical: false,
+            eq_record: false,
+            spdif_out: false,
         })
     }
 
@@ -514,9 +528,36 @@ impl BabyfaceUsb {
     /// this settings word (bit 2, PROTOCOL.md — verified cap_clk: the
     /// `0x17` readback byte 2 goes 0x40 → 0x80 no-lock).
     pub fn set_clock_optical(&mut self, optical: bool) -> Result<(), Error> {
-        self.send(&protocol::settings_keepalive(protocol::settings_word(
-            optical, false, false,
-        )))
+        self.clock_optical = optical;
+        self.send_settings_word()
+    }
+
+    /// EQ for Record (`0x10 0x05CF` bit 6) — whether the hardware DSP
+    /// EQ is applied to the recorded signal, not just the monitor.
+    /// `PROTOCOL.md`'s `cap_eqr.pcap`, hardware-verified alongside
+    /// clock source/optical-out in the same one-setting-at-a-time
+    /// campaign.
+    pub fn set_eq_for_record(&mut self, on: bool) -> Result<(), Error> {
+        self.eq_record = on;
+        self.send_settings_word()
+    }
+
+    /// Optical output format: `true` = SPDIF, `false` = ADAT (the
+    /// device default). `0x10 0x05CF` bit 10, `PROTOCOL.md`'s
+    /// `cap_opt.pcap`, hardware-verified.
+    pub fn set_optical_out_spdif(&mut self, spdif: bool) -> Result<(), Error> {
+        self.spdif_out = spdif;
+        self.send_settings_word()
+    }
+
+    /// Composes and sends the settings keepalive word from all 3
+    /// currently-tracked flags together — the single point every
+    /// individual flag setter goes through, so setting one can never
+    /// silently reset either of the other two (see `clock_optical`'s
+    /// own field doc comment for why that matters).
+    fn send_settings_word(&mut self) -> Result<(), Error> {
+        let word = protocol::settings_word(self.clock_optical, self.eq_record, self.spdif_out);
+        self.send(&protocol::settings_keepalive(word))
     }
 
     /// Pump the streams' libusb event loop so transfers keep moving.

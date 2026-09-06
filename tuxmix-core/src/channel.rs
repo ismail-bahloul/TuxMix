@@ -170,6 +170,14 @@ pub struct OutputChannel {
     pub loopback: bool,
     pub mute: bool,
     pub solo: bool,
+    /// CUE engaged — this output's own dedicated playback pair (`PB
+    /// {pair+1}`) is exclusively monitored through the AN1/2 bus, every
+    /// other playback pair muted there. See [`RmeDevice::set_cue`].
+    /// Exclusive across every output (only one can be cued at a time,
+    /// same as solo), not persisted in scenes — a momentary monitoring
+    /// state, not a mix setting.
+    #[serde(default, skip_serializing)]
+    pub cue: bool,
 }
 
 impl InputChannel {
@@ -218,6 +226,7 @@ impl OutputChannel {
             loopback: false,
             mute: false,
             solo: false,
+            cue: false,
         }
     }
 }

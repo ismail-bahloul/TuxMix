@@ -166,6 +166,15 @@ impl RmeDevice for DeviceHandle {
     fn set_dim(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_dim(on))
     }
+    fn set_eq_for_record(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_eq_for_record(on))
+    }
+    fn set_optical_out_format(&mut self, spdif: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_optical_out_format(spdif))
+    }
+    fn set_cue(&mut self, idx: usize, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_cue(idx, on))
+    }
     fn set_input_link(&mut self, linked: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_input_link(linked))
     }
@@ -971,6 +980,14 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                             let on = dev.settings().input_link;
                             let _ = dev.set_input_link(!on);
                         }
+                        KeyCode::Char('f') => {
+                            let on = dev.settings().eq_for_record;
+                            let _ = dev.set_eq_for_record(!on);
+                        }
+                        KeyCode::Char('w') => {
+                            let on = dev.settings().optical_out_spdif;
+                            let _ = dev.set_optical_out_format(!on);
+                        }
                         // EQ editor — analog inputs (AN1-4) only, mirrors
                         // tuxmix-gui's EQ flyout. See `render_eq`/
                         // `adjust_eq_field`.
@@ -994,6 +1011,23 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                                     if let Some(oc) = dev.outputs().get(ch) {
                                         let new_state = !oc.loopback;
                                         let _ = dev.set_loopback(pair, new_state);
+                                    }
+                                }
+                            }
+                        }
+                        // CUE — Output section only, mirrors tuxmix-gui's
+                        // per-output-strip "C" button (exclusively monitor
+                        // this output's own playback feed through AN1/2).
+                        KeyCode::Char('c') => {
+                            if section == 2 {
+                                if let Some(item) = output_items(dev).get(channel).copied() {
+                                    let (pair, ch) = match item {
+                                        PairItem::Linked(p) => (p, p * 2),
+                                        PairItem::Single(c) => (c / 2, c),
+                                    };
+                                    if let Some(oc) = dev.outputs().get(ch) {
+                                        let new_state = !oc.cue;
+                                        let _ = dev.set_cue(pair, new_state);
                                     }
                                 }
                             }
@@ -1116,7 +1150,7 @@ fn ui(
             mode,
             Span::raw(format!("{}", view_tag)),
             Span::raw(
-                "  q:quit Tab:toggle e:EQ(AN1-4) o:submix y/h:pitch r:rate u/j:width x:ms a:an1>2 k:link",
+                "  q:quit Tab:toggle e:EQ(AN1-4) o:submix y/h:pitch r:rate u/j:width x:ms a:an1>2 k:link f:eqrec w:spdifout c:cue(out) l:loop",
             ),
         ]))
         .block(Block::default().borders(Borders::ALL)),
@@ -1124,7 +1158,7 @@ fn ui(
     );
 
     let s = format!(
-        "HW Inputs: {}  |  SW Playbacks: {}  |  Submix: {}  |  Rate: {} kHz  |  Clock: {}  |  Pitch: {:+0.1}%  |  Width: {:+0.2}  |  MS:{}  AN1>2:{}  Link:{}",
+        "HW Inputs: {}  |  SW Playbacks: {}  |  Submix: {}  |  Rate: {} kHz  |  Clock: {}  |  Pitch: {:+0.1}%  |  Width: {:+0.2}  |  MS:{}  AN1>2:{}  Link:{}  EQRec:{}  SPDIFOut:{}",
         dev.inputs().len(),
         dev.playbacks().len(),
         OUT_LABELS[sel_out],
@@ -1135,6 +1169,8 @@ fn ui(
         if dev.settings().ms_proc { "on" } else { "off" },
         if dev.settings().an12 { "on" } else { "off" },
         if dev.settings().input_link { "on" } else { "off" },
+        if dev.settings().eq_for_record { "on" } else { "off" },
+        if dev.settings().optical_out_spdif { "on" } else { "off" },
     );
     f.render_widget(
         Paragraph::new(s).block(Block::default().borders(Borders::ALL).title("Overview")),
@@ -1269,6 +1305,9 @@ fn ui(
                 if ch.loopback {
                     label.push_str(" [LOOP]");
                 }
+                if ch.cue {
+                    label.push_str(" [CUE]");
+                }
                 (
                     label,
                     out_meters.get(ch_idx).copied().unwrap_or(0.0),
@@ -1283,7 +1322,7 @@ fn ui(
         "Tab: return to mixer".into()
     } else {
         format!(
-            "IN:{}:{}  +/-:vol  PgUp/PgDn:0.1dB  ,/.:pan  m:mute  s:solo  p:48V  P:pad  [/] or g/d:gain  v:sens  l:loop(OUT)  t:stereo  arrows:navigate  q:quit",
+            "IN:{}:{}  +/-:vol  PgUp/PgDn:0.1dB  ,/.:pan  m:mute  s:solo  p:48V  P:pad  [/] or g/d:gain  v:sens  l:loop(OUT)  c:cue(OUT)  t:stereo  arrows:navigate  q:quit",
             match sel_sec {
                 0 => "IN",
                 1 => "PB",

@@ -39,6 +39,22 @@ pub struct DeviceSettings {
     /// AN 1>2 engaged (0x17 wIdx=0x1000 flag).
     #[serde(default)]
     pub an12: bool,
+    /// EQ for Record: whether the hardware DSP EQ is applied to the
+    /// recorded signal too, not just the monitor mix. Settings
+    /// keepalive bit 6 (`PROTOCOL.md`'s `cap_eqr.pcap`, hardware-
+    /// verified) — an RME-specific setting, distinct from the generic
+    /// `spdif_*` fields above.
+    #[serde(default)]
+    pub eq_for_record: bool,
+    /// Optical Out format: `true` = SPDIF (2-channel), `false` = ADAT
+    /// (8-channel, the device default). Settings keepalive bit 10
+    /// (`PROTOCOL.md`'s `cap_opt.pcap`, hardware-verified) — an
+    /// RME-specific setting for the single physical optical port,
+    /// distinct from the generic `spdif_*` fields above (which target
+    /// the standard ALSA S/PDIF control surface this device doesn't
+    /// expose).
+    #[serde(default)]
+    pub optical_out_spdif: bool,
     /// Dim engaged on the Phones output (an absolute -20 dB cut,
     /// independent of the Phones master's own volume). See
     /// [`RmeDevice::set_dim`].
@@ -248,6 +264,35 @@ pub trait RmeDevice {
         let _ = on;
         Err(Error::InvalidChannel(
             "Dim is not supported on this backend".into(),
+        ))
+    }
+
+    /// EQ for Record toggle (settings keepalive bit 6).
+    fn set_eq_for_record(&mut self, on: bool) -> Result<(), Error> {
+        let _ = on;
+        Err(Error::InvalidChannel(
+            "EQ for Record is not supported on this backend".into(),
+        ))
+    }
+
+    /// Optical Out format: `true` = SPDIF, `false` = ADAT (settings
+    /// keepalive bit 10).
+    fn set_optical_out_format(&mut self, spdif: bool) -> Result<(), Error> {
+        let _ = spdif;
+        Err(Error::InvalidChannel(
+            "Optical Out format is not supported on this backend".into(),
+        ))
+    }
+
+    /// CUE: exclusively monitors output `idx`'s own dedicated playback
+    /// pair through the AN1/2 bus, muting every other playback pair
+    /// there (`on = true`); `false` restores the normal monitor mix.
+    /// Exclusive across every output, same as solo — engaging CUE on
+    /// one output silently disengages whichever other output had it.
+    fn set_cue(&mut self, idx: usize, on: bool) -> Result<(), Error> {
+        let _ = (idx, on);
+        Err(Error::InvalidChannel(
+            "CUE is not supported on this backend".into(),
         ))
     }
 

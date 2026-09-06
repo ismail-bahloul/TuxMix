@@ -1899,3 +1899,104 @@ line label set) is visually unchanged after the fix — `cargo build
 --workspace` + `cargo test --workspace` 124/124. The fix itself is a
 direct, well-understood application of iced's own documented `Wrapping`
 API to the exact failure mode described, not a guess.
+
+**VU meter scale, Sensitivity wiring, and three newly-wired proprietary-mode
+features: CUE, EQ-for-Record, Optical Out format (2026-09-06).** User
+caught the first bug directly by asking a pointed question: "t'es sur
+que l'echelle est bonne ? entre le VU de TuxMix et le VU de la carte
+physique." Root cause: `fader.rs::draw_meter`'s fill height used the raw
+linear amplitude while `draw_ruler`'s tick marks (and the fader cap
+itself) already went through the tapered `db_to_t` curve — so the meter
+fill and its own ruler disagreed on where a given dB value should sit.
+Fixed by routing the fill height through the same `vol_to_t(l)` curve
+(new `meter_track(r, scale)` helper, used only by `draw_meter` —
+deliberately *not* shared with `draw_ruler`, since that would have
+reintroduced a separate, already-correct ruler/fader-cap alignment).
+New test `meter_fill_curve_is_tapered_not_linear`.
+
+That question led to a wider check: whether the remaining known gaps
+(Clock Source, Sensitivity, plus two settings found not yet wired up)
+actually needed new Windows USBPcap captures, or were already solved in
+the sibling repo's `PROTOCOL.md` and just never connected to Rust code.
+Checked before concluding either way (per explicit instruction — "Oui
+tu peux faire ca" — to verify against existing documentation first
+rather than guess): **Clock Source** was already fully implemented.
+**Sensitivity** (`set_ref_level`, Instr 3/4 +4dBu/-10dBV/Boost) existed
+in `tuxmix-usb` and was fully hardware-verified, but `usb.rs`'s
+`set_sensitivity` was still a stub returning `Err("not mapped")` —
+wired it to the real mechanism. Along the way, found two more
+already-solved-but-never-wired settings sharing the same "keepalive
+settings-word" register as Clock Source (`0x10` VendorRequest,
+`0x05CF`, sent ~every 3s): **EQ for Record** (bit 6) and **Optical Out
+format, ADAT vs SPDIF** (bit 10) — plus a genuinely new feature, **CUE**
+(monitor-bus preview, `cap_cue.pcap`), which mutes every playback pair's
+low-map crosspoint into the AN1/2 monitor bus except the one being
+cued, reusing the existing `set_low_map_volume` mechanism already
+proven for Mute/Solo. User approved all three via `AskUserQuestion`:
+"Oui, les 3 (CUE + EQ-for-Record + format optique)."
+
+Implementation ran the full stack: `tuxmix-usb::device::BabyfaceUsb`
+gained tracked `clock_optical`/`eq_record`/`spdif_out` bool fields and a
+private `send_settings_word()` so the three flags share one register
+without one write stomping the others (the settings-word is a single
+`u16`, not three independent writes — composing it from all three
+tracked flags on every send was the actual fix, not just adding new
+setter functions). `tuxmix-core::device::RmeDevice` gained
+`set_eq_for_record`/`set_optical_out_format`/`set_cue` trait methods
+(default `Err`, per this project's own established pattern for
+backend-optional controls) plus two new `DeviceSettings` fields; all
+four struct-literal construction sites (`scene.rs`, `usb.rs`, `mock.rs`,
+`babyface.rs`) needed updating for the new fields to compile.
+`OutputChannel` gained a non-persisted `cue: bool`
+(`#[serde(default, skip_serializing)]`, mirroring `pitch_percent`'s own
+momentary-state pattern) with CUE's exclusivity (only one output pair
+can be cued at a time — there's one physical AN1/2 monitor bus to
+share) implemented identically in `usb.rs` and `mock.rs`.
+
+**Caught mid-implementation, not after**: adding the 3 new trait
+methods with default bodies made `cargo build --workspace` pass clean
+with zero errors — but that was misleading. `DeviceHandle` (the enum
+`app.rs`/`tuxmix-tui/main.rs` use to abstract over backends via a
+`delegate!` macro) needed *explicit* `delegate!` arms added for each of
+the 3 new methods in both files, or calls would silently hit the
+trait's own always-erroring default instead of ever reaching the real
+backend — reasoned through the macro's mechanics before trusting the
+clean build, rather than assuming green-build meant fully-wired.
+
+GUI: new `Message::EqForRecordChanged`/`OpticalOutFormatChanged`/
+`CueChanged`, two new toggle rows in the existing `device_panel()`
+Global row ("EQ for Record"/"Opt Out: SPDIF", same `spdif_toggle`
+closure as MS Proc/AN1>2/Input Link), and a new "C" button in
+`full_strip`'s M/S row (Output strips only, `has_cue`/`cue` added to
+`StripParams`) styled and positioned like Mute/Solo. TUI: three new
+single-key bindings (`f`=EQ-for-Record, `w`=Opt-Out-SPDIF, both global;
+`c`=CUE, Output section only, mirroring the existing `l`=Loopback
+pattern), a `[CUE]` tag alongside the existing `[M]`/`[S]`/`[LOOP]` tags
+on Output strips, and both new toggles added to the Overview status
+line and the header key-legend. Live-verified all three in a real
+`alacritty` window (`xdotool key` delivery is reliable there, unlike
+synthetic clicks against this app's XWayland window — see the
+click-testing-limits note elsewhere in this file): `f`/`w` flip
+`EQRec:`/`SPDIFOut:` in the Overview line, `c` adds `[CUE]` to the
+selected Output strip. The GUI's own device-panel toggle rows were
+*not* independently click-verified — the triggering "Internal ▾" button
+click didn't register in two attempts (same known sandbox limitation),
+so that half relied on direct code review (the two new rows are
+structurally identical to the already-shipped, already-working MS
+Proc/AN1>2/Input Link rows in the same `row!`) plus a new `update()`-
+driven unit test, `eq_for_record_and_optical_out_format_toggles_reach_device_settings`,
+which specifically asserts that toggling EQ-for-Record does *not* stomp
+the SPDIF-out flag — the regression the shared-settings-word register
+made possible before `send_settings_word()` was written to compose all
+three flags together.
+
+**Flagged, deliberately not fixed**: `apply_scene` (`usb.rs`) only
+updates `self.settings = scene.settings.clone()` for global settings —
+it never re-issues the actual USB writes for `clock_source`, `an12`,
+`ms_proc`, and now `eq_for_record`/`optical_out_spdif` too, so loading a
+saved Scene doesn't actually restore these to real hardware, only to
+the in-memory model. Pre-existing, affects many fields beyond the two
+added here — out of scope for this pass, worth its own session.
+
+`cargo build --workspace` clean, `cargo test --workspace` 158/158 (60
+GUI + 51 core + 17 TUI + 30 tuxmix-usb, 8 ignored live-hardware-only).

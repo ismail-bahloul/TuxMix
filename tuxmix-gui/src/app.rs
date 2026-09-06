@@ -221,6 +221,15 @@ impl RmeDevice for DeviceHandle {
     fn set_dim(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_dim(on))
     }
+    fn set_eq_for_record(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_eq_for_record(on))
+    }
+    fn set_optical_out_format(&mut self, spdif: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_optical_out_format(spdif))
+    }
+    fn set_cue(&mut self, idx: usize, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_cue(idx, on))
+    }
     fn set_input_link(&mut self, linked: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_input_link(linked))
     }
@@ -608,6 +617,12 @@ pub enum Message {
     MsProcChanged(bool),
     An12Changed(bool),
     InputLinkChanged(bool),
+    EqForRecordChanged(bool),
+    OpticalOutFormatChanged(bool),
+    /// The CUE button on an Output strip — exclusive across every
+    /// output (see `RmeDevice::set_cue`'s own doc comment), so this
+    /// always carries the *target* state, not a relative toggle.
+    CueChanged(ChannelId, bool),
 
     VolumeChanged(ChannelId, usize, f32),
     FaderPressed(ChannelId, usize, f32, Option<(f32, f32)>),
@@ -1597,6 +1612,17 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::InputLinkChanged(on) => {
             let _ = state.device.set_input_link(on);
         }
+        Message::EqForRecordChanged(on) => {
+            let _ = state.device.set_eq_for_record(on);
+        }
+        Message::OpticalOutFormatChanged(spdif) => {
+            let _ = state.device.set_optical_out_format(spdif);
+        }
+        Message::CueChanged(cid, on) => {
+            if let ChannelId::Output(idx) = cid {
+                let _ = state.device.set_cue(idx / 2, on);
+            }
+        }
         Message::VolumeChanged(cid, out, v) => {
             apply_grouped_volume(state, cid, out, v);
         }
@@ -2199,6 +2225,16 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
         spdif_toggle("MS Proc", settings.ms_proc, Message::MsProcChanged),
         spdif_toggle("AN 1>2", settings.an12, Message::An12Changed),
         spdif_toggle("Input Link", settings.input_link, Message::InputLinkChanged),
+        spdif_toggle(
+            "EQ for Record",
+            settings.eq_for_record,
+            Message::EqForRecordChanged
+        ),
+        spdif_toggle(
+            "Opt Out: SPDIF",
+            settings.optical_out_spdif,
+            Message::OpticalOutFormatChanged
+        ),
     ]
     .spacing(theme::SPACE_MD * scale)
     .align_y(iced::Alignment::Center);
@@ -2443,6 +2479,8 @@ fn strip_params<'a>(
         open_flyout: state.flyout_open.and_then(|(c, k)| (c == cid).then_some(k)),
         mute: false,
         solo: false,
+        has_cue: false,
+        cue: false,
         default_vol: 1.0,
         editing: state.editing == Some(cid),
         edit_buf: &state.edit_buf,
@@ -2531,6 +2569,8 @@ fn strip_params<'a>(
                 stereo_linked: state.device.output_linked(i / 2),
                 mute: ch.mute,
                 solo: ch.solo,
+                has_cue: true,
+                cue: ch.cue,
                 default_vol: 1.0,
                 ..base
             }
@@ -3671,6 +3711,52 @@ mod tests {
         for cid in all_channel_ids(&state) {
             assert!(!channel_is_muted(&state, cid), "{cid:?} should be unmuted");
         }
+    }
+
+    #[test]
+    fn cue_is_exclusive_across_outputs() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Output(0); // pair 0
+        let b = ChannelId::Output(2); // pair 1
+
+        let _ = update(&mut state, Message::CueChanged(a, true));
+        assert!(state.device.outputs()[0].cue);
+        assert!(state.device.outputs()[1].cue, "cue mirrors across a pair");
+        assert!(!state.device.outputs()[2].cue);
+
+        // Engaging CUE on a different output silently disengages `a`
+        // (there's only one AN1/2 monitor bus to share) rather than
+        // both reading as cued at once.
+        let _ = update(&mut state, Message::CueChanged(b, true));
+        assert!(!state.device.outputs()[0].cue, "a should no longer be cued");
+        assert!(!state.device.outputs()[1].cue);
+        assert!(state.device.outputs()[2].cue);
+        assert!(state.device.outputs()[3].cue);
+
+        let _ = update(&mut state, Message::CueChanged(b, false));
+        assert!(!state.device.outputs()[2].cue, "explicit off clears it");
+        assert!(!state.device.outputs()[3].cue);
+    }
+
+    #[test]
+    fn eq_for_record_and_optical_out_format_toggles_reach_device_settings() {
+        let mut state = new(true, None, None);
+        assert!(!state.device.settings().eq_for_record);
+        assert!(!state.device.settings().optical_out_spdif);
+
+        let _ = update(&mut state, Message::EqForRecordChanged(true));
+        assert!(state.device.settings().eq_for_record);
+        assert!(!state.device.settings().optical_out_spdif);
+
+        let _ = update(&mut state, Message::OpticalOutFormatChanged(true));
+        assert!(state.device.settings().optical_out_spdif);
+
+        let _ = update(&mut state, Message::EqForRecordChanged(false));
+        assert!(!state.device.settings().eq_for_record);
+        assert!(
+            state.device.settings().optical_out_spdif,
+            "toggling EQ-for-Record must not stomp the SPDIF flag (shared settings-word register)"
+        );
     }
 
     #[test]

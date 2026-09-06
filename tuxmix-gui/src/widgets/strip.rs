@@ -183,6 +183,12 @@ pub struct StripParams<'a> {
     pub open_flyout: Option<FlyoutKind>,
     pub mute: bool,
     pub solo: bool,
+    /// `true` only for `ChannelId::Output` — every other channel kind
+    /// has no CUE bus of its own (see `RmeDevice::set_cue`'s doc
+    /// comment: CUE always monitors *some output's* dedicated
+    /// playback pair through AN1/2, not an input/playback concept).
+    pub has_cue: bool,
+    pub cue: bool,
     pub default_vol: f32,
     pub editing: bool,
     pub edit_buf: &'a str,
@@ -482,7 +488,18 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // was sized for a wider sibling row (48V/PAD, or just a long channel
     // name) — filling the row makes every row use the card's full width
     // instead of only the widest one.
-    let ms_row = row![mute_btn, solo_btn].spacing(theme::SPACE_TIGHT).width(Length::Fill);
+    let mut ms_row = row![mute_btn, solo_btn].spacing(theme::SPACE_TIGHT).width(Length::Fill);
+    if p.has_cue {
+        ms_row = ms_row.push(hint(
+            button(centered_label("C", theme::TEXT_SM * scale))
+                .width(Length::Fill)
+                .height(btn_h)
+                .style(theme::toggle_button(p.cue, theme::ACCENT))
+                .on_press(Message::CueChanged(cid, !p.cue)),
+            "CUE — exclusively monitor this output's own playback feed through AN1/2",
+            scale,
+        ));
+    }
 
     let mut rows = column![header].spacing(theme::SPACE_HAIRLINE);
 
