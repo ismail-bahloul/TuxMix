@@ -415,27 +415,18 @@ impl DeviceHandle {
     }
     /// Output meters, computed host-side like TotalMix: each output's
     /// level is the power sum of every routed source (inputs + playbacks)
-    /// scaled by that source's fader into the output.
+    /// scaled by that source's fader into the output. See
+    /// `power_sum_output_meters`'s own doc comment for the actual math —
+    /// pulled out as a free function so it's testable with deterministic
+    /// inputs, since the mock backend's own meter readings are randomized.
     pub fn output_meters(&self) -> Vec<f32> {
-        let ins = self.input_meters();
-        let pbs = self.playback_meters();
-        let n_out = self.outputs().len();
-        let mut out = vec![0.0f32; n_out];
-        for o in 0..n_out {
-            let mut p = 0.0f32;
-            for i in 0..self.inputs().len() {
-                let v = self.inputs()[i].volumes.get(o).copied().unwrap_or(0.0);
-                let m = ins.get(i).copied().unwrap_or(0.0);
-                p += (m * v) * (m * v);
-            }
-            for c in 0..self.playbacks().len() {
-                let v = self.playbacks()[c].volumes.get(o).copied().unwrap_or(0.0);
-                let m = pbs.get(c).copied().unwrap_or(0.0);
-                p += (m * v) * (m * v);
-            }
-            out[o] = p.sqrt().min(1.0);
-        }
-        out
+        power_sum_output_meters(
+            &self.inputs().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
+            &self.input_meters(),
+            &self.playbacks().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
+            &self.playback_meters(),
+            self.outputs().len(),
+        )
     }
     pub fn is_mock(&self) -> bool {
         matches!(self, DeviceHandle::Mock(_))
@@ -458,6 +449,51 @@ impl DeviceHandle {
             DeviceHandle::Real(_) => None,
         }
     }
+}
+
+/// The actual math behind `DeviceHandle::output_meters` — each output
+/// *channel*'s level is the power sum of every input/playback source
+/// routed into it, scaled by that source's live meter reading. Pulled
+/// out as a free, pure function (rather than left inline) so it's
+/// testable with deterministic meter values — the mock backend's own
+/// `input_meter`/`playback_meter` are randomized, so a test going
+/// through `DeviceHandle` itself could never assert an exact number.
+///
+/// `input_volumes`/`playback_volumes` are indexed by *output pair*
+/// (`output_pair_count()` entries — one crosspoint per pair, not per
+/// individual physical channel) while `n_out` is the individual output
+/// *channel* count (2 per pair) — the pair a channel `o` belongs to is
+/// `o / 2`, the same convention `set_channel_volume` and friends use
+/// everywhere else. Indexing the volumes arrays with the raw channel
+/// index instead of `o / 2` used to silently read the *wrong* pair's
+/// crosspoint for every odd channel, and always read nothing at all
+/// for every channel whose pair index was past the volumes arrays'
+/// own (pair-counted) length — every output pair past the first three
+/// read a permanent, wrong zero level regardless of actual audio.
+fn power_sum_output_meters(
+    input_volumes: &[Vec<f32>],
+    input_meters: &[f32],
+    playback_volumes: &[Vec<f32>],
+    playback_meters: &[f32],
+    n_out: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; n_out];
+    for (o, slot) in out.iter_mut().enumerate() {
+        let pair = o / 2;
+        let mut p = 0.0f32;
+        for (i, vols) in input_volumes.iter().enumerate() {
+            let v = vols.get(pair).copied().unwrap_or(0.0);
+            let m = input_meters.get(i).copied().unwrap_or(0.0);
+            p += (m * v) * (m * v);
+        }
+        for (c, vols) in playback_volumes.iter().enumerate() {
+            let v = vols.get(pair).copied().unwrap_or(0.0);
+            let m = playback_meters.get(c).copied().unwrap_or(0.0);
+            p += (m * v) * (m * v);
+        }
+        *slot = p.sqrt().min(1.0);
+    }
+    out
 }
 
 /// Which top-level page is showing. `Quick` is the default — a focused
@@ -3323,12 +3359,50 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
 mod tests {
     use super::{
         all_channel_ids, all_channels_muted, any_channel_soloed, apply_pending_resize,
-        channel_is_muted, channel_is_soloed, new, update, zoom, ChannelId, MeterAnim, Message,
-        ZOOM_STEP,
+        channel_is_muted, channel_is_soloed, new, power_sum_output_meters, update, zoom,
+        ChannelId, MeterAnim, Message, ZOOM_STEP,
     };
     use crate::sidebar;
     use std::collections::HashSet;
     use tuxmix_core::RmeDevice;
+
+    #[test]
+    fn output_meters_reads_the_right_pair_for_every_individual_channel() {
+        // 3 output pairs (6 individual channels): pair 0 = ch0/1, pair 1
+        // = ch2/3, pair 2 = ch4/5. One input, routed at full volume into
+        // pair 2 only (and silent into pairs 0/1), reading a fixed 1.0
+        // meter level — deterministic, unlike the mock backend's own
+        // randomized meters.
+        let input_volumes = vec![vec![0.0, 0.0, 1.0]];
+        let input_meters = vec![1.0];
+        let out = power_sum_output_meters(&input_volumes, &input_meters, &[], &[], 6);
+
+        assert_eq!(out.len(), 6);
+        assert_eq!(out[0], 0.0, "pair 0 (ch0) has no signal routed to it");
+        assert_eq!(out[1], 0.0, "pair 0 (ch1) has no signal routed to it");
+        assert_eq!(out[2], 0.0, "pair 1 (ch2) has no signal routed to it");
+        assert_eq!(out[3], 0.0, "pair 1 (ch3) has no signal routed to it");
+        assert_eq!(out[4], 1.0, "pair 2 (ch4) should read the full routed signal");
+        assert_eq!(out[5], 1.0, "pair 2 (ch5) should read the full routed signal");
+    }
+
+    #[test]
+    fn output_meters_never_goes_out_of_bounds_for_pairs_past_the_volumes_array() {
+        // A device with more output *pairs* than any single source's
+        // `volumes` array happens to have entries for (shouldn't happen
+        // in practice, but the old bug's failure mode was exactly an
+        // out-of-bounds pair read silently going to 0.0 instead of
+        // panicking) — must stay silent-zero, not panic.
+        let input_volumes = vec![vec![1.0]]; // only 1 pair's worth of data
+        let input_meters = vec![1.0];
+        let out = power_sum_output_meters(&input_volumes, &input_meters, &[], &[], 12);
+        assert_eq!(out.len(), 12);
+        assert_eq!(out[0], 1.0);
+        assert_eq!(out[1], 1.0);
+        for level in &out[2..] {
+            assert_eq!(*level, 0.0);
+        }
+    }
 
     #[test]
     fn zoom_in_steps_up_from_default() {

@@ -1503,6 +1503,40 @@ only for the shared border/background styling. 144/144 tests, clean
 build, live screenshot shows no visual regression (identical rendering
 to before — this was a hit-testing fix, not a visual one).
 
+**Hardware Output VU meters were reading wrong/zero for almost every
+pair — found by continuing the same index-confusion audit that caught
+the Matrix rebuild's own L/R placement earlier, applied to code that
+predates this whole session.** `DeviceHandle::output_meters()`
+power-sums every input/playback's contribution into each output, but
+indexed `ch.volumes` — sized per *output pair* (`output_pair_count()`,
+6 entries) — with the loop variable `o`, which actually ranges over
+individual output *channels* (`outputs().len()`, 12, 2 per pair). Real
+effect: every odd channel read a different, wrong pair's crosspoint
+value instead of its own pair's; every channel whose pair index was
+>= 6 (i.e. every pair past the first three: ADAT5/6, ADAT7/8, and
+whichever pair happened to sit there) silently read a permanent zero
+via `.get()`'s `None` fallback, regardless of actual routed audio.
+Fixed by indexing with `o / 2` (the pair), the same convention
+`set_channel_volume` already uses everywhere else for the identical
+individual-channel-to-pair relationship.
+
+Pulled the computation out into a free, pure `power_sum_output_meters`
+function rather than leaving it as a `DeviceHandle` method, specifically
+so it's testable with deterministic meter values — the mock backend's
+own `input_meter`/`playback_meter` are randomized (`rand::thread_rng`),
+so a test going through `DeviceHandle` itself could never assert an
+exact number for either the bug or the fix. 2 new tests: one routes a
+known signal into pair 2 only and confirms pairs 0/1 read exactly zero
+while pair 2's two channels both read the full level; one specifically
+exercises the old bug's out-of-bounds failure mode (a pair index past
+a volumes array's own length) and confirms it stays a silent zero, not
+a panic. 146/146 tests, clean build. Not screenshot-confirmed for the
+live Hardware Outputs meters specifically — scrolling the Mixer view
+down to them hit the same synthetic-input unreliability as every other
+interaction test this session — but the fix targets the exact,
+deterministically-reproduced bug scenario the two new tests assert
+against, which is the stronger claim of the two anyway.
+
 **Not click-verified.** Attempting to actually click Snapshot/Group/
 Layout controls this session hit something worse than the earlier
 "coordinate drift" — `xdotool getactivewindow` after a synthetic click
