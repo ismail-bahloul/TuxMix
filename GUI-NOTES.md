@@ -1551,6 +1551,50 @@ device or address" }`, an environment limitation, not a code issue);
 the logic-level tests are the verification here, same reasoning as
 every other test-only-verified fix this session.
 
+**TUI Matrix view rebuilt to match the GUI's own axes — checked and
+confirmed, not assumed, then rebuilt with the user's explicit "full
+rebuild" choice.** `tuxmix-tui`'s `render_matrix` had the identical
+backwards structure the GUI had before its own fix: rows were output
+*pairs* (`OUT_LABELS`, 6), columns were input/playback channels
+(capped at 8 for terminal width). Asked how to handle it given the
+terminal-width constraint (full rebuild vs. a pair-granularity
+compromise vs. leave it) — user picked the full rebuild, same axes as
+real TotalMix and the GUI's own rebuild: individual output *channels*
+as columns, individual input/playback *channels* as rows, with the
+same row-grouping rule (`matrix_input_groups`, Mic-type solo/everything
+else paired) and pair-label combining (`matrix_pair_label`) ported
+over as this crate's own copies (no shared code between the GUI and
+TUI binaries).
+
+Since a terminal is rarely wide enough for all 12 output columns at
+once (unlike the GUI's scrollable canvas), added real horizontal
+scrolling: `matrix_col: usize` state in `run()`'s loop, Left/Right
+guarded to only scroll while the Matrix view is showing (`KeyCode::Left
+if show_matrix`, ahead of the plain `KeyCode::Left` arm that still
+drives normal channel navigation everywhere else — first-match-wins
+guard ordering, not a full key-interception branch, so nothing else
+about existing key handling changed). `render_matrix` clamps the
+requested offset against the *actual* visible column count computed
+from the real terminal width at render time, so a stale/over-scrolled
+offset can never go out of range even across a live window resize.
+One deliberate simplification vs. the GUI, called out in the function's
+own doc comment: every row (including the 4 true-mono AN1-4 inputs that
+the GUI can show independent L/R values for via pan) shows on a single
+fixed side per pair — not worth a second numeric column pair's width
+cost for a first terminal implementation.
+
+3 new tests (row-grouping split, pair-label combining, cell-text
+formatting) plus the existing output-meter tests already covered the
+shared `o/2` pair-index math. Live-verified for real this time — this
+sandbox has real terminal emulators (alacritty) on the X display, so
+launched one, confirmed the full un-scrolled grid renders correctly
+(all 12 columns, correct row groups, correct alternating natural-side
+cells), resized the window narrower, confirmed it correctly reports
+"cols 1-9 of 12," then scrolled right 3 times and confirmed "cols
+4-12 of 12" with the right cells shifting — the actual interactive
+behavior working live, not just unit-tested logic. 151/151 tests,
+clean build.
+
 **Not click-verified.** Attempting to actually click Snapshot/Group/
 Layout controls this session hit something worse than the earlier
 "coordinate drift" — `xdotool getactivewindow` after a synthetic click

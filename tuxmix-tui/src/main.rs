@@ -37,7 +37,7 @@ use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
 #[cfg(feature = "alsa")]
 use tuxmix_core::BabyfacePro;
-use tuxmix_core::channel::EqBandType;
+use tuxmix_core::channel::{ChannelType, EqBandType};
 use tuxmix_core::{BabyfaceProUsb, ChannelId, MockBabyfacePro, RmeDevice};
 
 enum DeviceHandle {
@@ -616,6 +616,14 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
     // shows every input/playback's fader INTO that output). `o`/`O`
     // cycle it; the strip rows read `volumes[sel_out]`.
     let mut sel_out: usize = 0;
+    // Horizontal scroll offset (in individual output *channels*) for
+    // the Matrix view — there are up to 12 output columns, more than
+    // fit most terminal widths at once. Left/Right move it while the
+    // Matrix view is showing (see the `show_matrix` guard below);
+    // clamped properly at render time (`render_matrix`) once the
+    // actual visible column count is known, so an increment here can't
+    // scroll arbitrarily far past the real end.
+    let mut matrix_col: usize = 0;
     // `e` on one of the 4 analog inputs opens the EQ editor for it —
     // `(input_idx, selected_row)`, see `render_eq`/`adjust_eq_field`.
     let mut eq_view: Option<(usize, usize)> = None;
@@ -666,6 +674,7 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                 section,
                 channel,
                 sel_out,
+                matrix_col,
                 eq_view,
             )
         })?;
@@ -704,6 +713,19 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                             break;
                         }
                         KeyCode::Tab => show_matrix = !show_matrix,
+                        // Scroll the Matrix view's output columns
+                        // instead of moving the (currently invisible,
+                        // since Matrix hides the per-section views
+                        // entirely) channel cursor — these guarded arms
+                        // only match while Matrix is showing, so the
+                        // plain `Left`/`Right` arms right below still
+                        // handle every other view exactly as before.
+                        KeyCode::Left if show_matrix => {
+                            matrix_col = matrix_col.saturating_sub(1);
+                        }
+                        KeyCode::Right if show_matrix => {
+                            matrix_col += 1;
+                        }
                         KeyCode::Left => {
                             if channel > 0 {
                                 channel -= 1;
@@ -1044,6 +1066,7 @@ fn ui(
     sel_sec: usize,
     sel_chan: usize,
     sel_out: usize,
+    matrix_col: usize,
     // `Some((input_idx, selected_row))` when the EQ editor is open (`e` on
     // one of the 4 analog inputs) — takes over the whole content area,
     // same as the Matrix view does.
@@ -1121,7 +1144,7 @@ fn ui(
     if let Some((idx, eq_row)) = eq_view {
         render_eq(f, content, dev, idx, eq_row);
     } else if show_matrix {
-        render_matrix(f, "Matrix Mixer", matrix_area, dev);
+        render_matrix(f, "Matrix Mixer", matrix_area, dev, matrix_col);
     } else {
         let has_in_meters = dev.has_input_meters();
         let has_pb_meters = dev.has_playback_meters();
@@ -1357,36 +1380,171 @@ fn render_strips(
     }
 }
 
-fn render_matrix(f: &mut Frame, title: &str, area: Rect, dev: &DeviceHandle) {
-    let block = Block::default().borders(Borders::ALL).title(title);
+/// Row-group boundaries for the input section — mirrors
+/// `tuxmix-gui::matrix::input_row_groups` (a separate crate, its own
+/// copy of the same grouping rule): the two Mic-type inputs (AN1, AN2)
+/// are each their own physical jack, shown solo; every other input
+/// type is an inherent hardware pair, shown as one 2-row group.
+/// Returns `(label, first_channel_idx, count)`.
+fn matrix_input_groups(dev: &DeviceHandle) -> Vec<(String, usize, usize)> {
+    let inputs = dev.inputs();
+    let mut groups = Vec::new();
+    let mut i = 0;
+    while i < inputs.len() {
+        if inputs[i].channel_type == ChannelType::Mic {
+            groups.push((inputs[i].name.clone(), i, 1));
+            i += 1;
+        } else if let Some(next) = inputs.get(i + 1) {
+            groups.push((matrix_pair_label(&inputs[i].name, &next.name), i, 2));
+            i += 2;
+        } else {
+            groups.push((inputs[i].name.clone(), i, 1));
+            i += 1;
+        }
+    }
+    groups
+}
+
+/// Row-group boundaries for the playback section: always one pair per
+/// hardware output bus, labeled with this app's own `OUT_LABELS`.
+fn matrix_playback_groups(dev: &DeviceHandle) -> Vec<(String, usize, usize)> {
+    let n = dev.playbacks().len();
+    (0..n / 2)
+        .map(|pair| {
+            (
+                OUT_LABELS.get(pair).copied().unwrap_or_default().to_string(),
+                pair * 2,
+                2,
+            )
+        })
+        .collect()
+}
+
+/// Combines a linked pair's two channel names ("AN1"/"AN2", "ADAT7"/
+/// "ADAT8") into one label ("AN1/2", "ADAT7/8") — mirrors
+/// `tuxmix-gui::app::pair_bus_label` (a separate crate, its own copy).
+fn matrix_pair_label(left: &str, right: &str) -> String {
+    let right_num: String = right.chars().skip_while(|c| !c.is_ascii_digit()).collect();
+    if right_num.is_empty() {
+        format!("{left}/{right}")
+    } else {
+        format!("{left}/{right_num}")
+    }
+}
+
+/// Bare "-9.8"-style cell text, blank for an unrouted crosspoint —
+/// mirrors `tuxmix-gui::matrix`'s identical cells.
+fn matrix_cell_text(vol: f32) -> String {
+    if vol > f32::EPSILON {
+        format!("{:>5.1}", 20.0 * vol.log10())
+    } else {
+        "    .".to_string()
+    }
+}
+
+const MATRIX_LABEL_W: usize = 11;
+const MATRIX_COL_W: usize = 6;
+
+/// Appends one section's rows (inputs or playbacks) to `lines`. Only
+/// the column matching this channel's natural side (`idx % 2`, the
+/// same convention `set_channel_volume` uses everywhere) shows a
+/// value — simplified vs. the GUI, which additionally decodes the 4
+/// true-mono AN1-4 inputs' pan into independent L/R values; not worth
+/// the terminal-width cost of a second numeric column pair here.
+fn matrix_render_rows(
+    lines: &mut Vec<String>,
+    cols: &[usize],
+    groups: &[(String, usize, usize)],
+    row_prefix: &str,
+    volumes_of: impl Fn(usize) -> Vec<f32>,
+) {
+    for (label, first, count) in groups {
+        for local in 0..*count {
+            let idx = first + local;
+            let name = if local == 0 { label.as_str() } else { "" };
+            let mut line = format!(
+                "{:<name_w$}{:>idx_w$}",
+                name,
+                format!("{row_prefix}{}", idx + 1),
+                name_w = MATRIX_LABEL_W - 4,
+                idx_w = 4,
+            );
+            let vols = volumes_of(idx);
+            let natural_side = idx % 2;
+            for &o in cols {
+                let pair = o / 2;
+                let text = if o % 2 == natural_side {
+                    matrix_cell_text(vols.get(pair).copied().unwrap_or(0.0))
+                } else {
+                    "    .".to_string()
+                };
+                line.push_str(&format!("{:>col_w$}", text, col_w = MATRIX_COL_W));
+            }
+            lines.push(line);
+        }
+    }
+}
+
+/// Matrix (submix) view: TotalMix's own crosspoint grid, rebuilt
+/// 2026-09-06 to match `tuxmix-gui::matrix`'s own rebuild — individual
+/// output *channels* as columns, individual input/playback *channels*
+/// as rows. The previous version here had rows as output *pairs* and
+/// columns as input/playback channels: the same backwards axes the GUI
+/// had before its own fix, found by checking whether this crate's
+/// independent copy of the same view carried the same mistake (it
+/// did). Horizontally scrollable (Left/Right while this view is
+/// showing, see `matrix_col` in `run()`) since a terminal is rarely
+/// wide enough for all 12 output columns at once, unlike the GUI's own
+/// scrollable canvas.
+fn render_matrix(f: &mut Frame, title: &str, area: Rect, dev: &DeviceHandle, col_offset: usize) {
+    let n_out = dev.outputs().len();
+    let visible_cols =
+        ((area.width as usize).saturating_sub(2 + MATRIX_LABEL_W) / MATRIX_COL_W).max(1);
+    let max_offset = n_out.saturating_sub(visible_cols);
+    let offset = col_offset.min(max_offset);
+    let cols: Vec<usize> = (offset..(offset + visible_cols).min(n_out)).collect();
+
+    let block = Block::default().borders(Borders::ALL).title(format!(
+        "{title} — cols {}-{} of {} (\u{2190}/\u{2192} scroll)",
+        cols.first().map(|c| c + 1).unwrap_or(0),
+        cols.last().map(|c| c + 1).unwrap_or(0),
+        n_out
+    ));
     let inner = block.inner(area);
     f.render_widget(block, area);
-    let ni = dev.inputs().len();
-    let np = dev.playbacks().len();
-    let total = ni + np;
+
     let mut lines = Vec::new();
-    let mut header = "  ".to_string();
-    for col in 0..total.min(8) {
-        let name = if col < ni {
-            &dev.inputs()[col].name
-        } else {
-            &dev.playbacks()[col - ni].name
-        };
-        header.push_str(&format!(" {:>6}", &name[..name.len().min(6)]));
+
+    let mut header = format!("{:<label_w$}", "", label_w = MATRIX_LABEL_W);
+    for &o in &cols {
+        header.push_str(&format!("{:>col_w$}", format!("Out{}", o + 1), col_w = MATRIX_COL_W));
     }
     lines.push(header);
-    for row in 0..6 {
-        let mut line = format!("  {:>8}", OUT_LABELS[row]);
-        for col in 0..total.min(8) {
-            let v = if col < ni {
-                dev.inputs()[col].volumes[row]
-            } else {
-                dev.playbacks()[col - ni].volumes[row]
-            };
-            line.push_str(&format!(" {:>5.0}%", v * 100.0));
-        }
-        lines.push(line);
+
+    matrix_render_rows(&mut lines, &cols, &matrix_input_groups(dev), "I", |idx| {
+        dev.inputs()[idx].volumes.clone()
+    });
+    matrix_render_rows(&mut lines, &cols, &matrix_playback_groups(dev), "P", |idx| {
+        dev.playbacks()[idx].volumes.clone()
+    });
+
+    // Master "Outputs" row + pair-group footer.
+    lines.push(String::new());
+    let mut out_row = format!("{:<label_w$}", "Out", label_w = MATRIX_LABEL_W);
+    for &o in &cols {
+        let vol = dev.outputs().get(o).map(|c| c.volume).unwrap_or(0.0);
+        out_row.push_str(&format!("{:>col_w$}", matrix_cell_text(vol), col_w = MATRIX_COL_W));
     }
+    lines.push(out_row);
+
+    let mut footer = format!("{:<label_w$}", "", label_w = MATRIX_LABEL_W);
+    for &o in &cols {
+        let pair = o / 2;
+        let label = OUT_LABELS.get(pair).copied().unwrap_or_default();
+        footer.push_str(&format!("{:>col_w$}", label, col_w = MATRIX_COL_W));
+    }
+    lines.push(footer);
+
     f.render_widget(Paragraph::new(lines.join("\n")), inner);
 }
 
@@ -1568,6 +1726,33 @@ mod tests {
         for level in &out[2..] {
             assert_eq!(*level, 0.0);
         }
+    }
+
+    #[test]
+    fn matrix_input_groups_splits_mic_solo_and_pairs_the_rest() {
+        let dev = DeviceHandle::Mock(MockBabyfacePro::open().unwrap());
+        let groups = matrix_input_groups(&dev);
+        // AN1, AN2 (Mic) each solo; everything else in pairs of 2.
+        assert_eq!(groups[0], ("AN1".to_string(), 0, 1));
+        assert_eq!(groups[1], ("AN2".to_string(), 1, 1));
+        assert_eq!(groups[2].1, 2);
+        assert_eq!(groups[2].2, 2);
+        // Every group after the first two should be a pair (count 2).
+        for g in &groups[2..] {
+            assert_eq!(g.2, 2, "{:?} should be a 2-channel group", g);
+        }
+    }
+
+    #[test]
+    fn matrix_pair_label_combines_names() {
+        assert_eq!(matrix_pair_label("AN1", "AN2"), "AN1/2");
+        assert_eq!(matrix_pair_label("ADAT7", "ADAT8"), "ADAT7/8");
+    }
+
+    #[test]
+    fn matrix_cell_text_is_blank_for_silent_and_numeric_for_routed() {
+        assert_eq!(matrix_cell_text(0.0), "    .");
+        assert_eq!(matrix_cell_text(1.0), "  0.0");
     }
 
     #[test]
