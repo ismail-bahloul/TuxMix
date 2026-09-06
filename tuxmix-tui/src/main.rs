@@ -337,27 +337,20 @@ impl DeviceHandle {
     }
     /// Output meters, computed host-side like TotalMix: each output's
     /// level is the power sum of every routed source (inputs + playbacks)
-    /// scaled by that source's fader into the output.
+    /// scaled by that source's fader into the output. See
+    /// `power_sum_output_meters`'s own doc comment for the actual math —
+    /// pulled out as a free function so it's testable with deterministic
+    /// inputs (`tuxmix-gui`'s identical fix, ported here: this file has
+    /// its own independent copy of the same `DeviceHandle`/meter logic,
+    /// not a shared one, so the same bug needed fixing twice).
     fn output_meters(&self) -> Vec<f32> {
-        let ins = self.input_meters();
-        let pbs = self.playback_meters();
-        let n_out = self.outputs().len();
-        let mut out = vec![0.0f32; n_out];
-        for o in 0..n_out {
-            let mut p = 0.0f32;
-            for i in 0..self.inputs().len() {
-                let v = self.inputs()[i].volumes.get(o).copied().unwrap_or(0.0);
-                let m = ins.get(i).copied().unwrap_or(0.0);
-                p += (m * v) * (m * v);
-            }
-            for c in 0..self.playbacks().len() {
-                let v = self.playbacks()[c].volumes.get(o).copied().unwrap_or(0.0);
-                let m = pbs.get(c).copied().unwrap_or(0.0);
-                p += (m * v) * (m * v);
-            }
-            out[o] = p.sqrt().min(1.0);
-        }
-        out
+        power_sum_output_meters(
+            &self.inputs().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
+            &self.input_meters(),
+            &self.playbacks().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
+            &self.playback_meters(),
+            self.outputs().len(),
+        )
     }
     fn is_mock(&self) -> bool {
         matches!(self, DeviceHandle::Mock(_))
@@ -371,6 +364,41 @@ impl DeviceHandle {
         self.outputs().len() == self.output_pair_count()
     }
 }
+
+/// The actual math behind `DeviceHandle::output_meters` — see
+/// `tuxmix-gui`'s identical function for the full reasoning (both
+/// crates had their own independent copy of the same buggy logic:
+/// `input_volumes`/`playback_volumes` are indexed by *output pair*
+/// while the individual output *channel* count is 2 per pair, and the
+/// original code conflated the two, silently reading the wrong pair
+/// for odd channels and a permanent zero for every pair past the
+/// volumes arrays' own length).
+fn power_sum_output_meters(
+    input_volumes: &[Vec<f32>],
+    input_meters: &[f32],
+    playback_volumes: &[Vec<f32>],
+    playback_meters: &[f32],
+    n_out: usize,
+) -> Vec<f32> {
+    let mut out = vec![0.0f32; n_out];
+    for (o, slot) in out.iter_mut().enumerate() {
+        let pair = o / 2;
+        let mut p = 0.0f32;
+        for (i, vols) in input_volumes.iter().enumerate() {
+            let v = vols.get(pair).copied().unwrap_or(0.0);
+            let m = input_meters.get(i).copied().unwrap_or(0.0);
+            p += (m * v) * (m * v);
+        }
+        for (c, vols) in playback_volumes.iter().enumerate() {
+            let v = vols.get(pair).copied().unwrap_or(0.0);
+            let m = playback_meters.get(c).copied().unwrap_or(0.0);
+            p += (m * v) * (m * v);
+        }
+        *slot = p.sqrt().min(1.0);
+    }
+    out
+}
+
 const OUT_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "A3/A4", "A5/A6", "A7/A8"];
 
 /// One entry in a pair-grouped section's display list (Hardware Inputs,
@@ -1510,6 +1538,37 @@ fn adjust_eq_field(dev: &mut DeviceHandle, idx: usize, row: usize, dir: i32, coa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_meters_reads_the_right_pair_for_every_individual_channel() {
+        // Same scenario as tuxmix-gui's identical test: 3 output pairs
+        // (6 individual channels), one input routed at full volume into
+        // pair 2 only, reading a fixed 1.0 meter level.
+        let input_volumes = vec![vec![0.0, 0.0, 1.0]];
+        let input_meters = vec![1.0];
+        let out = power_sum_output_meters(&input_volumes, &input_meters, &[], &[], 6);
+
+        assert_eq!(out.len(), 6);
+        assert_eq!(out[0], 0.0, "pair 0 (ch0) has no signal routed to it");
+        assert_eq!(out[1], 0.0, "pair 0 (ch1) has no signal routed to it");
+        assert_eq!(out[2], 0.0, "pair 1 (ch2) has no signal routed to it");
+        assert_eq!(out[3], 0.0, "pair 1 (ch3) has no signal routed to it");
+        assert_eq!(out[4], 1.0, "pair 2 (ch4) should read the full routed signal");
+        assert_eq!(out[5], 1.0, "pair 2 (ch5) should read the full routed signal");
+    }
+
+    #[test]
+    fn output_meters_never_goes_out_of_bounds_for_pairs_past_the_volumes_array() {
+        let input_volumes = vec![vec![1.0]]; // only 1 pair's worth of data
+        let input_meters = vec![1.0];
+        let out = power_sum_output_meters(&input_volumes, &input_meters, &[], &[], 12);
+        assert_eq!(out.len(), 12);
+        assert_eq!(out[0], 1.0);
+        assert_eq!(out[1], 1.0);
+        for level in &out[2..] {
+            assert_eq!(*level, 0.0);
+        }
+    }
 
     #[test]
     fn db_text_matches_gui_formatting_at_key_points() {

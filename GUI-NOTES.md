@@ -1537,6 +1537,20 @@ interaction test this session — but the fix targets the exact,
 deterministically-reproduced bug scenario the two new tests assert
 against, which is the stronger claim of the two anyway.
 
+**Same Hardware Output meter bug existed in the TUI too — checked
+rather than assumed, since it's a separate crate with its own
+independent copy of the logic.** `tuxmix-tui` has its own `DeviceHandle`
+(not shared with `tuxmix-gui`'s), and its `output_meters()` was a
+byte-for-byte duplicate of the same buggy indexing. Ported the
+identical fix: extracted `power_sum_output_meters` as a free, pure
+function here too, fixed `o` → `o / 2`, added the same 2 deterministic
+tests. 148/148 workspace tests. Not live-verified in an actual
+terminal — this sandbox's bash tool has no real TTY, and a ratatui app
+fails at terminal setup without one (`Os { code: 6, ... "No such
+device or address" }`, an environment limitation, not a code issue);
+the logic-level tests are the verification here, same reasoning as
+every other test-only-verified fix this session.
+
 **Not click-verified.** Attempting to actually click Snapshot/Group/
 Layout controls this session hit something worse than the earlier
 "coordinate drift" — `xdotool getactivewindow` after a synthetic click
