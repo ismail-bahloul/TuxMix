@@ -2227,3 +2227,28 @@ and PCM AN2 together, PB1's two channels). 2 new `update()`-driven
 GUI tests (`phase_changed_reaches_the_input_model`,
 `stereo_split_changed_mirrors_across_the_playback_pair`). 162/162
 non-ignored workspace tests.
+
+**Input Trim added to the kernel driver (closing its last upstream
+follow-up) and wired into `babyface.rs`, same day.** `set_trim`'s trait
+default is a silent `Ok(())` no-op — real now, targeting the driver's
+new per-mic "<name> Trim Volume" controls. **Restricted to AN1-4**
+(`idx < 4`), even though the GUI's own `has_trim` gate is unconditional
+for every hardware input strip: PROTOCOL.md's Trim captures only ever
+verified the 4 analog inputs, and — found while checking this — the
+USB backend's own `set_trim` has no such guard at all. Since
+`input_source(idx)` and the register math both succeed for ANY input
+index (not just 0-3), calling Trim on e.g. AS1/2 through the USB
+backend would silently compute the WRONG sibling's register (the "+1"
+adjacency trick that correctly pairs AN1/AN2 and AN3/4 does not hold
+for other source types) and corrupt an unrelated channel's crosspoint
+— a real latent bug in already-shipped code, surfaced but **not fixed
+here**, since fixing it means auditing/restricting the GUI's own
+`has_trim` gate too, a separate task from wiring this backend's own
+control. Also added attach-time readback (didn't exist before either).
+New `live_hardware_trim_round_trip` test, ran with `--ignored` against
+the real card, passed (including a negative dB value), hardware
+confirmed restored to 0 afterward. No GUI/TUI changes needed — Trim
+already had a real knob in both, now it actually reaches hardware on
+the ALSA backend too instead of silently doing nothing. 162/162
+non-ignored workspace tests (plus the new ignored live-hardware test,
+run separately).

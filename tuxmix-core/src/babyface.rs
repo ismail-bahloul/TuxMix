@@ -335,6 +335,18 @@ impl BabyfacePro {
             }
         }
 
+        // ── Trim (T) — AN1-4, same per-mic naming as Phase above
+        // (`babyface-pro-linux`'s own "<name> Trim Volume", added
+        // 2026-09-06).
+        for i in 0..4.min(self.inputs.len()) {
+            if let Some(selem) = self.mixer.find_selem(&format!("{} Trim", BF_SOURCES[i]), i as u32)
+            {
+                if let Ok(v) = selem.get_playback_volume(mono) {
+                    self.inputs[i].trim = v as f32;
+                }
+            }
+        }
+
         // ── Stereo split — playback pairs PB1-PB6, one control per
         // pair (`babyface-pro-linux`'s own "PBx Stereo Split" Switch,
         // added 2026-09-06); mirrored to both channels of the pair.
@@ -1326,6 +1338,33 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
+    /// The trait default is a silent `Ok(())` no-op (see its own doc
+    /// comment) — real now, targeting `babyface-pro-linux`'s own
+    /// "<name> Trim Volume" controls (added 2026-09-06, the last of
+    /// the driver's 5 upstream follow-ups). Restricted to AN1-4
+    /// (`idx < 4`) even though the GUI's own `has_trim` gate is
+    /// unconditional for every hardware input — PROTOCOL.md's Trim
+    /// captures (`cap_trim2/3/4.pcap`) only ever verified the 4 analog
+    /// inputs; the USB backend's own `set_trim` doesn't have this
+    /// guard and would silently write into an unrelated channel's
+    /// crosspoint if called on e.g. AS1/2 (flagged, not fixed here —
+    /// out of scope for this backend's own wiring).
+    fn set_trim(&mut self, idx: usize, db: f32) -> Result<(), Error> {
+        if idx >= 4 {
+            return Err(Error::InvalidChannel(format!(
+                "Input {idx} has no trim control"
+            )));
+        }
+        let db = db.clamp(-65.0, 6.0).round();
+        let selem = self
+            .mixer
+            .find_selem(&format!("{} Trim", BF_SOURCES[idx]), idx as u32)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {idx} has no trim control")))?;
+        selem.set_playback_volume(SelemChannelId::mono(), db as i64)?;
+        self.inputs[idx].trim = db;
+        Ok(())
+    }
+
     fn set_dim(&mut self, on: bool) -> Result<(), Error> {
         if let Some(selem) = self.mixer.find_selem("Dim", 0) {
             selem.set_playback_switch(SelemChannelId::mono(), on as i32)?;
@@ -1634,6 +1673,26 @@ mod tests {
         let dev3 = BabyfacePro::open().expect("real device attached");
         assert!(!dev3.inputs()[idx].phase);
         drop(dev3);
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    fn live_hardware_trim_round_trip() {
+        let mut dev = BabyfacePro::open().expect("real device attached");
+        let idx = 1; // AN2, verified silent (0%) before running this
+        let orig = dev.inputs()[idx].trim;
+
+        dev.set_trim(idx, -5.0).unwrap();
+        let dev2 = BabyfacePro::open().expect("real device attached");
+        assert_eq!(dev2.inputs()[idx].trim, -5.0);
+        drop(dev2);
+
+        dev.set_trim(idx, 3.0).unwrap();
+        let dev3 = BabyfacePro::open().expect("real device attached");
+        assert_eq!(dev3.inputs()[idx].trim, 3.0);
+        drop(dev3);
+
+        dev.set_trim(idx, orig).unwrap();
     }
 
     #[test]
