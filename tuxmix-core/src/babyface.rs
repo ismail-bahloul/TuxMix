@@ -185,6 +185,12 @@ pub struct BabyfacePro {
     /// which also keeps this outside `DeviceSettings` (no getter exists
     /// in [`RmeDevice`] for it, only `set_input_link`).
     linked: bool,
+    /// Real-time AN1/AN2 level metering — `None` if the capture PCM
+    /// couldn't be opened (metering is a nice-to-have, not something
+    /// that should keep the rest of the device from working). See
+    /// `capture_meter`'s own module doc comment for why this is scoped
+    /// to just these two channels.
+    capture_meter: Option<crate::capture_meter::CaptureMeter>,
 }
 
 impl BabyfacePro {
@@ -194,6 +200,39 @@ impl BabyfacePro {
     fn crosspoint_selem(&self, src: usize, output: usize) -> Option<Selem<'_>> {
         self.mixer
             .find_selem(BF_SOURCES[src], (output * 14 + src) as u32)
+    }
+
+    /// Writes `volume` (0.0..=1.0) straight to a crosspoint's ALSA
+    /// element, preserving `pan` for the 4 true-mono sources — the
+    /// same encoding `set_volume`/`set_pan` use, but without touching
+    /// the stored `self.inputs`/`self.playbacks` volume model.
+    /// `set_mute`/`set_solo` use this to force a crosspoint to 0 (or
+    /// back) while keeping the channel's own "real" volume intact to
+    /// restore later, exactly like `usb.rs`'s already
+    /// hardware-validated mute/solo. A missing element (e.g. an
+    /// unsupported output count) is a silent no-op, matching
+    /// `set_volume`'s own `if let Some(selem) = ...` behavior.
+    fn write_crosspoint(
+        &self,
+        src: usize,
+        ch: SelemChannelId,
+        is_mono: bool,
+        output: usize,
+        volume: f32,
+        pan: i8,
+    ) -> Result<(), Error> {
+        let Some(selem) = self.crosspoint_selem(src, output) else {
+            return Ok(());
+        };
+        let max = selem.get_playback_volume_range().1 as f32;
+        if is_mono {
+            let (l, r) = encode_volume_pan(volume.clamp(0.0, 1.0), pan, max);
+            selem.set_playback_volume(SelemChannelId::FrontLeft, l)?;
+            selem.set_playback_volume(SelemChannelId::FrontRight, r)?;
+        } else {
+            selem.set_playback_volume(ch, (volume.clamp(0.0, 1.0) * max) as i64)?;
+        }
+        Ok(())
     }
 
     /// Match ALSA mixer elements to our channel model.
@@ -526,8 +565,23 @@ impl RmeDevice for BabyfacePro {
         info!("Searching for RME Babyface Pro...");
         let profile = &PROFILE;
         let mixer = AlsaMixer::open_by_card_name(profile.card_substring)?;
+        // Requesting just 2 capture channels (not the full 12) lands
+        // exactly on AN1/AN2: the kernel driver's own channel map
+        // (`babyfacepro.c`'s `babyface_capture_copy`) walks `map[i]`
+        // for `i in 0..channels_requested`, and `map[0..2] == [0, 1]`
+        // — device words 0/1, the one mapping confirmed against real
+        // hardware (see `capture_meter`'s module doc comment).
+        let capture_meter = crate::capture_meter::CaptureMeter::start(
+            mixer.card_name(),
+            2,
+            48_000,
+        );
+        if capture_meter.is_none() {
+            log::warn!("Could not open the capture PCM for AN1/AN2 level metering — meters will read N/A");
+        }
         let mut device = Self {
             mixer,
+            capture_meter,
             profile,
             inputs: profile.build_inputs(),
             playbacks: profile.build_playbacks(),
@@ -631,25 +685,12 @@ impl RmeDevice for BabyfacePro {
             ChannelId::Output(_) => unreachable!("Output handled above"),
         };
 
-        if let Some(selem) = self.crosspoint_selem(src, output) {
-            let max = selem.get_playback_volume_range().1 as f32;
-            if is_mono {
-                // Preserve the channel's current pan: a mono source's
-                // "volume" is really two independent ALSA channels, so
-                // writing volume alone must re-encode with the cached
-                // pan rather than flattening it to center.
-                let pan = if let ChannelId::Input(idx) = channel {
-                    self.inputs[idx].pans[output]
-                } else {
-                    0
-                };
-                let (l, r) = encode_volume_pan(vol_clamped, pan, max);
-                selem.set_playback_volume(SelemChannelId::FrontLeft, l)?;
-                selem.set_playback_volume(SelemChannelId::FrontRight, r)?;
-            } else {
-                selem.set_playback_volume(ch, (vol_clamped * max) as i64)?;
-            }
-        }
+        // Preserve the channel's current pan: a mono source's "volume"
+        // is really two independent ALSA channels, so writing volume
+        // alone must re-encode with the cached pan rather than
+        // flattening it to center.
+        let pan = if let ChannelId::Input(idx) = channel { self.inputs[idx].pans[output] } else { 0 };
+        self.write_crosspoint(src, ch, is_mono, output, vol_clamped, pan)?;
 
         match channel {
             ChannelId::Input(idx) => self.inputs[idx].volumes[output] = vol_clamped,
@@ -758,9 +799,6 @@ impl RmeDevice for BabyfacePro {
         // both ALSA channels) — muting one physical output channel
         // mutes its sibling too, so mirror that into both `self.outputs`
         // entries rather than leaving them inconsistent with hardware.
-        // Input/Playback mute has no dedicated ALSA switch at all (the
-        // kernel driver has none), so it stays in-memory only, same as
-        // before.
         if let ChannelId::Output(idx) = channel {
             let pair_idx = idx / 2;
             let label = PAIR_LABELS
@@ -779,6 +817,40 @@ impl RmeDevice for BabyfacePro {
             }
             return Ok(());
         }
+
+        // Input/Playback have no dedicated ALSA mute switch — same as
+        // TotalMix on Windows, which does this by driving the routing
+        // matrix directly: `cap_mute2.pcap` (2026-08-24) shows muting a
+        // strip zeroing its crosspoints into EVERY output, restored
+        // from the model on unmute. Ported from `usb.rs`'s own
+        // already-hardware-validated implementation of the same
+        // capture, just through ALSA crosspoint controls instead of
+        // raw USB writes. No solo-awareness here, matching `usb.rs`
+        // exactly: unmuting a strip while some other strip is soloed
+        // restores this strip's own levels regardless — a real
+        // TotalMix quirk this ports faithfully rather than "fixing".
+        let n_outputs = self.profile.output_pair_count();
+        match channel {
+            ChannelId::Input(idx) => {
+                let (src, ch, is_mono) = input_crosspoint_slot(idx)
+                    .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
+                for out in 0..n_outputs {
+                    let level = if mute { 0.0 } else { self.inputs[idx].volumes[out] };
+                    let pan = self.inputs[idx].pans[out];
+                    self.write_crosspoint(src, ch, is_mono, out, level, pan)?;
+                }
+            }
+            ChannelId::Playback(idx) => {
+                let (src, ch) = playback_crosspoint_slot(idx)
+                    .ok_or_else(|| Error::InvalidChannel(format!("Playback {}", idx)))?;
+                for out in 0..n_outputs {
+                    let level = if mute { 0.0 } else { self.playbacks[idx].volumes[out] };
+                    self.write_crosspoint(src, ch, false, out, level, 0)?;
+                }
+            }
+            ChannelId::Output(_) => unreachable!("handled above"),
+        }
+
         let ch = self.channel_mut(channel)?;
         *ch.0 = mute;
         Ok(())
@@ -790,8 +862,62 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_solo(&mut self, channel: ChannelId, solo: bool) -> Result<(), Error> {
-        let ch = self.channel_mut(channel)?;
-        *ch.1 = solo;
+        // Ported from `usb.rs`'s own already-hardware-validated
+        // implementation of `cap_solo2.pcap` (2026-08-24): soloing a
+        // strip does NOT touch its own crosspoints — it zeroes every
+        // OTHER input/playback strip's send into every output instead,
+        // so only the soloed strip is heard in the monitor mix.
+        // Un-solo restores every other strip from the model,
+        // respecting its own independent mute. Outputs have no solo in
+        // TotalMix. Exclusive solo (TotalMix's default): soloing a
+        // strip clears every other strip's solo flag first, so a later
+        // un-solo of any of them is a no-op instead of fighting this
+        // one.
+        let (solo_i, solo_c) = match channel {
+            ChannelId::Input(i) => (Some(i), None),
+            ChannelId::Playback(c) => (None, Some(c)),
+            ChannelId::Output(_) => return Ok(()),
+        };
+        match channel {
+            ChannelId::Input(i) => self.inputs[i].solo = solo,
+            ChannelId::Playback(c) => self.playbacks[c].solo = solo,
+            ChannelId::Output(_) => unreachable!(),
+        }
+
+        let n_outputs = self.profile.output_pair_count();
+        for j in 0..self.inputs.len() {
+            if solo_i == Some(j) {
+                continue;
+            }
+            if solo {
+                self.inputs[j].solo = false;
+            }
+            let Some((src, ch, is_mono)) = input_crosspoint_slot(j) else {
+                continue;
+            };
+            let muted = self.inputs[j].mute;
+            for out in 0..n_outputs {
+                let level = if solo || muted { 0.0 } else { self.inputs[j].volumes[out] };
+                let pan = self.inputs[j].pans[out];
+                self.write_crosspoint(src, ch, is_mono, out, level, pan)?;
+            }
+        }
+        for j in 0..self.playbacks.len() {
+            if solo_c == Some(j) {
+                continue;
+            }
+            if solo {
+                self.playbacks[j].solo = false;
+            }
+            let Some((src, ch)) = playback_crosspoint_slot(j) else {
+                continue;
+            };
+            let muted = self.playbacks[j].mute;
+            for out in 0..n_outputs {
+                let level = if solo || muted { 0.0 } else { self.playbacks[j].volumes[out] };
+                self.write_crosspoint(src, ch, false, out, level, 0)?;
+            }
+        }
         Ok(())
     }
 
@@ -1009,9 +1135,22 @@ impl RmeDevice for BabyfacePro {
             Sensitivity::Minus10dBV => 0,
             Sensitivity::Plus4dBu => 1,
         };
-        if let Some(selem) = self.mixer.find_selem(&elem_name, 0) {
-            selem.set_enum_item(SelemChannelId::mono(), item)?;
-        }
+        // The from-scratch proprietary-mode kernel driver
+        // (`snd-usb-babyface-pro`) has no sensitivity control at all —
+        // confirmed via `amixer -c 0 scontrols` and absent from
+        // `babyfacepro-ctl.c` — and it isn't a documented future
+        // follow-up like clock source/SPDIF are, so this may be a
+        // genuinely missing driver feature rather than a naming
+        // mismatch. `usb.rs`'s own backend is honest about the same
+        // gap (`Err("Sensitivity is not mapped in the USB protocol
+        // yet")`); this used to silently no-op and still report
+        // success, updating the in-memory model as if the switch had
+        // actually happened. Matched to the same honest failure
+        // instead of quietly lying about it.
+        let selem = self.mixer.find_selem(&elem_name, 0).ok_or_else(|| {
+            Error::InvalidChannel(format!("Sensitivity is not mapped for Input {}", idx))
+        })?;
+        selem.set_enum_item(SelemChannelId::mono(), item)?;
         inp.sensitivity = Some(sensitivity);
         Ok(())
     }
@@ -1188,6 +1327,24 @@ impl RmeDevice for BabyfacePro {
         let _ = self.mixer.handle_events()?;
         Ok(())
     }
+
+    /// Real for AN1/AN2 (`self.inputs[0]`/`[1]`) via `capture_meter`;
+    /// every other index reads 0.0 here, but the GUI never shows that
+    /// as a real "silent" reading — `DeviceHandle::has_input_meter`
+    /// gates it back to "N/A" for anything past index 1. See
+    /// `capture_meter`'s own module doc comment for why this doesn't
+    /// cover more channels.
+    fn meters(&self) -> Option<Vec<f32>> {
+        let mut levels = vec![0.0; self.inputs.len()];
+        if let Some(cm) = &self.capture_meter {
+            for (i, v) in cm.drain().into_iter().enumerate() {
+                if let Some(slot) = levels.get_mut(i) {
+                    *slot = v;
+                }
+            }
+        }
+        Some(levels)
+    }
 }
 
 #[cfg(test)]
@@ -1287,6 +1444,105 @@ mod tests {
 
     #[test]
     #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    fn live_hardware_sensitivity_is_honestly_unmapped_not_a_silent_success() {
+        let mut dev = BabyfacePro::open().expect("real device attached");
+        let idx = 2; // IN3 — Instrument-type, the only kind sensitivity applies to
+        let before = dev.inputs()[idx].sensitivity;
+
+        // The proprietary-mode kernel driver has no sensitivity control
+        // at all (see `set_sensitivity`'s own comment) — this must
+        // fail loudly, not silently report success while leaving the
+        // model untouched.
+        let result = dev.set_sensitivity(idx, Sensitivity::Plus4dBu);
+        assert!(result.is_err(), "sensitivity isn't mapped on this driver and must error");
+        assert_eq!(
+            dev.inputs()[idx].sensitivity,
+            before,
+            "a failed write must not silently update the in-memory model"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    fn live_hardware_mute_zeroes_the_crosspoint_and_unmute_restores_it() {
+        let mut dev = BabyfacePro::open().expect("real device attached");
+        let cid = ChannelId::Input(1); // AN2, verified silent (0%) before running this
+        let orig_vol = dev.volume(cid, 0).unwrap();
+        dev.set_volume(cid, 0, 0.5).unwrap();
+
+        dev.set_mute(cid, true).unwrap();
+        // The model's own "real" volume is untouched by mute — needed
+        // so unmute can restore it.
+        assert!((dev.volume(cid, 0).unwrap() - 0.5).abs() < 0.02);
+        // But the actual ALSA crosspoint register really is zeroed —
+        // proven by re-reading it fresh (a new `attach_mixer_elements`
+        // pass), not from the model that deliberately wasn't touched.
+        let dev2 = BabyfacePro::open().expect("real device attached");
+        assert!(
+            dev2.volume(cid, 0).unwrap() < 0.02,
+            "crosspoint should read back near 0 while muted"
+        );
+        drop(dev2);
+
+        dev.set_mute(cid, false).unwrap();
+        let dev3 = BabyfacePro::open().expect("real device attached");
+        assert!(
+            (dev3.volume(cid, 0).unwrap() - 0.5).abs() < 0.02,
+            "crosspoint should be restored after unmute"
+        );
+        drop(dev3);
+
+        dev.set_volume(cid, 0, orig_vol).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    fn live_hardware_solo_zeroes_other_channels_and_unsolo_restores_them() {
+        let mut dev = BabyfacePro::open().expect("real device attached");
+        let soloed = ChannelId::Input(0); // AN1
+        let other = ChannelId::Input(1); // AN2, verified silent (0%) before running this
+        let orig_soloed_vol = dev.volume(soloed, 0).unwrap();
+        let orig_other_vol = dev.volume(other, 0).unwrap();
+        dev.set_volume(soloed, 0, 0.5).unwrap();
+        dev.set_volume(other, 0, 0.5).unwrap();
+
+        dev.set_solo(soloed, true).unwrap();
+        // The soloed channel's own level is untouched by soloing it —
+        // matching `usb.rs`'s own hardware-validated behavior.
+        assert!((dev.volume(soloed, 0).unwrap() - 0.5).abs() < 0.02);
+        // The other channel's model volume is preserved for restore...
+        assert!((dev.volume(other, 0).unwrap() - 0.5).abs() < 0.02);
+        // ...but its actual crosspoint register reads back near 0,
+        // proven the same way as the mute test above.
+        let dev2 = BabyfacePro::open().expect("real device attached");
+        assert!(
+            (dev2.volume(soloed, 0).unwrap() - 0.5).abs() < 0.02,
+            "soloed channel's own level must be untouched"
+        );
+        assert!(
+            dev2.volume(other, 0).unwrap() < 0.02,
+            "non-soloed channel should read back near 0 while something else is soloed"
+        );
+        drop(dev2);
+
+        dev.set_solo(soloed, false).unwrap();
+        let dev3 = BabyfacePro::open().expect("real device attached");
+        assert!(
+            (dev3.volume(other, 0).unwrap() - 0.5).abs() < 0.02,
+            "un-solo should restore the other channel's crosspoint"
+        );
+        drop(dev3);
+
+        dev.set_volume(soloed, 0, orig_soloed_vol).unwrap();
+        dev.set_volume(other, 0, orig_other_vol).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached AND running in \
+                Class Compliant mode (snd-usb-audio) — the from-scratch \
+                snd-usb-babyface-pro driver has no IEC958 control yet \
+                (see babyface-pro-linux/README.md's upstream plan); run \
+                manually with --ignored"]
     fn live_hardware_spdif_enabled_round_trip() {
         let mut dev = BabyfacePro::open().expect("real device attached");
         let orig = dev.settings().spdif_enabled;
@@ -1302,7 +1558,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    #[ignore = "requires the real Babyface Pro FS attached AND running in \
+                Class Compliant mode (snd-usb-audio) — the from-scratch \
+                snd-usb-babyface-pro driver has no IEC958 Emphasis/Pro \
+                Mask controls yet; run manually with --ignored"]
     fn live_hardware_spdif_emphasis_and_professional_round_trip() {
         let mut dev = BabyfacePro::open().expect("real device attached");
         let orig_emph = dev.settings().spdif_emphasis;
@@ -1321,7 +1580,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    #[ignore = "requires the real Babyface Pro FS attached AND running in \
+                Class Compliant mode (snd-usb-audio) — the from-scratch \
+                snd-usb-babyface-pro driver has no Sample Clock Source \
+                control yet (its README lists clock source as a future \
+                follow-up, not yet implemented); run manually with \
+                --ignored"]
     fn live_hardware_clock_source_round_trip() {
         let mut dev = BabyfacePro::open().expect("real device attached");
         let orig = dev.settings().clock_source.clone();

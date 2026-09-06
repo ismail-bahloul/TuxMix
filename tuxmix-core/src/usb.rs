@@ -831,6 +831,7 @@ impl RmeDevice for BabyfaceProUsb {
         let standard_raw = fader_db_to_raw(fader_db + db);
         let reqs = tuxmix_usb::protocol::set_trim(src, trim_raw, standard_raw);
         self.dev.send_all(&reqs)?;
+        self.inputs[idx].trim = db;
         Ok(())
     }
 

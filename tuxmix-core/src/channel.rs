@@ -59,6 +59,17 @@ pub struct InputChannel {
     pub eq: Option<InputEq>,
     pub mute: bool,
     pub solo: bool,
+    /// Trim (T), dB on the master curve (-65..+6, see
+    /// `RmeDevice::set_trim`) — every hardware input has one (TotalMix
+    /// shows a "T" button on all of them, analog and digital alike),
+    /// unlike `gain` which only applies to Mic/Instrument. `set_trim`'s
+    /// own trait default is a silent no-op (no register on the ALSA
+    /// path), so this field is the only place a value set through it
+    /// persists for the UI to read back — mirrored locally by whichever
+    /// backend's `set_trim` override actually knows what to do with it,
+    /// same as `gain`. `#[serde(default)]` so old scene JSON still loads.
+    #[serde(default)]
+    pub trim: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
@@ -179,6 +190,7 @@ impl InputChannel {
             eq: None,
             mute: false,
             solo: false,
+            trim: 0.0,
         }
     }
 }

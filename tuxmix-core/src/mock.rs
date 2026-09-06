@@ -373,6 +373,21 @@ impl RmeDevice for MockBabyfacePro {
         Ok(())
     }
 
+    /// Unlike `set_gain`, every input has a Trim control (no
+    /// `channel_type` gate) — matches `usb.rs`'s own real override,
+    /// which applies to every physical source. The trait default is a
+    /// silent no-op (no local state at all), which would make the "T"
+    /// button in `--mock` look broken; this just persists the value the
+    /// same way the real backend does, without a hardware write.
+    fn set_trim(&mut self, idx: usize, db: f32) -> Result<(), Error> {
+        let inp = self
+            .inputs
+            .get_mut(idx)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
+        inp.trim = db.clamp(-65.0, 6.0);
+        Ok(())
+    }
+
     fn set_sensitivity(&mut self, idx: usize, sensitivity: Sensitivity) -> Result<(), Error> {
         let inp = self
             .inputs

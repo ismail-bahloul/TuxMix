@@ -108,7 +108,10 @@ impl AlsaMixer {
         Ok(0)
     }
 
-    /// Name of the ALSA card (e.g. "hw:0").
+    /// Name of the ALSA card (e.g. "hw:0") — also lets a caller open a
+    /// *different* interface on the exact same physical card (e.g. the
+    /// capture PCM, for real-time level metering) without re-scanning
+    /// `/proc/asound/cards` itself.
     pub fn card_name(&self) -> &str {
         &self.card_name
     }
