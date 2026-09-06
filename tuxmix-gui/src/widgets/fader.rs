@@ -541,7 +541,6 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
 
 const METER_RADIUS: f32 = 3.5;
 const CLIP_H: f32 = 6.0;
-const CLIP_GAP: f32 = 3.0;
 
 /// `f32::clamp` panics if `lo > hi` — which a plain `min - margin, max -
 /// margin` pair can produce for a single bad frame: iced 0.14 has a layout
@@ -603,31 +602,25 @@ const FILL_ALPHA: f32 = 0.55;
 /// as "silence", which is a different claim than "not measured" — so
 /// this draws a dashed, uncolored track instead of pretending there's a
 /// live reading.
-/// The meter's own fill track — the raw column rect, inset at the top
-/// by the clip-LED's reserved strip so the fill never draws under it.
-/// Deliberately *not* shared with `draw_ruler` — see that function's
-/// own comment on why its ticks measure off the full, uninset rect
-/// instead (keeping them aligned with the fader cap next to it, at the
-/// cost of a small, pre-existing gap versus this track's own top).
-fn meter_track(r: Rectangle, scale: f32) -> Rectangle {
-    let clip_h = CLIP_H * scale;
-    let clip_gap = CLIP_GAP * scale;
-    Rectangle::new(
-        Point::new(r.x, r.y + clip_h + clip_gap),
-        Size::new(r.width, (r.height - clip_h - clip_gap).max(0.0)),
-    )
-}
-
 fn draw_meter(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available: bool) {
     let l = level.clamp(0.0, 1.0);
     let fill_w = r.width;
     let radius = METER_RADIUS * scale;
     let clip_h = CLIP_H * scale;
 
-    let track = meter_track(r, scale);
-
+    // Background/fill are measured against the *full* `r`, exactly like
+    // `draw_ruler`'s ticks and the fader cap next to it — previously
+    // this track was inset by the clip-LED's reserved strip, so a
+    // signal's fill top landed a few px below its own ruler gridline at
+    // every dB value, worst right at 0 dBFS (fixed as its own residual,
+    // right after the linear-vs-tapered curve fix below fixed the
+    // *shape* of that same mismatch). The clip LED is drawn last (see
+    // below) and fully opaque, so it still reads as a distinct control
+    // sitting on top of the meter, not blended into it — it just no
+    // longer reserves its own dead strip that the fill could never
+    // reach.
     frame.fill(
-        &Path::new(|b| b.rounded_rectangle(track.position(), track.size(), radius.into())),
+        &Path::new(|b| b.rounded_rectangle(r.position(), r.size(), radius.into())),
         Color::from_rgb8(0x08, 0x08, 0x0a),
     );
 
@@ -637,10 +630,10 @@ fn draw_meter(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available
         // inside a canvas this narrow.
         let dash_w = fill_w * 0.5;
         let dash_h = 2.0 * scale;
-        let dash_x = track.x + (fill_w - dash_w) / 2.0;
-        let count = ((track.height / (dash_h * 2.5)).floor() as usize).max(1);
+        let dash_x = r.x + (fill_w - dash_w) / 2.0;
+        let count = ((r.height / (dash_h * 2.5)).floor() as usize).max(1);
         for i in 0..count {
-            let dash_y = track.y + track.height * (i as f32 + 0.5) / count as f32;
+            let dash_y = r.y + r.height * (i as f32 + 0.5) / count as f32;
             frame.fill(
                 &Path::new(|b| {
                     b.rounded_rectangle(
@@ -665,8 +658,8 @@ fn draw_meter(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available
         // signal data only started flowing through here this session
         // (previously every real backend read "N/A"), which is what
         // made this actually matter rather than being a latent bug.
-        let fill_h = track.height * vol_to_t(l);
-        let fill_pos = Point::new(track.x, track.y + track.height - fill_h);
+        let fill_h = r.height * vol_to_t(l);
+        let fill_pos = Point::new(r.x, r.y + r.height - fill_h);
         let hot_t = (l - HOT_THRESHOLD) / (1.0 - HOT_THRESHOLD);
         let fill_color = Color {
             a: FILL_ALPHA,
@@ -846,15 +839,10 @@ fn draw_ruler(frame: &mut Frame, r: Rectangle, scale: f32) {
     let tick_x1 = r.x + r.width;
     let tick_x0 = tick_x1 - 3.0 * scale;
     let label_x = r.x + r.width / 2.0;
-    // Deliberately measured against the *full* `r`, not
-    // `meter_track`'s clip-LED-inset rect `draw_meter` fills against —
-    // this is what keeps a tick lined up with the fader cap at the
-    // same dB (`draw_track`'s own `pos_of` also measures off the full,
-    // uninset canvas height). Insetting to match `draw_meter` exactly
-    // would fix the meter/ruler pairing at the cost of breaking this
-    // one instead — the residual few-px gap between a tick and the
-    // meter fill's own top is the smaller, pre-existing cosmetic cost
-    // of the two, not chased further here.
+    // Measured against the *full* `r`, matching `draw_track`'s own
+    // `pos_of` (the fader cap) and, since the fix noted in `draw_meter`,
+    // that function's fill too — all three now agree on where a given
+    // dB value sits.
     for db in TICKS {
         let t = db_to_t(db);
         let y = r.y + r.height - r.height * t;

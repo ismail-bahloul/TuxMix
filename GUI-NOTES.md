@@ -2000,3 +2000,88 @@ added here — out of scope for this pass, worth its own session.
 
 `cargo build --workspace` clean, `cargo test --workspace` 158/158 (60
 GUI + 51 core + 17 TUI + 30 tuxmix-usb, 8 ignored live-hardware-only).
+
+**Follow-up, same day: user asked for an honest status check, then
+"corrige tt ça" — fixed every gap that check surfaced.** Asked whether
+the GUI "marche nickel," and answered with 4 concrete gaps rather than
+a blanket yes: the `apply_scene` hardware-write gap (flagged just
+above), the device-panel toggle rows not yet click-verified, several
+deliberately-inert sidebar rows, and the meter/ruler clip-LED
+misalignment left as a known residual. User: fix all of it. Tackled in
+order of real impact:
+
+1. **`apply_scene`'s hardware-write gap, both backends.** `usb.rs`:
+   added unconditional re-application of `an12`/`ms_proc` (previously
+   only re-applied when `true`, never explicitly turned back *off*) plus
+   `eq_for_record`/`optical_out_spdif` (previously not re-applied at
+   all) and `clock_source` (guarded by a new pure
+   `should_reapply_clock_source(clock_source, clock_sources)` — skips
+   an empty string or a value the scene's own `clock_sources` list
+   doesn't recognize, so a stale/legacy field can't abort the whole
+   scene load via `set_clock_source`'s own validation `Err`). New unit
+   test for the guard function. `babyface.rs` (the ALSA/kernel-driver
+   backend) turned out to have a *much* bigger version of the same gap,
+   found by actually reading its `apply_scene` rather than assuming it
+   mirrored `usb.rs`'s: it never re-applied mute, solo, loopback,
+   ms_proc, an12, width, fx_send, or clock_source at all — only volume.
+   Added all of them, but selectively: only the controls this backend
+   actually implements (mute/solo/loopback/ms_proc/an12/width/fx_send/
+   clock_source), explicitly skipping phase/ref_level/stereo_split/
+   eq_for_record/optical_out_spdif/cue, none of which `babyface.rs`
+   overrides (they'd hit the trait's always-`Err` default and abort the
+   load over an unsupported field). `ms_proc`/`an12`/`width`/`fx_send`/
+   `clock_source` are called best-effort (`let _ =`, not `?`) since
+   `clock_source` specifically is a real ALSA control only under
+   Class-Compliant mode, not the currently-loaded proprietary driver
+   (see [[project_proprietary_usb_status]]) — a missing optional control
+   shouldn't abort mute/solo/loopback, which always work. **Live-
+   verified against the real, currently-connected Babyface Pro FS**, not
+   just unit-tested: new `live_hardware_apply_scene_reissues_mute_and_
+   loopback_not_just_the_model` (capture a baseline scene, apply a
+   modified one with AN2 muted + loopback engaged, re-open a second
+   handle to force a fresh ALSA read and confirm both actually changed
+   on hardware, then re-apply the baseline and confirm loopback reads
+   back off again) — ran with `--ignored` against the real card, passed,
+   confirmed via `amixer` afterward that the card was left exactly as
+   found. `usb.rs`'s half of the fix could *not* be live-tested the same
+   way (the USB backend can't open the device while the kernel driver
+   owns it, unloading that module felt disproportionate) — relies on
+   code review plus the new unit test instead, consistent with how this
+   gap's discovery was originally documented.
+
+2. **Device-panel toggle rows, actually click-verified this time.**
+   The earlier "Internal ▾" click to open `device_panel()` kept missing
+   (same XWayland limitation as every other late-session flyout this
+   project has hit). Sidestepped it the way this session's own sidebar
+   work already established: temporarily flip `show_device_panel`'s
+   `new()` default to `true`, rebuild, screenshot, revert — no click
+   needed at all. Confirmed live: "EQ for Record" and "Opt Out: SPDIF"
+   render correctly, identical styling to the already-shipped MS Proc/
+   AN 1>2/Input Link rows beside them.
+
+3. **Meter/ruler clip-LED misalignment, actually fixed, not left as a
+   residual this time.** The earlier VU-meter fix (routing the fill
+   through `vol_to_t`) left a smaller *second* mismatch: `draw_meter`'s
+   fill/background measured against `meter_track(r)`, inset from the
+   top by the clip-LED's reserved strip, while `draw_ruler`'s ticks (and
+   the fader cap) measured against the full, uninset `r` — so a fill's
+   top landed a few px below its own ruler gridline at every dB value,
+   worst at 0 dBFS. Previously left alone specifically to avoid
+   reinsetting the ruler and breaking its own correct pairing with the
+   fader cap. Realized the fix everyone had been avoiding was simpler
+   than assumed: make the *meter* match the ruler/cap's full-`r`
+   coordinate system instead (the direction not previously tried) —
+   removed the inset entirely (`meter_track` helper and `CLIP_GAP`
+   constant both deleted, now dead once nothing insets against them),
+   background box and fill now both measured against the same full `r`
+   the ruler already uses. The clip LED still draws last and fully
+   opaque, so at high levels the fill now correctly reaches up to meet
+   it (matching how a real peak meter's top segment sits right under
+   the clip lamp) instead of stopping short in a reserved gap. Live-
+   verified via a zoomed `--mock` screenshot crop: the clip LED sits
+   flush against the background box's rounded top corner with no seam,
+   and the "0" gridline lines up with the fader cap's own rest position
+   as expected. 159/159 workspace tests (158 plus the new
+   `should_reapply_clock_source` test; the new babyface.rs
+   live-hardware test is `#[ignore]`-gated like its siblings and ran
+   separately with `--ignored` against the real card, passing).

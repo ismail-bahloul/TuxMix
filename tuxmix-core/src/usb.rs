@@ -126,6 +126,17 @@ fn cue_low_map_value(pb_pair: usize, cued_idx: usize, on: bool) -> u16 {
     }
 }
 
+/// Whether `apply_scene` should re-issue a clock-source write for a
+/// loaded scene's `clock_source` string — a pure function so this
+/// guard is testable without a real USB handle. `false` for an empty
+/// string (older scenes serialized before this field existed) or a
+/// value not present in the scene's own recorded `clock_sources` list,
+/// so a stale/unrecognized value can't abort the rest of the scene
+/// load via `set_clock_source`'s own validation error.
+fn should_reapply_clock_source(clock_source: &str, clock_sources: &[String]) -> bool {
+    !clock_source.is_empty() && clock_sources.iter().any(|s| s == clock_source)
+}
+
 /// The protocol source for a core playback channel index (12 channels,
 /// 6 stereo pairs). Both channels of a pair map to the same source.
 fn playback_source(idx: usize) -> Result<Source, Error> {
@@ -1127,11 +1138,28 @@ impl RmeDevice for BabyfaceProUsb {
         for (pair, on) in loopback.into_iter().enumerate() {
             self.set_loopback(pair, on)?;
         }
-        if self.settings.an12 {
-            self.set_an12(true)?;
-        }
-        if self.settings.ms_proc {
-            self.set_ms_proc(true)?;
+        // Written unconditionally (both true AND false), unlike the
+        // per-channel states below — these are plain global toggles
+        // with no "unset" state to preserve, so a scene that saved them
+        // off must actually turn them off on real hardware too, not
+        // just leave whatever the device happened to be holding before
+        // the load. Previously only the `true` case was re-applied here
+        // (found during a later audit: loading a scene never touched
+        // real hardware for these at all besides the in-memory model).
+        self.set_an12(self.settings.an12)?;
+        self.set_ms_proc(self.settings.ms_proc)?;
+        self.set_eq_for_record(self.settings.eq_for_record)?;
+        self.set_optical_out_format(self.settings.optical_out_spdif)?;
+        // Clock source: guard against an empty/unrecognized string
+        // (older scenes serialized before this field existed, or a
+        // `clock_sources` list that hasn't been populated yet) rather
+        // than aborting the whole scene load over one unmapped field —
+        // `set_clock_source` itself would `Err` on anything not in
+        // `self.settings.clock_sources` (just replaced by the scene's
+        // own list above, so this checks against the *scene's* recorded
+        // valid set, not a stale one).
+        if should_reapply_clock_source(&self.settings.clock_source, &self.settings.clock_sources) {
+            self.set_clock_source(&self.settings.clock_source.clone())?;
         }
         if let Some(db) = self.settings.fx_send_db {
             self.set_fx_send(db)?;
@@ -1429,6 +1457,21 @@ mod tests {
         for pb_pair in 0..6 {
             assert_eq!(cue_low_map_value(pb_pair, 2, false), 0x2000);
         }
+    }
+
+    #[test]
+    fn should_reapply_clock_source_only_for_a_known_nonempty_value() {
+        let sources = vec!["Internal".to_string(), "Optical In".to_string()];
+        assert!(should_reapply_clock_source("Optical In", &sources));
+        assert!(
+            !should_reapply_clock_source("", &sources),
+            "an empty string (pre-field-existing scenes) must not attempt a write"
+        );
+        assert!(
+            !should_reapply_clock_source("AutoSync", &sources),
+            "a value the current device doesn't actually report must not attempt a write"
+        );
+        assert!(!should_reapply_clock_source("Internal", &[]));
     }
 
     #[test]

@@ -1322,6 +1322,45 @@ impl RmeDevice for BabyfacePro {
         self.playbacks = scene.playbacks.clone();
         self.outputs = scene.outputs.clone();
         self.settings = scene.settings.clone();
+        // Re-issue the actual ALSA writes for mute/solo/global toggles —
+        // previously this only ever updated the in-memory model above
+        // (`self.inputs`/etc.), so loading a scene looked right in the
+        // GUI but never touched real hardware for anything except
+        // volume. `set_mute`/`set_solo` read `self.inputs`/`self.
+        // playbacks`/`self.outputs` to decide what to restore, so this
+        // runs after the state's been adopted, not before.
+        for i in 0..self.inputs.len() {
+            self.set_mute(ChannelId::Input(i), scene.inputs[i].mute)?;
+            self.set_solo(ChannelId::Input(i), scene.inputs[i].solo)?;
+        }
+        for i in 0..self.playbacks.len() {
+            self.set_mute(ChannelId::Playback(i), scene.playbacks[i].mute)?;
+            self.set_solo(ChannelId::Playback(i), scene.playbacks[i].solo)?;
+        }
+        for pair in 0..self.profile.output_pair_count() {
+            if let Some(out) = scene.outputs.get(pair * 2) {
+                self.set_mute(ChannelId::Output(pair * 2), out.mute)?;
+                let _ = self.set_loopback(pair, out.loopback);
+            }
+        }
+        // Best-effort: `ms_proc`/`an12`/`width`/`fx_send`/`clock_source`
+        // are all real ALSA controls on this backend, but some (clock
+        // source especially — see `PROTOCOL.md`/this session's own
+        // finding that it's a CC-mode-only control surface under the
+        // proprietary driver) may legitimately not exist depending on
+        // which kernel driver mode is loaded. A missing optional control
+        // shouldn't abort the rest of the scene load.
+        let _ = self.set_ms_proc(self.settings.ms_proc);
+        let _ = self.set_an12(self.settings.an12);
+        if self.settings.width != 0.0 {
+            let _ = self.set_width(self.settings.width);
+        }
+        if let Some(db) = self.settings.fx_send_db {
+            let _ = self.set_fx_send(db);
+        }
+        if !self.settings.clock_source.is_empty() {
+            let _ = self.set_clock_source(&self.settings.clock_source.clone());
+        }
         Ok(())
     }
 
@@ -1537,6 +1576,44 @@ mod tests {
 
         dev.set_volume(soloed, 0, orig_soloed_vol).unwrap();
         dev.set_volume(other, 0, orig_other_vol).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    fn live_hardware_apply_scene_reissues_mute_and_loopback_not_just_the_model() {
+        // Previously `apply_scene` only ever updated `self.inputs`/
+        // `self.outputs`/etc — a loaded scene looked right in the GUI
+        // but never touched real hardware for anything besides volume.
+        // Proves the fix the same way every other live_hardware test in
+        // this file does: re-open a second handle to force a fresh ALSA
+        // read, rather than trusting the in-memory model.
+        let mut dev = BabyfacePro::open().expect("real device attached");
+        let baseline = dev.capture_scene();
+
+        let mut modified = baseline.clone();
+        modified.inputs[1].mute = true; // AN2, verified silent (0%) before running this
+        modified.outputs[0].loopback = true; // AN1/2 pair
+
+        dev.apply_scene(&modified).expect("apply_scene should succeed");
+
+        let dev2 = BabyfacePro::open().expect("real device attached");
+        assert!(
+            dev2.outputs[0].loopback,
+            "loopback should read back engaged after apply_scene, not just in the model"
+        );
+        assert!(
+            dev2.volume(ChannelId::Input(1), 0).unwrap() < 0.02,
+            "AN2 crosspoint should read back near 0 while apply_scene's mute is engaged"
+        );
+        drop(dev2);
+
+        dev.apply_scene(&baseline).expect("restore baseline");
+        let dev3 = BabyfacePro::open().expect("real device attached");
+        assert!(
+            !dev3.outputs[0].loopback,
+            "loopback should be restored off after re-applying the baseline scene"
+        );
+        drop(dev3);
     }
 
     #[test]
