@@ -1632,6 +1632,24 @@ fn render_eq(f: &mut Frame, area: Rect, dev: &DeviceHandle, idx: usize, eq_row: 
 /// `row` (see `EQ_ROW_COUNT`'s doc comment) currently points at.
 /// Band-type and low-cut-slope rows cycle through their fixed option
 /// list instead of stepping a continuous range.
+/// Steps a frequency value (band freq / low-cut freq, both 20-20,000 Hz)
+/// multiplicatively rather than by a fixed Hz amount — mirrors
+/// `tuxmix-gui::widgets::knob::Knob::log_scale`'s identical reasoning:
+/// a fixed additive step over a 3-decade range is either too coarse to
+/// dial in a bass frequency precisely, or (the bug this replaces) so
+/// fine that reaching the top of the range takes an impractical number
+/// of presses — the old 10 Hz fine-step needed ~1800 presses to get
+/// from 20 Hz to 20 kHz. A ~5%-per-press fine step (~25% coarse)
+/// covers the same 3 decades in roughly 140/30 presses instead, and —
+/// same as a real parametric EQ's frequency control — feels like a
+/// constant amount of adjustment at any point in the range rather than
+/// speeding up disproportionately as the value grows.
+fn step_freq_hz(current: u16, dir: i32, coarse: bool) -> u16 {
+    let factor: f32 = if coarse { 1.25 } else { 1.05 };
+    let new = current as f32 * factor.powi(dir);
+    new.round().clamp(20.0, 20_000.0) as u16
+}
+
 fn adjust_eq_field(dev: &mut DeviceHandle, idx: usize, row: usize, dir: i32, coarse: bool) {
     let eq = dev
         .inputs()
@@ -1659,9 +1677,8 @@ fn adjust_eq_field(dev: &mut DeviceHandle, idx: usize, row: usize, dir: i32, coa
         }
         2 | 6 | 10 => {
             let band = (row - 2) / 4;
-            let step = if coarse { 100 } else { 10 };
-            let new = (eq.bands[band].freq_hz as i32 + dir * step).clamp(20, 20_000);
-            let _ = dev.set_eq_band_freq(idx, band, new as u16);
+            let new = step_freq_hz(eq.bands[band].freq_hz, dir, coarse);
+            let _ = dev.set_eq_band_freq(idx, band, new);
         }
         3 | 7 | 11 => {
             let band = (row - 3) / 4;
@@ -1676,9 +1693,8 @@ fn adjust_eq_field(dev: &mut DeviceHandle, idx: usize, row: usize, dir: i32, coa
             let _ = dev.set_eq_band_gain(idx, band, new);
         }
         13 => {
-            let step = if coarse { 100 } else { 10 };
-            let new = (eq.low_cut_freq_hz as i32 + dir * step).clamp(20, 20_000);
-            let _ = dev.set_eq_low_cut_freq(idx, new as u16);
+            let new = step_freq_hz(eq.low_cut_freq_hz, dir, coarse);
+            let _ = dev.set_eq_low_cut_freq(idx, new);
         }
         14 => {
             const ORDER: [u8; 4] = [6, 12, 18, 24];
@@ -1753,6 +1769,41 @@ mod tests {
     fn matrix_cell_text_is_blank_for_silent_and_numeric_for_routed() {
         assert_eq!(matrix_cell_text(0.0), "    .");
         assert_eq!(matrix_cell_text(1.0), "  0.0");
+    }
+
+    #[test]
+    fn step_freq_hz_moves_a_roughly_constant_percentage_at_any_point_in_range() {
+        // A fixed additive step (the bug this replaces) would move the
+        // same absolute Hz amount at 100 Hz as at 10,000 Hz — this must
+        // move a roughly constant *ratio* instead.
+        let low = step_freq_hz(100, 1, false) as f32 / 100.0;
+        let high = step_freq_hz(10_000, 1, false) as f32 / 10_000.0;
+        assert!(
+            (low - high).abs() < 0.02,
+            "expected a similar ratio at both ends, got {low} vs {high}"
+        );
+        assert!(low > 1.0, "a positive step should increase the frequency");
+    }
+
+    #[test]
+    fn step_freq_hz_reaches_20khz_from_20hz_in_well_under_a_hundred_coarse_presses() {
+        // The old additive coarse step (100 Hz) needed 180 presses for
+        // this; the old fine step (10 Hz) needed ~1800. Multiplicative
+        // stepping should need on the order of tens of presses.
+        let mut hz = 20u16;
+        let mut presses = 0;
+        while hz < 20_000 && presses < 100 {
+            hz = step_freq_hz(hz, 1, true);
+            presses += 1;
+        }
+        assert_eq!(hz, 20_000, "should reach the top of the range");
+        assert!(presses < 50, "took {presses} coarse presses, expected well under 50");
+    }
+
+    #[test]
+    fn step_freq_hz_stays_in_bounds() {
+        assert_eq!(step_freq_hz(20, -1, true), 20);
+        assert_eq!(step_freq_hz(20_000, 1, true), 20_000);
     }
 
     #[test]

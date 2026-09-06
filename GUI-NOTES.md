@@ -1595,6 +1595,32 @@ cells), resized the window narrower, confirmed it correctly reports
 behavior working live, not just unit-tested logic. 151/151 tests,
 clean build.
 
+**Same log-scale class of bug, third occurrence, in the TUI's discrete
+frequency stepping.** After fixing the GUI knob's drag curve, checked
+whether the TUI's keyboard-driven EQ freq/low-cut editor (`Left`/
+`Right`/`PgUp`/`PgDn` in `adjust_eq_field`) had the analogous issue —
+it did, just manifesting differently: a *fixed additive* step (10 Hz
+fine, 100 Hz coarse) across the same 20 Hz-20 kHz range meant reaching
+20 kHz from 20 Hz took ~1800 fine presses or 180 coarse ones, while the
+low end (where musically-relevant precision actually matters) already
+had plenty of resolution at that same fixed step. Same root cause as
+the knob (linear stepping over a multiplicative range), opposite
+symptom (too slow instead of too imprecise) — replaced with a new
+`step_freq_hz` helper that steps *multiplicatively* (~5%/press fine,
+~25% coarse), covering the same 3 decades in roughly 140/30 presses
+instead, and feeling like a constant amount of adjustment at any point
+in the range rather than speeding up disproportionately as the value
+grows.
+
+3 new tests (near-constant percentage move at both ends of the range,
+reaches 20 kHz in well under 100 coarse presses, stays in bounds).
+Live-verified in a real alacritty window (now an established technique
+for this crate, not a one-off): opened the EQ editor for AN1, pressed
+Right 5 times on Band 1 Freq, watched 1000 Hz → 1277 Hz — matches
+1000×1.05⁵≈1276 (small per-step rounding, expected) almost exactly,
+confirming the live behavior matches the tested math, not just that
+both happen to compile. 154/154 tests, clean build.
+
 **Not click-verified.** Attempting to actually click Snapshot/Group/
 Layout controls this session hit something worse than the earlier
 "coordinate drift" — `xdotool getactivewindow` after a synthetic click
