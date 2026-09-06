@@ -137,6 +137,26 @@ fn should_reapply_clock_source(clock_source: &str, clock_sources: &[String]) -> 
     !clock_source.is_empty() && clock_sources.iter().any(|s| s == clock_source)
 }
 
+/// The ref-level (Instr 3/4) contribution to the shared preamp byte
+/// (bits 2-3, `cap_reflevel2.pcap`) + the matching `0x21` commit value,
+/// for a given `REF_*` code (0 = unset, defaults to +4dBu) — a pure
+/// function so this composition is testable without a real USB handle.
+/// +4dBu = `PREAMP_BASE` set, -10dBV/Boost = clear; Boost is
+/// distinguished only by the commit (0x0003 vs 0x0000), not a
+/// persisted bit. Callers OR the bits with `preamp_bits()` (the
+/// CURRENT 48V/PAD state) rather than sending a fixed full byte — the
+/// bug this replaces (see `set_ref_level`'s own doc comment) sent a
+/// captured byte that happened to have both mics' 48V bits baked in,
+/// forcing 48V on as a side effect of changing the ref level.
+fn ref_level_contribution(code: u16) -> (u16, u16) {
+    use tuxmix_usb::protocol::PREAMP_BASE;
+    match code {
+        REF_MINUS_10DBV => (0x0000, 0x0000),
+        REF_BOOST => (0x0000, 0x0003),
+        _ => (PREAMP_BASE, 0x0000), // +4dBu, and the 0/unset default
+    }
+}
+
 /// The protocol source for a core playback channel index (12 channels,
 /// 6 stereo pairs). Both channels of a pair map to the same source.
 fn playback_source(idx: usize) -> Result<Source, Error> {
@@ -331,15 +351,103 @@ impl BabyfaceProUsb {
         state
     }
 
+    /// The ref-level (Instr 3/4) contribution to the shared preamp byte
+    /// (bits 2-3, `cap_reflevel2.pcap`): +4dBu = 0x000F set (also
+    /// `PREAMP_BASE`, the default/unset fallback), -10dBV/Boost =
+    /// clear. There is only ONE shared switch for the Instrument pair
+    /// (no separate bits for AN3 vs AN4 in the protocol), so this reads
+    /// whichever Instrument channel has a `ref_level` set — mirrored
+    /// across both by `set_ref_level` below, so they can't disagree.
+    fn ref_level_code(&self) -> u16 {
+        self.inputs
+            .iter()
+            .find(|c| c.channel_type == ChannelType::Instrument)
+            .map(|c| c.ref_level)
+            .unwrap_or(0)
+    }
+
+    fn ref_level_bits(&self) -> u16 {
+        ref_level_contribution(self.ref_level_code()).0
+    }
+
+    /// Boost's distinguishing `0x21` commit value (0x0003) is NOT a
+    /// persisted register bit (`cap_reflevel2.pcap`: it's carried only
+    /// in the one-shot commit alongside the `0x17` state write) — it
+    /// has to be re-asserted on EVERY preamp write, not just the one
+    /// that engaged Boost, or a later 48V/PAD toggle would silently
+    /// degrade Boost back to plain -10dBV. Same fix as the sibling
+    /// kernel driver's `bf_preamp_state_write` (`babyface-pro-linux`).
+    fn ref_level_commit(&self) -> u16 {
+        ref_level_contribution(self.ref_level_code()).1
+    }
+
+    /// Writes just the L crosspoint for `src` at `out` (`Output::An12`
+    /// also gets the low-map mirror), negating `raw` first when `phase`
+    /// is true. `raw` must be the PLAIN fader value — this decides
+    /// whether/how to negate itself, exactly once.
+    ///
+    /// Shared by `set_phase` (re-applying every output when phase is
+    /// toggled) and `set_volume` (so a fader move on a phase-inverted
+    /// analog input doesn't silently undo the negation — previously
+    /// `set_volume` had no idea phase existed, so its own mono write
+    /// would overwrite L back to the plain value the next time the
+    /// user touched that fader).
+    ///
+    /// For `Output::An12` this previously piped an ALREADY-negated
+    /// value through `protocol::set_phase` (which negates AGAIN
+    /// internally) — double negation, so engaging phase silently did
+    /// nothing on the AN1/2 destination specifically (the most common
+    /// one). Fixed by only calling `protocol::set_phase` (which always
+    /// negates) when `phase` is true, and writing the plain value
+    /// directly otherwise, matching the non-An12 branch below.
+    fn write_l_with_phase(
+        &mut self,
+        out: Output,
+        src: Source,
+        raw: u16,
+        phase: bool,
+    ) -> Result<(), Error> {
+        if out == Output::An12 {
+            if phase {
+                let reqs = tuxmix_usb::protocol::set_phase(src, raw);
+                self.dev.send_all(&reqs)?;
+            } else {
+                self.dev.set_low_map_volume(src, raw)?;
+                self.dev
+                    .send_all(&[tuxmix_usb::protocol::VendorRequest::new(
+                        0x12,
+                        raw,
+                        tuxmix_usb::map::crosspoint_l(out, src) as u16,
+                    )])?;
+            }
+        } else {
+            let value = if phase { !raw } else { raw };
+            self.dev
+                .send_all(&[tuxmix_usb::protocol::VendorRequest::new(
+                    0x12,
+                    value,
+                    tuxmix_usb::map::crosspoint_l(out, src) as u16,
+                )])?;
+        }
+        Ok(())
+    }
+
     /// Write the preamp STATE byte composed from ALL inputs (48V + PAD
-    /// bits) + the commit — WITHOUT the gain writes, so toggling 48V/
-    /// PAD on one mic never clobbers the other gains (they have no
-    /// readback; we can't restore them). Verified on hardware: 48V
-    /// engages with just `0x17 state 0x003F` + `0x21` (p48d_test.c).
+    /// bits + the CURRENT ref-level selection) + the matching commit —
+    /// WITHOUT the gain writes, so toggling 48V/PAD on one mic never
+    /// clobbers the other gains (they have no readback; we can't
+    /// restore them). Verified on hardware: 48V engages with just
+    /// `0x17 state 0x003F` + `0x21` (p48d_test.c).
+    ///
+    /// Previously this (and `write_preamp_block` below) hardcoded
+    /// `PREAMP_BASE` (+4dBu) as the ref-level contribution regardless
+    /// of what the user had actually selected — toggling 48V/PAD would
+    /// silently reset Instr 3/4's ref level back to +4dBu. Composing
+    /// from `ref_level_bits()`/`ref_level_commit()` instead fixes that;
+    /// `set_ref_level` has the mirror-image bug (composed below).
     fn write_preamp_state(&mut self) -> Result<(), Error> {
-        use tuxmix_usb::protocol::PREAMP_BASE;
-        let state = self.preamp_bits() | PREAMP_BASE;
-        let reqs = tuxmix_usb::protocol::set_preamp_state(state);
+        let state = self.preamp_bits() | self.ref_level_bits();
+        let reqs = tuxmix_usb::protocol::set_ref_level(state, self.ref_level_commit());
         self.dev.send_all(&reqs)?;
         Ok(())
     }
@@ -378,8 +486,7 @@ impl BabyfaceProUsb {
     /// + all four gains) — for whole-scene application only, where the
     /// complete state is known.
     fn write_preamp_block(&mut self) -> Result<(), Error> {
-        use tuxmix_usb::protocol::PREAMP_BASE;
-        let state = self.preamp_bits() | PREAMP_BASE;
+        let state = self.preamp_bits() | self.ref_level_bits();
         let gain = [
             Self::gain_to_raw(
                 self.inputs[0].channel_type,
@@ -398,7 +505,7 @@ impl BabyfaceProUsb {
                 self.inputs[3].gain.unwrap_or(0),
             ),
         ];
-        let mut reqs = tuxmix_usb::protocol::set_preamp_state(state);
+        let mut reqs = tuxmix_usb::protocol::set_ref_level(state, self.ref_level_commit());
         let mut cycle = 0u8;
         for (m, g) in gain.iter().enumerate() {
             reqs.extend(tuxmix_usb::protocol::set_gain(m, *g, &mut cycle));
@@ -496,6 +603,16 @@ impl RmeDevice for BabyfaceProUsb {
         // Keep the AN1/2 low-map mirror in sync (TotalMix writes both).
         if out == Output::An12 {
             self.dev.set_low_map_volume(src, raw)?;
+        }
+        // If this is a phase-inverted analog input, the mono write
+        // above just overwrote the L register with the PLAIN value,
+        // silently un-inverting phase — re-apply the negation on top.
+        // See `set_phase`'s own doc comment for why this half of the
+        // fix lives here rather than in `set_phase` itself.
+        if let ChannelId::Input(i) = channel {
+            if self.inputs[i].phase {
+                self.write_l_with_phase(out, src, raw, true)?;
+            }
         }
         // Update the local state.
         match channel {
@@ -892,23 +1009,12 @@ impl RmeDevice for BabyfaceProUsb {
         let src = input_source(idx)?;
         self.inputs[idx].phase = invert;
         // Negate (bitwise-NOT) the current fader value of EVERY output
-        // the input routes into; out0 also gets the low-map mirror
-        // (matching the capture: 0x0EA0 → 0xF15F).
+        // the input routes into; the AN1/2 destination also gets the
+        // low-map mirror (matching the capture: 0x0EA0 → 0xF15F).
         for o in 0..self.output_pair_count() {
             let raw = volume_to_raw(self.inputs[idx].volumes[o]);
-            let value = if invert { !raw } else { raw };
-            if o == 0 {
-                let reqs = tuxmix_usb::protocol::set_phase(src, value);
-                self.dev.send_all(&reqs)?;
-            } else {
-                let out = output_for(o)?;
-                self.dev
-                    .send_all(&[tuxmix_usb::protocol::VendorRequest::new(
-                        0x12,
-                        value,
-                        tuxmix_usb::map::crosspoint_l(out, src) as u16,
-                    )])?;
-            }
+            let out = output_for(o)?;
+            self.write_l_with_phase(out, src, raw, invert)?;
         }
         Ok(())
     }
@@ -960,16 +1066,28 @@ impl RmeDevice for BabyfaceProUsb {
                 "Input {idx} has no ref-level switch"
             )));
         }
-        self.inputs[idx].ref_level = raw;
-        // LABELED pairs (cap_reflevel2.pcap, 2026-08-24 — started at
-        // +4dBu = 0x0F, clicks -10dBV/Boost/+4dBu): the 0x21 carries
-        // part of the code (NOT always the 0x0000 commit).
-        let (state, commit) = match raw {
-            REF_MINUS_10DBV => (0x0003, 0x0000),
-            REF_BOOST => (0x0003, 0x0003),
-            _ => (0x000F, 0x0000), // +4dBu (also the 0/unset fallback)
-        };
-        let reqs = tuxmix_usb::protocol::set_ref_level(state, commit);
+        // There is only ONE shared switch for the Instrument pair (no
+        // separate bits for AN3 vs AN4 in the protocol) — mirror to
+        // every Instrument channel, not just `idx`, so a reader
+        // checking either one sees the same value rather than a stale
+        // one from before this call.
+        for c in self.inputs.iter_mut() {
+            if c.channel_type == ChannelType::Instrument {
+                c.ref_level = raw;
+            }
+        }
+        // Composed from the CURRENT 48V/PAD state (`preamp_bits()`),
+        // not the fixed captured bytes (cap_reflevel2.pcap: +4dBu =
+        // 0x0F, -10dBV/Boost = 0x03) this used to send verbatim —
+        // those bytes happened to have both mics' 48V bits set during
+        // that particular capture, so replaying them blindly forced
+        // 48V on for AN1/AN2 as an unwanted side effect of changing
+        // Instr 3/4's ref level, every single time. Same fix as the
+        // sibling kernel driver's ref-level control
+        // (`babyface-pro-linux`), same bug class this session already
+        // fixed once for the settings-word register.
+        let state = self.preamp_bits() | self.ref_level_bits();
+        let reqs = tuxmix_usb::protocol::set_ref_level(state, self.ref_level_commit());
         self.dev.send_all(&reqs)?;
         Ok(())
     }
@@ -1472,6 +1590,20 @@ mod tests {
             "a value the current device doesn't actually report must not attempt a write"
         );
         assert!(!should_reapply_clock_source("Internal", &[]));
+    }
+
+    #[test]
+    fn ref_level_contribution_never_bakes_in_an_unrelated_48v_bit() {
+        use tuxmix_usb::protocol::PREAMP_BASE;
+        // +4dBu (code 0, unset, and REF_PLUS_4DBU) sets PREAMP_BASE,
+        // never anything from bits 0-1 (48V) or 4-5 (PAD) - those are
+        // ORed in separately by the caller from the CURRENT state.
+        assert_eq!(ref_level_contribution(0), (PREAMP_BASE, 0x0000));
+        assert_eq!(ref_level_contribution(REF_PLUS_4DBU), (PREAMP_BASE, 0x0000));
+        assert_eq!(ref_level_contribution(REF_MINUS_10DBV), (0x0000, 0x0000));
+        // Boost shares -10dBV's bits; only the commit differs, and it's
+        // exactly 0x0003 - not folded into the state bits themselves.
+        assert_eq!(ref_level_contribution(REF_BOOST), (0x0000, 0x0003));
     }
 
     #[test]

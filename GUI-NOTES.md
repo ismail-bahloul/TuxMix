@@ -2106,3 +2106,55 @@ order of real impact:
    matches the user's own report with zero warnings, 159/159 tests
    unaffected (none of the deleted methods had a test depending on
    them).
+
+**Two more real bugs in `usb.rs`, found while porting Ref Level/Phase
+to the sibling kernel driver (`babyface-pro-linux`) and fixed here too,
+same day.** Implementing these in C required re-deriving exactly how
+the shared preamp byte and the phase negation compose, which surfaced
+that `usb.rs`'s own versions of both were subtly wrong:
+
+- **`set_ref_level` forced 48V on for AN1/AN2 as a side effect of
+  changing Instr 3/4's ref level.** It sent the raw captured bytes from
+  `cap_reflevel2.pcap` verbatim (`0x000F`/`0x0003`/`0x0003`) — bytes
+  that happened to have both mics' 48V bits baked in during that
+  specific capture, since the preamp state is one shared byte (48V bits
+  0-1, ref-level bits 2-3, PAD bits 4-5). Fixed by composing from
+  `preamp_bits()` (the ALREADY-correct helper `write_preamp_state`/
+  `write_preamp_block` use for 48V/PAD writes) `|` a new
+  `ref_level_bits()`/`ref_level_commit()` pair — pulled out as a pure
+  `ref_level_contribution(code)` free function specifically so the
+  composition is unit-testable without a real USB handle. Also found
+  the mirror-image gap while fixing this: `write_preamp_state`/
+  `write_preamp_block` themselves hardcoded `PREAMP_BASE` (+4dBu) as
+  the ref-level contribution on every 48V/PAD toggle, regardless of
+  what the user had actually selected — silently resetting Instr 3/4
+  back to +4dBu. Both directions fixed together (they share the same
+  two helpers now, so they can't disagree again). Also mirrors
+  `set_ref_level`'s write across both Instrument channels — there's
+  only one physical switch for the pair, not independent per-channel
+  bits, so `inputs[2].ref_level`/`inputs[3].ref_level` could previously
+  disagree depending on which index was last written through.
+- **`set_phase` double-negated for the AN1/2 destination specifically,
+  silently no-opping phase invert there.** `protocol::set_phase`
+  already negates its input internally (hardware-verified,
+  `cap_ctrl.pcap`) — but `usb.rs`'s own caller pre-negated the value
+  *before* passing it in for the `out==An12` case only, canceling the
+  inversion right where it matters most (every other output correctly
+  negated once, via a separate manual write path). Also fixed the
+  known composition gap flagged when this was first shipped: a fader
+  move on a phase-inverted analog input silently undid the inversion,
+  since `set_volume` had no idea phase existed. Both fixed together via
+  one new shared helper, `write_l_with_phase(out, src, raw, phase)` —
+  `set_phase` calls it once per output when toggled, and `set_volume`
+  now calls it as a follow-up correction after its normal mono write,
+  whenever the channel being moved is phase-inverted. The exact same
+  bug classes (byte composition, hot-path phase-awareness) were just
+  fixed in the C kernel driver's own Ref Level/Phase controls — this
+  is the reverse-flow benefit of implementing the same protocol twice.
+- Not live-hardware-tested this round (the USB backend can't open the
+  device while the kernel driver holds it) — relies on the existing
+  `protocol::set_phase`/`ref_level_writes_labeled_pairs` tests (both
+  already hardware-verified) plus a new
+  `ref_level_contribution_never_bakes_in_an_unrelated_48v_bit` test and
+  careful code review, consistent with how this session's other
+  USB-backend-only changes were verified. 160/160 workspace tests.
