@@ -261,6 +261,29 @@ impl BabyfacePro {
                 }
                 continue;
             }
+            if name == "Instrument Ref Level" {
+                // A single shared switch (see `set_sensitivity`'s own
+                // doc comment) — read once, mirrored to every
+                // Instrument channel below. The real control has 3
+                // states (+4dBu/-10dBV/Boost) but this trait's
+                // `Sensitivity` enum only has 2 — Boost (item 2) maps
+                // to the closer of the two rather than being lost
+                // entirely: it shares -10dBV's state bits, only the
+                // one-shot commit differs (see `babyface-pro-linux`'s
+                // own "Instrument Ref Level" control).
+                if let Ok(item) = selem.get_enum_item(mono) {
+                    let sens = match item {
+                        0 => Some(Sensitivity::Plus4dBu),
+                        _ => Some(Sensitivity::Minus10dBV), // 1 = -10dBV, 2 = Boost
+                    };
+                    for c in self.inputs.iter_mut() {
+                        if c.channel_type == ChannelType::Instrument {
+                            c.sensitivity = sens;
+                        }
+                    }
+                }
+                continue;
+            }
             if name == "IEC958 Emphasis" {
                 if let Ok(v) = selem.get_playback_switch(mono) {
                     self.settings.spdif_emphasis = v != 0;
@@ -296,6 +319,38 @@ impl BabyfacePro {
             if let Some(selem) = self.mixer.find_selem("Pad Mic 1", i as u32) {
                 if let Ok(v) = selem.get_playback_switch(mono) {
                     inp.pad = v != 0;
+                }
+            }
+        }
+
+        // ── Phase Ø invert — AN1-4 = inputs[0..4], one distinctly-
+        // named control per mic (`babyface-pro-linux`'s own "<name>
+        // Phase" Switch, added 2026-09-06).
+        for i in 0..4.min(self.inputs.len()) {
+            if let Some(selem) = self.mixer.find_selem(&format!("{} Phase", BF_SOURCES[i]), i as u32)
+            {
+                if let Ok(v) = selem.get_playback_switch(mono) {
+                    self.inputs[i].phase = v != 0;
+                }
+            }
+        }
+
+        // ── Stereo split — playback pairs PB1-PB6, one control per
+        // pair (`babyface-pro-linux`'s own "PBx Stereo Split" Switch,
+        // added 2026-09-06); mirrored to both channels of the pair.
+        for pair in 0..(self.playbacks.len() / 2) {
+            if let Some(selem) = self
+                .mixer
+                .find_selem(&format!("PB{} Stereo Split", pair + 1), pair as u32)
+            {
+                if let Ok(v) = selem.get_playback_switch(mono) {
+                    let split = v != 0;
+                    if let Some(c) = self.playbacks.get_mut(pair * 2) {
+                        c.split = split;
+                    }
+                    if let Some(c) = self.playbacks.get_mut(pair * 2 + 1) {
+                        c.split = split;
+                    }
                 }
             }
         }
@@ -1122,38 +1177,45 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_sensitivity(&mut self, idx: usize, sensitivity: Sensitivity) -> Result<(), Error> {
-        let inp = self
+        if self
             .inputs
-            .get_mut(idx)
-            .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
-        if inp.channel_type != ChannelType::Instrument {
+            .get(idx)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?
+            .channel_type
+            != ChannelType::Instrument
+        {
             return Err(Error::InvalidChannel(format!(
                 "Input {} has no sensitivity switch",
                 idx
             )));
         }
-        let elem_name = format!("Line-{} Sens.", inp.name);
+        // A single shared switch for the Instrument pair, not
+        // per-channel — the protocol has no independent bits for IN3
+        // vs IN4 (see `babyface-pro-linux`'s own "Instrument Ref
+        // Level" control, added 2026-09-06 specifically to close this
+        // gap the comment below used to describe as possibly a
+        // genuinely-missing driver feature — it wasn't, just not built
+        // yet at the time). Only 2 of that control's 3 states map to
+        // this trait's 2-state `Sensitivity` enum; "Boost" isn't
+        // reachable here (see `RmeDevice::set_ref_level`'s own 3-state
+        // `REF_*` codes for that, used by the USB backend).
         let item = match sensitivity {
-            Sensitivity::Minus10dBV => 0,
-            Sensitivity::Plus4dBu => 1,
+            Sensitivity::Plus4dBu => 0,
+            Sensitivity::Minus10dBV => 1,
         };
-        // The from-scratch proprietary-mode kernel driver
-        // (`snd-usb-babyface-pro`) has no sensitivity control at all —
-        // confirmed via `amixer -c 0 scontrols` and absent from
-        // `babyfacepro-ctl.c` — and it isn't a documented future
-        // follow-up like clock source/SPDIF are, so this may be a
-        // genuinely missing driver feature rather than a naming
-        // mismatch. `usb.rs`'s own backend is honest about the same
-        // gap (`Err("Sensitivity is not mapped in the USB protocol
-        // yet")`); this used to silently no-op and still report
-        // success, updating the in-memory model as if the switch had
-        // actually happened. Matched to the same honest failure
-        // instead of quietly lying about it.
-        let selem = self.mixer.find_selem(&elem_name, 0).ok_or_else(|| {
-            Error::InvalidChannel(format!("Sensitivity is not mapped for Input {}", idx))
-        })?;
+        let selem = self
+            .mixer
+            .find_selem("Instrument Ref Level", 0)
+            .ok_or_else(|| Error::InvalidChannel("No Ref Level control".into()))?;
         selem.set_enum_item(SelemChannelId::mono(), item)?;
-        inp.sensitivity = Some(sensitivity);
+        // Mirror across every Instrument channel — there's only one
+        // real switch, so both must agree (matches `usb.rs`'s own
+        // `set_ref_level` fix, same day).
+        for c in self.inputs.iter_mut() {
+            if c.channel_type == ChannelType::Instrument {
+                c.sensitivity = Some(sensitivity);
+            }
+        }
         Ok(())
     }
 
@@ -1217,6 +1279,50 @@ impl RmeDevice for BabyfacePro {
         }
         self.linked = linked;
         self.settings.input_link = linked;
+        Ok(())
+    }
+
+    /// Phase Ø invert, AN1-4 only — `babyface-pro-linux`'s own
+    /// per-mic `"<name> Phase" Switch` controls (added 2026-09-06,
+    /// named directly from its own `bf_sources[]`, matching
+    /// `BF_SOURCES` here). Errors rather than silently no-opping if
+    /// missing (e.g. an older module without this control), since this
+    /// is a real toggle a user would notice not taking effect.
+    fn set_phase(&mut self, idx: usize, invert: bool) -> Result<(), Error> {
+        if idx >= 4 {
+            return Err(Error::InvalidChannel(format!(
+                "Input {idx} has no phase switch"
+            )));
+        }
+        let selem = self
+            .mixer
+            .find_selem(&format!("{} Phase", BF_SOURCES[idx]), idx as u32)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {idx} has no phase switch")))?;
+        selem.set_playback_switch(SelemChannelId::mono(), invert as i32)?;
+        self.inputs[idx].phase = invert;
+        Ok(())
+    }
+
+    /// Stereo split (a playback pair routed hard-split into the AN1/2
+    /// monitor bus instead of the normal stereo pair) — `babyface-pro-
+    /// linux`'s own per-pair `"PBx Stereo Split" Switch` controls
+    /// (added 2026-09-06). `pb` is a raw playback CHANNEL index (0-11,
+    /// matching `RmeDevice::set_stereo_split`'s own convention); the
+    /// pair index (0-5) is `pb / 2`.
+    fn set_stereo_split(&mut self, pb: usize, split: bool) -> Result<(), Error> {
+        if pb >= self.playbacks.len() {
+            return Err(Error::InvalidChannel(format!("Playback {pb}")));
+        }
+        let pair = pb / 2;
+        let selem = self
+            .mixer
+            .find_selem(&format!("PB{} Stereo Split", pair + 1), pair as u32)
+            .ok_or_else(|| {
+                Error::InvalidChannel(format!("Playback {pb} has no stereo split switch"))
+            })?;
+        selem.set_playback_switch(SelemChannelId::mono(), split as i32)?;
+        self.playbacks[pair * 2].split = split;
+        self.playbacks[pair * 2 + 1].split = split;
         Ok(())
     }
 
@@ -1485,22 +1591,68 @@ mod tests {
 
     #[test]
     #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
-    fn live_hardware_sensitivity_is_honestly_unmapped_not_a_silent_success() {
+    fn live_hardware_sensitivity_round_trip() {
+        // Was honestly-unmapped (this test used to assert it errored) —
+        // now real, since babyface-pro-linux gained an "Instrument Ref
+        // Level" control (2026-09-06). Verified via a fresh second
+        // handle, forcing a real re-read, not the model this call just
+        // updated itself.
         let mut dev = BabyfacePro::open().expect("real device attached");
         let idx = 2; // IN3 — Instrument-type, the only kind sensitivity applies to
-        let before = dev.inputs()[idx].sensitivity;
+        let orig = dev.inputs()[idx].sensitivity;
 
-        // The proprietary-mode kernel driver has no sensitivity control
-        // at all (see `set_sensitivity`'s own comment) — this must
-        // fail loudly, not silently report success while leaving the
-        // model untouched.
-        let result = dev.set_sensitivity(idx, Sensitivity::Plus4dBu);
-        assert!(result.is_err(), "sensitivity isn't mapped on this driver and must error");
-        assert_eq!(
-            dev.inputs()[idx].sensitivity,
-            before,
-            "a failed write must not silently update the in-memory model"
-        );
+        dev.set_sensitivity(idx, Sensitivity::Minus10dBV).unwrap();
+        let dev2 = BabyfacePro::open().expect("real device attached");
+        assert_eq!(dev2.inputs()[idx].sensitivity, Some(Sensitivity::Minus10dBV));
+        // Mirrored across both Instrument channels — there's only one
+        // real switch (IN4 = idx 3).
+        assert_eq!(dev2.inputs()[3].sensitivity, Some(Sensitivity::Minus10dBV));
+        drop(dev2);
+
+        dev.set_sensitivity(idx, Sensitivity::Plus4dBu).unwrap();
+        let dev3 = BabyfacePro::open().expect("real device attached");
+        assert_eq!(dev3.inputs()[idx].sensitivity, Some(Sensitivity::Plus4dBu));
+        drop(dev3);
+
+        if let Some(orig) = orig {
+            dev.set_sensitivity(idx, orig).unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    fn live_hardware_phase_round_trip() {
+        let mut dev = BabyfacePro::open().expect("real device attached");
+        let idx = 1; // AN2, verified silent (0%) before running this
+
+        dev.set_phase(idx, true).unwrap();
+        let dev2 = BabyfacePro::open().expect("real device attached");
+        assert!(dev2.inputs()[idx].phase);
+        drop(dev2);
+
+        dev.set_phase(idx, false).unwrap();
+        let dev3 = BabyfacePro::open().expect("real device attached");
+        assert!(!dev3.inputs()[idx].phase);
+        drop(dev3);
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    fn live_hardware_stereo_split_round_trip() {
+        let mut dev = BabyfacePro::open().expect("real device attached");
+        let pb = 0; // PB1 (playback channels 0/1)
+
+        dev.set_stereo_split(pb, true).unwrap();
+        let dev2 = BabyfacePro::open().expect("real device attached");
+        assert!(dev2.playbacks()[0].split);
+        assert!(dev2.playbacks()[1].split, "split mirrors across both channels of the pair");
+        drop(dev2);
+
+        dev.set_stereo_split(pb, false).unwrap();
+        let dev3 = BabyfacePro::open().expect("real device attached");
+        assert!(!dev3.playbacks()[0].split);
+        assert!(!dev3.playbacks()[1].split);
+        drop(dev3);
     }
 
     #[test]

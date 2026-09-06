@@ -1018,6 +1018,37 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                                 }
                             }
                         }
+                        // Phase Ø invert — Input section, the 4 analog
+                        // inputs only, mirrors tuxmix-gui's "Ø" icon-col
+                        // button.
+                        KeyCode::Char('i') => {
+                            if section == 0 {
+                                let idx = selected_input_idx(dev, channel);
+                                if idx < 4 {
+                                    let on = dev.inputs()[idx].phase;
+                                    let _ = dev.set_phase(idx, !on);
+                                }
+                            }
+                        }
+                        // Stereo split — Playback section only, mirrors
+                        // tuxmix-gui's "SP" icon-col button. Distinct from
+                        // the stereo LINK toggle ('t') below — this is a
+                        // real hardware register (hard-pan into the AN1/2
+                        // monitor bus), not a "one strip or two" UI concept.
+                        KeyCode::Char('n') => {
+                            if section == 1 {
+                                if let Some(item) = playback_items(dev).get(channel).copied() {
+                                    let ch = match item {
+                                        PairItem::Linked(p) => p * 2,
+                                        PairItem::Single(c) => c,
+                                    };
+                                    if let Some(pc) = dev.playbacks().get(ch) {
+                                        let on = pc.split;
+                                        let _ = dev.set_stereo_split(ch, !on);
+                                    }
+                                }
+                            }
+                        }
                         // Stereo link toggle — every section, mirrors
                         // tuxmix-gui's per-pair STEREO button (moved into
                         // the pair's Settings flyout there; the TUI has no
@@ -1221,6 +1252,9 @@ fn ui(
                         tuxmix_core::Sensitivity::Minus10dBV => " -10dBV",
                     });
                 }
+                if ch.phase {
+                    label.push_str(" [Ø]");
+                }
                 label.push_str(&format!(" {}", pan_text(ch.pans[sel_out])));
                 (label, m, has_in_meters)
             },
@@ -1254,6 +1288,9 @@ fn ui(
                 }
                 if ch.solo {
                     label.push_str(" [S]");
+                }
+                if ch.split {
+                    label.push_str(" [SPLIT]");
                 }
                 label.push_str(&format!(" {}", pan_text(ch.pans[sel_out])));
                 (label, m, has_pb_meters)
@@ -1308,7 +1345,7 @@ fn ui(
         "Tab: return to mixer".into()
     } else {
         format!(
-            "IN:{}:{}  +/-:vol  PgUp/PgDn:0.1dB  ,/.:pan  m:mute  s:solo  p:48V  P:pad  [/] or g/d:gain  v:sens  l:loop(OUT)  c:cue(OUT)  t:stereo  arrows:navigate  q:quit",
+            "IN:{}:{}  +/-:vol  PgUp/PgDn:0.1dB  ,/.:pan  m:mute  s:solo  p:48V  P:pad  [/] or g/d:gain  v:sens  i:phase(IN)  l:loop(OUT)  c:cue(OUT)  n:split(PB)  t:stereo  arrows:navigate  q:quit",
             match sel_sec {
                 0 => "IN",
                 1 => "PB",

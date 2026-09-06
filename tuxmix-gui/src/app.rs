@@ -437,14 +437,15 @@ impl DeviceHandle {
     /// Whether this backend actually implements `set_sensitivity` —
     /// real for Mock and the USB/libusb backend (wired to the same
     /// hardware-verified ref-level mechanism `set_ref_level` already
-    /// used for Instr 3/4's +4dBu/-10dBV/Boost switch); the ALSA/
-    /// kernel-driver backend has no such control at all yet (see
-    /// `babyface.rs`'s own `set_sensitivity` doc comment).
+    /// used for Instr 3/4's +4dBu/-10dBV/Boost switch). **2026-09-06**:
+    /// now real for the ALSA/kernel-driver backend too, once
+    /// `babyface-pro-linux` gained its own "Instrument Ref Level"
+    /// control — previously this backend had no such control at all.
     pub fn has_sensitivity_control(&self) -> bool {
         match self {
             DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
             #[cfg(feature = "alsa")]
-            DeviceHandle::Real(_) => false,
+            DeviceHandle::Real(_) => true,
         }
     }
     /// True when the backend lays out outputs as ONE channel per submix
@@ -617,6 +618,12 @@ pub enum Message {
     /// output (see `RmeDevice::set_cue`'s own doc comment), so this
     /// always carries the *target* state, not a relative toggle.
     CueChanged(ChannelId, bool),
+    /// Phase Ø invert — Hardware Input strips, the 4 analog inputs only.
+    PhaseChanged(ChannelId, bool),
+    /// Stereo split — Playback strips only, hard-pans the pair into the
+    /// AN1/2 monitor bus (distinct from the stereo-link "one strip or
+    /// two" UI concept, see `StripParams::has_split`'s own comment).
+    StereoSplitChanged(ChannelId, bool),
 
     VolumeChanged(ChannelId, usize, f32),
     FaderPressed(ChannelId, usize, f32, Option<(f32, f32)>),
@@ -1617,6 +1624,16 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 let _ = state.device.set_cue(idx / 2, on);
             }
         }
+        Message::PhaseChanged(cid, invert) => {
+            if let ChannelId::Input(idx) = cid {
+                let _ = state.device.set_phase(idx, invert);
+            }
+        }
+        Message::StereoSplitChanged(cid, split) => {
+            if let ChannelId::Playback(idx) = cid {
+                let _ = state.device.set_stereo_split(idx, split);
+            }
+        }
         Message::VolumeChanged(cid, out, v) => {
             apply_grouped_volume(state, cid, out, v);
         }
@@ -2468,6 +2485,10 @@ fn strip_params<'a>(
         eq_enabled: false,
         has_trim: false,
         trim: 0.0,
+        has_phase: false,
+        phase: false,
+        has_split: false,
+        split: false,
         loopback: false,
         stereo_linked: false,
         open_flyout: state.flyout_open.and_then(|(c, k)| (c == cid).then_some(k)),
@@ -2515,6 +2536,8 @@ fn strip_params<'a>(
                 eq_enabled: ch.eq.is_some_and(|e| e.enabled),
                 has_trim: true,
                 trim: ch.trim,
+                has_phase: ch.eq.is_some(),
+                phase: ch.phase,
                 stereo_linked: state.device.input_pair_linked(i / 2),
                 mute: ch.mute,
                 solo: ch.solo,
@@ -2535,6 +2558,8 @@ fn strip_params<'a>(
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
                 meter_available: state.device.has_playback_meters(),
+                has_split: true,
+                split: ch.split,
                 stereo_linked: state.device.playback_linked(i / 2),
                 mute: ch.mute,
                 solo: ch.solo,
@@ -3751,6 +3776,32 @@ mod tests {
             state.device.settings().optical_out_spdif,
             "toggling EQ-for-Record must not stomp the SPDIF flag (shared settings-word register)"
         );
+    }
+
+    #[test]
+    fn phase_changed_reaches_the_input_model() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(1); // AN2
+
+        let _ = update(&mut state, Message::PhaseChanged(cid, true));
+        assert!(state.device.inputs()[1].phase);
+
+        let _ = update(&mut state, Message::PhaseChanged(cid, false));
+        assert!(!state.device.inputs()[1].phase);
+    }
+
+    #[test]
+    fn stereo_split_changed_mirrors_across_the_playback_pair() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Playback(0); // PB1 (channels 0/1)
+
+        let _ = update(&mut state, Message::StereoSplitChanged(cid, true));
+        assert!(state.device.playbacks()[0].split);
+        assert!(state.device.playbacks()[1].split, "split mirrors across both channels of the pair");
+
+        let _ = update(&mut state, Message::StereoSplitChanged(cid, false));
+        assert!(!state.device.playbacks()[0].split);
+        assert!(!state.device.playbacks()[1].split);
     }
 
     #[test]

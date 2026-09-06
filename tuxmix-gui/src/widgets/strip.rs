@@ -170,6 +170,19 @@ pub struct StripParams<'a> {
     pub has_trim: bool,
     /// Current trim value in dB (-65..+6) — see `InputChannel::trim`.
     pub trim: f32,
+    /// Whether this input has a Phase Ø invert switch — the 4 analog
+    /// inputs only (`InputChannel::eq.is_some()` already means exactly
+    /// that set, reused rather than a parallel gate that could drift).
+    pub has_phase: bool,
+    pub phase: bool,
+    /// Whether this playback strip has a Stereo Split switch — every
+    /// Playback pair (`PlaybackChannel::split`, `RmeDevice::
+    /// set_stereo_split`). Distinct from `stereo_linked` below (a pure
+    /// UI concept — whether L/R show as one strip or two) even though
+    /// both use the word "split": this one is a real hardware register
+    /// that hard-pans the pair into the AN1/2 monitor bus.
+    pub has_split: bool,
+    pub split: bool,
     /// Output-only: `OutputChannel::loopback`.
     pub loopback: bool,
     /// Whether this channel's pair is currently a linked stereo bus
@@ -655,6 +668,30 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
                 .style(theme::toggle_button(trim_open || p.trim != 0.0, theme::ACCENT))
                 .on_press(Message::ToggleFlyout(cid, FlyoutKind::Trim)),
             if trim_open { "Hide trim" } else { "Show trim" },
+            scale,
+        ));
+    }
+    if p.has_phase {
+        icon_col = icon_col.push(hint(
+            button(centered_label("Ø", theme::TEXT_MICRO * scale))
+                .padding(0)
+                .width(ICON_BTN_W * scale)
+                .height(ICON_BTN_H * scale)
+                .style(theme::toggle_button(p.phase, theme::ACCENT))
+                .on_press(Message::PhaseChanged(cid, !p.phase)),
+            "Phase Ø invert",
+            scale,
+        ));
+    }
+    if p.has_split {
+        icon_col = icon_col.push(hint(
+            button(centered_label("SP", theme::TEXT_MICRO * scale))
+                .padding(0)
+                .width(ICON_BTN_W * scale)
+                .height(ICON_BTN_H * scale)
+                .style(theme::toggle_button(p.split, theme::ACCENT))
+                .on_press(Message::StereoSplitChanged(cid, !p.split)),
+            "Stereo split — hard-pan this pair into the AN1/2 monitor bus",
             scale,
         ));
     }

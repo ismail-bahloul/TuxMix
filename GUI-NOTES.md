@@ -2158,3 +2158,72 @@ that `usb.rs`'s own versions of both were subtly wrong:
   `ref_level_contribution_never_bakes_in_an_unrelated_48v_bit` test and
   careful code review, consistent with how this session's other
   USB-backend-only changes were verified. 160/160 workspace tests.
+
+**`babyface.rs` (ALSA/kernel-driver backend) wired to the 3 new
+kernel-driver controls, same day.** Asked what to do next; user picked
+closing the ALSA-backend gap over the driver's remaining "Input Trim"
+follow-up. Three real fixes, all live-verified against the actual card
+(fresh second-handle re-reads, the file's own established pattern):
+
+- **`set_sensitivity`** used to look for a control name
+  (`"Line-{name} Sens."`) that never existed on this driver, guessed
+  from a naming grammar rather than a real capture — errored honestly,
+  but genuinely unusable. Now targets `"Instrument Ref Level"` (the
+  real control just added to the kernel driver), mapping this trait's
+  2-state `Sensitivity` enum onto 2 of its 3 states (Boost, item 2,
+  isn't representable here — see `RmeDevice::set_ref_level`'s own
+  3-state `REF_*` codes, which the USB backend already uses for that).
+  Mirrors the write across both Instrument channels — one real switch,
+  not two independent ones. `DeviceHandle::has_sensitivity_control()`
+  flipped to `true` for the ALSA backend too (was gated off).
+- **`set_phase`/`set_stereo_split`** didn't exist in `babyface.rs` at
+  all before this — the trait's default (`Err`) was silently the only
+  behavior. Both now target the kernel driver's new per-channel/per-pair
+  controls (`"<name> Phase"`, `"PBx Stereo Split"`).
+- **All 3 also gained attach-time readback** (`attach_mixer_elements`),
+  which didn't exist before either — a fresh `BabyfacePro::open()`
+  previously had no way to know the real hardware's current Sensitivity/
+  Phase/Split state at all (always defaulted to unset/false regardless
+  of reality). Boost reads back as the closer of the 2 states
+  (-10dBV, since it shares those state bits) rather than being silently
+  lost.
+- **Not yet wired to any UI** — neither Phase nor Stereo Split have a
+  button/key anywhere in the GUI or TUI (checked via grep before
+  assuming otherwise: both only had `delegate!` forwarding, dead ends
+  with zero callers, same class of thing the dead-code cleanup earlier
+  today removed). Backend-complete and live-verified; a UI pass is a
+  separate, explicitly-scoped follow-up, not silently bundled in here.
+- 3 new/replaced live-hardware tests (`live_hardware_sensitivity_
+  round_trip` — replaces the old "honestly unmapped" test, which no
+  longer describes reality — plus new `live_hardware_phase_round_trip`/
+  `live_hardware_stereo_split_round_trip`), all ran with `--ignored`
+  against the real card, passed, hardware confirmed left in its
+  default state afterward. 160/160 non-ignored tests.
+
+**Phase/Stereo Split given real UI in both GUI and TUI, same day —
+user asked for this before committing the backend wiring above.** New
+`StripParams::has_phase`/`phase` (reuses `ch.eq.is_some()` for the
+gate — already exactly "the 4 analog inputs," no parallel condition to
+drift out of sync) and `has_split`/`split` (Playback strips
+unconditionally). GUI: a new "Ø" icon-column button (Hardware Input
+strips, same row as T/gear/EQ) and a new "SP" button (Playback strips)
+— `Message::PhaseChanged`/`StereoSplitChanged(ChannelId, bool)`,
+undoable by default (not added to `is_undoable`'s blacklist, matching
+CUE/EQ-for-Record's own treatment). TUI: new keys `i` (Phase, Input
+section, gated to `idx < 4`) and `n` (Stereo Split, Playback section)
+— picked from the session's remaining unused letters, no stronger
+mnemonic than several already-shipped keys (`x`=MS proc, `k`=link);
+new `[Ø]`/`[SPLIT]` strip tags and both keys added to the header
+legend. **Deliberately named `"SP"` not `"SPL"`** on the GUI button —
+checked `ICON_BTN_W`/the already-shipped 2-character "EQ" button
+first rather than guessing a 3-character label would fit at
+`TEXT_MICRO` size. Live-verified in both UIs: a `--mock` screenshot
+zoom confirms the Ø/SP glyphs render legibly and only appear on the
+correct strip types (Ø absent from AS1/2 and the ADAT strips, present
+only on AN1/2 and IN3/4 — matching the analog-inputs-only gate); a
+real alacritty window confirms `i`/`n` correctly toggle the tags and
+mirror across the Playback pair (`[SPLIT]` appeared on both PCM AN1
+and PCM AN2 together, PB1's two channels). 2 new `update()`-driven
+GUI tests (`phase_changed_reaches_the_input_model`,
+`stereo_split_changed_mirrors_across_the_playback_pair`). 162/162
+non-ignored workspace tests.
