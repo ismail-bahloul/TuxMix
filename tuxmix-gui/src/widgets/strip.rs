@@ -595,6 +595,9 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         show_track: true,
         label: None,
         label_color: theme::TEXT_SEC,
+        // Unused: only matters when `show_meter: false` (see its own
+        // doc comment) — this strip fader is never that.
+        compact_width: 0.0,
         on_press: Box::new(move |v, range| Message::FaderPressed(cid, out, v, range)),
         on_drag: Box::new(move |v| Message::VolumeChanged(cid, out, v)),
         on_release: Box::new(move || Message::RangeCleared(cid)),

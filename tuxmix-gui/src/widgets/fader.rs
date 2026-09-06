@@ -180,6 +180,17 @@ pub struct Fader<Message> {
     /// left empty by every strip fader (`None`).
     pub label: Option<String>,
     pub label_color: Color,
+    /// Canvas width when `show_meter` is `false` — ignored otherwise
+    /// (a strip's own fader always fills its row, see `fader()`).
+    /// Matters for real click/drag hit-testing, not just visuals: the
+    /// whole canvas counts as "over track" when there's no meter
+    /// column to exclude (`layout_x`'s `!show_meter` branch), so this
+    /// is the actual clickable width, not just a cosmetic size. Used
+    /// to be hardcoded to `TRACK_W` regardless of caller, leaving the
+    /// Matrix view's cells with a ~26px hit target inside a visually
+    /// larger 40px cell — small residual gap between "looks clickable"
+    /// and "is clickable" that a matching width closes for free.
+    pub compact_width: f32,
     pub on_press: Box<dyn Fn(f32, Option<(f32, f32)>) -> Message>,
     pub on_drag: Box<dyn Fn(f32) -> Message>,
     pub on_release: Box<dyn Fn() -> Message>,
@@ -885,7 +896,7 @@ where
     let width = if fader.show_meter {
         Length::Fill
     } else {
-        Length::Fixed(TRACK_W * fader.scale)
+        Length::Fixed(fader.compact_width * fader.scale)
     };
     Canvas::new(fader)
         .width(width)

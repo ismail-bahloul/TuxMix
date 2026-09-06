@@ -95,17 +95,23 @@ fn interactive_cell(
         show_track: false,
         label: Some(cell_text(vol).unwrap_or_default()),
         label_color: if active { theme::MGREEN } else { theme::TEXT_SEC },
+        // The canvas itself is the full cell width, not just the
+        // fader's own narrower track — the whole visual cell is the
+        // real click/drag hit area, not just its inner ~26px (see
+        // `Fader::compact_width`'s own doc comment for why that used
+        // to be a real, if small, gap between "looks clickable" and
+        // "is clickable").
+        compact_width: CELL_W,
         on_press: Box::new(move |v, _| Message::VolumeChanged(cid, pair, v)),
         on_drag: Box::new(move |v| Message::VolumeChanged(cid, pair, v)),
         on_release: Box::new(move || Message::RangeCleared(cid)),
         on_reset: Box::new(move || Message::VolumeChanged(cid, pair, RESET_VOLUME)),
     });
-    // `fader()` sizes its own canvas to the fader track's width
-    // (narrower than a full cell) when `show_meter` is `false` — wrap
-    // it so the clickable/visible area matches a plain `cell()`'s
-    // footprint exactly, same border/background too, so an
-    // interactive cell doesn't read as a different kind of thing from
-    // its static neighbor.
+    // The canvas now already matches the cell's own size exactly (see
+    // `compact_width` above) — this container's width/height are
+    // therefore redundant with the canvas's own, kept anyway for the
+    // border/background styling that matches `cell()`'s static
+    // neighbor, not for sizing.
     container(f)
         .width(Length::Fixed(CELL_W * scale))
         .height(Length::Fixed(CELL_H * scale))

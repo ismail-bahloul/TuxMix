@@ -1489,6 +1489,20 @@ build (first try once the 2 missed `strip.rs` call sites were added —
 the compiler caught both immediately via the new required field, no
 silent gap possible), live screenshot confirms no crash/regression.
 
+**Closed the Matrix cell hit-target gap flagged as a known residual —
+same day, after the first commit landed.** `Fader`'s canvas used to be
+hardcoded to `TRACK_W` (26px) whenever `show_meter: false`, even though
+the Matrix view wraps it in a 40px `cell()`-sized container for visual
+consistency — meaning about a third of every cell's visible width
+looked clickable but wasn't. Added `Fader::compact_width: f32`
+(ignored when `show_meter: true`, so `strip.rs`'s own fader — the only
+other caller — just passes a dummy `0.0`), and `matrix.rs` now passes
+`CELL_W` directly: the canvas *is* the full cell, so the wrapping
+container's width/height are redundant with the canvas's own now, kept
+only for the shared border/background styling. 144/144 tests, clean
+build, live screenshot shows no visual regression (identical rendering
+to before — this was a hit-testing fix, not a visual one).
+
 **Not click-verified.** Attempting to actually click Snapshot/Group/
 Layout controls this session hit something worse than the earlier
 "coordinate drift" — `xdotool getactivewindow` after a synthetic click
