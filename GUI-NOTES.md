@@ -2085,3 +2085,24 @@ order of real impact:
    `should_reapply_clock_source` test; the new babyface.rs
    live-hardware test is `#[ignore]`-gated like its siblings and ran
    separately with `--ignored` against the real card, passing).
+
+4. **Two genuinely dead-code warnings, same day.** User ran `cargo run
+   -p tuxmix-gui` directly (not through this session's usual `cargo
+   build --workspace`) and saw a `never used` warning for
+   `DeviceHandle::input_meter`/`playback_meter` (singular, per-channel)
+   in `app.rs`. Checked before deleting: only the plural
+   `input_meters()`/`playback_meters()` (whole-Vec) are ever called from
+   anywhere in the GUI — the singular pair had no callers at all.
+   `tuxmix-tui` had the identical pair plus a third,
+   `outputs_one_per_pair` — checked that one too before removing it:
+   its own doc comment claimed it was "needed to map an output-strip
+   channel index back to the submix pair index `set_loopback` expects,"
+   but the TUI's actual loopback key handler (`l`) computes that pair
+   via `PairItem` matching instead, never calling it — the comment
+   described an intended design that GUI (where the equivalent method
+   *is* real code, called at `app.rs:1586`/`1735`) uses but this file
+   never ended up wiring up. Deleted all 3 dead methods outright rather
+   than leaving them for "later" — `cargo build -p tuxmix-gui` now
+   matches the user's own report with zero warnings, 159/159 tests
+   unaffected (none of the deleted methods had a test depending on
+   them).

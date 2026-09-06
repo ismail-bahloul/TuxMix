@@ -375,12 +375,6 @@ impl DeviceHandle {
             DeviceHandle::Usb(_) => vec![0.0; n],
         }
     }
-    pub fn input_meter(&self, idx: usize) -> f32 {
-        self.input_meters().get(idx).copied().unwrap_or(0.0)
-    }
-    pub fn playback_meter(&self, idx: usize) -> f32 {
-        self.playback_meters().get(idx).copied().unwrap_or(0.0)
-    }
     /// Whether `input_meters()` is a real per-session reading rather than
     /// a hardcoded zero vector — see `draw_meter`'s doc comment in
     /// `widgets/fader.rs`. Mock always has it; the USB backend reads it

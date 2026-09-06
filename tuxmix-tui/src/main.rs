@@ -319,12 +319,6 @@ impl DeviceHandle {
             DeviceHandle::Usb(_) => vec![0.0; n],
         }
     }
-    fn input_meter(&self, idx: usize) -> f32 {
-        self.input_meters().get(idx).copied().unwrap_or(0.0)
-    }
-    fn playback_meter(&self, idx: usize) -> f32 {
-        self.playback_meters().get(idx).copied().unwrap_or(0.0)
-    }
     /// Whether `input_meters()` is a real per-session reading — see
     /// `tuxmix-gui`'s identical method for the full reasoning (shared
     /// `PROTOCOL.md` conclusion: the device has no meter registers, only
@@ -363,14 +357,6 @@ impl DeviceHandle {
     }
     fn is_mock(&self) -> bool {
         matches!(self, DeviceHandle::Mock(_))
-    }
-    /// See `tuxmix-gui`'s identical method: `true` when outputs are laid
-    /// out one channel per submix pair (the proprietary USB path) rather
-    /// than two per pair (the ALSA/profile `build_outputs` layout) —
-    /// needed to map an output-strip channel index back to the submix
-    /// pair index `set_loopback` expects.
-    fn outputs_one_per_pair(&self) -> bool {
-        self.outputs().len() == self.output_pair_count()
     }
 }
 
