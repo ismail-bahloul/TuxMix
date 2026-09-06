@@ -431,6 +431,19 @@ impl DeviceHandle {
     pub fn is_mock(&self) -> bool {
         matches!(self, DeviceHandle::Mock(_))
     }
+    /// Whether this backend actually implements `set_sensitivity` —
+    /// real for Mock and the USB/libusb backend (wired to the same
+    /// hardware-verified ref-level mechanism `set_ref_level` already
+    /// used for Instr 3/4's +4dBu/-10dBV/Boost switch); the ALSA/
+    /// kernel-driver backend has no such control at all yet (see
+    /// `babyface.rs`'s own `set_sensitivity` doc comment).
+    pub fn has_sensitivity_control(&self) -> bool {
+        match self {
+            DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
+            #[cfg(feature = "alsa")]
+            DeviceHandle::Real(_) => false,
+        }
+    }
     /// True when the backend lays out outputs as ONE channel per submix
     /// pair (the proprietary USB path: `outputs().len() ==
     /// output_pair_count()`) rather than two channels per pair (the
@@ -2720,15 +2733,14 @@ fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, M
         } else {
             "-10dBV"
         };
-        // Neither real backend actually has this control yet
-        // (`RmeDevice::set_sensitivity` errors on both ALSA and USB —
-        // see `babyface.rs`/`usb.rs`'s own doc comments) — dimmed and
-        // unpressable on real hardware, same treatment as this
+        // The USB/libusb backend genuinely implements this (wired to
+        // the same hardware-verified ref-level mechanism `set_ref_level`
+        // already used for Instr 3/4's ref-level switch) — only the
+        // ALSA/kernel-driver backend still has no such control at all,
+        // dimmed and unpressable there, same treatment as this
         // session's other confirmed-N/A controls (Output balance,
-        // `meters: post fx/RMS`). Mock keeps it live since it's the
-        // only backend that actually implements the switch, so the
-        // wiring stays exercisable without real hardware.
-        if state.device.is_mock() {
+        // `meters: post fx/RMS`).
+        if state.device.has_sensitivity_control() {
             col = col.push(
                 button(text(label).size(theme::TEXT_SM * scale))
                     .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])

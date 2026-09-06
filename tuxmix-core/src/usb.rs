@@ -749,10 +749,20 @@ impl RmeDevice for BabyfaceProUsb {
         self.write_gain(idx)
     }
 
-    fn set_sensitivity(&mut self, _idx: usize, _sensitivity: Sensitivity) -> Result<(), Error> {
-        Err(Error::InvalidChannel(
-            "Sensitivity is not mapped in the USB protocol yet".into(),
-        ))
+    fn set_sensitivity(&mut self, idx: usize, sensitivity: Sensitivity) -> Result<(), Error> {
+        // Same hardware feature as `set_ref_level` (Instr 3/4's
+        // +4dBu/-10dBV/Boost ref-level switch, cap_reflevel2.pcap,
+        // 2026-08-24 — hardware-verified) under the higher-level enum
+        // the GUI/TUI actually expose; this used to error here even
+        // though the raw protocol write was already fully implemented
+        // a few methods down, just never wired to this entry point.
+        let raw = match sensitivity {
+            Sensitivity::Plus4dBu => REF_PLUS_4DBU,
+            Sensitivity::Minus10dBV => REF_MINUS_10DBV,
+        };
+        self.set_ref_level(idx, raw)?;
+        self.inputs[idx].sensitivity = Some(sensitivity);
+        Ok(())
     }
 
     fn set_pitch(&mut self, pitch_percent: f32) -> Result<(), Error> {

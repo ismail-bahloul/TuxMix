@@ -1646,6 +1646,51 @@ Right 5 times on Band 1 Freq, watched 1000 Hz → 1277 Hz — matches
 confirming the live behavior matches the tested math, not just that
 both happen to compile. 154/154 tests, clean build.
 
+**Sensitivity wired to a mechanism that was already fully implemented
+and hardware-verified — nothing new needed on the protocol side.**
+Before assuming a real capture campaign was needed to finish Clock
+Source/Sensitivity, checked `babyface-pro-linux`'s own `PROTOCOL.md`
+for whether either had ever actually been captured — both had, and
+more thoroughly than expected. Sensitivity (Instr 3/4's +4dBu/-10dBV
+switch) turned out to be the *exact same hardware feature* as
+`RmeDevice::set_ref_level` (Instr 3/4's ref-level switch,
+`cap_reflevel2.pcap`, "hardware-verified live" per the doc), already
+fully implemented in `tuxmix-usb`/`usb.rs` — just never wired to the
+`set_sensitivity` entry point the GUI/TUI actually call, which still
+returned its old "not mapped in the USB protocol yet" error even
+though the underlying write had been real for weeks. Fixed by mapping
+`Sensitivity::Plus4dBu`/`Minus10dBV` to the existing `REF_PLUS_4DBU`/
+`REF_MINUS_10DBV` codes and delegating to `set_ref_level` directly —
+no new protocol work, a pure wiring fix.
+
+Clock Source turned out to need *nothing at all*: `usb.rs::
+set_clock_source` was already fully implemented, using the same
+`cap_clk.pcap`-derived keepalive-bit mechanism (hardware-verified via
+`clktest.c` back in August), with a passing test
+(`settings_word_matches_captured_keepalives`) already covering the
+exact byte values. The earlier claim that Clock Source was "missing"
+was accurate only for the ALSA/kernel-driver backend's own control
+surface (confirmed via `amixer` — still true, that gap is real and
+would need kernel-driver C work, a separate task); the USB/libusb
+backend already has it, this session just hadn't checked that backend
+specifically before drawing a general conclusion.
+
+Updated the GUI's Sensitivity-knob dimming: it was gated on
+`is_mock()` (a stand-in for "no real backend supports this yet," true
+when it was written), now on a proper `DeviceHandle::
+has_sensitivity_control()` that's `true` for Mock *and* USB, `false`
+only for the still-genuinely-unsupported ALSA backend — the TUI's own
+sensitivity toggle needed no code change at all, since it never had a
+dimmed/disabled visual language to begin with; it was silently
+failing before and now silently succeeds on the USB backend, same
+code path either way. 154/154 tests, clean build. Not live-verified
+against real hardware this pass — the card is currently running via
+the kernel driver, and the USB/libusb backend can't open the device
+while that driver owns it (by design); switching to test this
+specific 6-line mapping fix would mean unloading the kernel module, a
+more disruptive step than this change's risk warrants given the
+underlying write mechanism was already hardware-verified independently.
+
 **Not click-verified.** Attempting to actually click Snapshot/Group/
 Layout controls this session hit something worse than the earlier
 "coordinate drift" — `xdotool getactivewindow` after a synthetic click
