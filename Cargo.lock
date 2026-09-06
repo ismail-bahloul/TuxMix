@@ -3687,6 +3687,7 @@ dependencies = [
  "iced",
  "log",
  "rosc",
+ "serde_json",
  "tokio",
  "tuxmix-core",
 ]

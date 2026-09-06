@@ -2,6 +2,7 @@
 //! [`canvas::Program`] — the one widget egui's built-in slider couldn't give
 //! us (shift-drag fine range, scroll-wheel nudge, double-click reset).
 
+use iced::advanced::text as advanced_text;
 use iced::keyboard::Modifiers;
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path, Stroke};
 use iced::{mouse, window, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
@@ -54,9 +55,19 @@ impl MeterFrame {
 }
 
 /// The meter and the dB ruler share one column — the meter is a
-/// translucent color wash filling the whole column, and the ruler ticks
-/// are drawn on top of it, like TotalMix — rather than two separate
-/// side-by-side strips. The fader itself gets its own centered column.
+/// translucent color wash filling the whole column, and the ruler's
+/// numbers are drawn centered *on top of* it, like TotalMix — rather
+/// than two separate side-by-side strips. The fader itself gets its own
+/// column right next to it, sharing the ruler's tick marks (see
+/// `draw_ruler`). Narrowed from `30` — that used to be sized for a
+/// slim 7px pill *plus* the numbers in their own lane beside it; once
+/// the numbers moved to sit on top of a full-width wash instead (see
+/// `draw_meter`'s own doc comment — a live screenshot showed this is
+/// what the reference actually does), the column only needs to be as
+/// wide as the widest 2-digit label, not pill-width + gap + label-width
+/// added together. The old, wider value was quietly pushing the fader
+/// (and everything to its right — the icon column, the dB readout) well
+/// past where the reference puts them.
 ///
 /// These, and every other pixel constant in this file, are the sizes at
 /// `scale == 1.0` (`theme::SCALE_DEFAULT`) — every widget here takes a
@@ -64,8 +75,13 @@ impl MeterFrame {
 /// hit-test time, so the window's adaptive scale (see
 /// `app::recompute_ui_scale`) stays in sync between what's drawn and
 /// what's clickable.
-const METER_RULER_W: f32 = 30.0;
-const GAP: f32 = 6.0;
+/// Narrowed again, 22→17, after the numbers-on-top-of-the-wash change
+/// above made the wider value's original justification (room for a
+/// pill *and* a label side by side) moot — 17px is the tightest this
+/// goes before clipping a 2-digit label at `theme::TEXT_MICRO`, checked
+/// via a live screenshot rather than guessed.
+const METER_RULER_W: f32 = 17.0;
+const GAP: f32 = 4.0;
 const TRACK_W: f32 = 26.0;
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Gap after the last `WheelScrolled` event that means "this is a new
@@ -95,7 +111,7 @@ const SNAP_PX: f32 = 2.0;
 /// the sharp knee a two-segment mapping produces (which crowded the
 /// 0/-6/-10 ruler ticks together). The track spans FLOOR_DB .. +6 dB
 /// (TOP_DB), TotalMix's fader range.
-const FLOOR_DB: f32 = -65.0;
+const FLOOR_DB: f32 = -60.0;
 /// The fader's top: +6 dB (2.0 linear) like TotalMix, not 0 dB.
 const TOP_DB: f32 = 6.0;
 const TAPER_K: f32 = 0.6;
@@ -138,8 +154,32 @@ pub struct Fader<Message> {
     pub meter_available: bool,
     pub height: f32,
     pub show_meter: bool,
+    /// Extra width (at `scale == 1.0`... no, already-scaled pixels, same
+    /// as every other field here) that exists *outside* this canvas's own
+    /// bounds but should still count when centering the track — the strip
+    /// card's icon column (gear/EQ/T), a `row!` sibling that shrinks this
+    /// canvas's own `Length::Fill` allocation without the canvas ever
+    /// knowing it's there. Ignored when `show_meter` is `false` (the
+    /// Matrix view's compact fader, which has no such sibling — always
+    /// `0.0` from that call site). See `layout_x`'s own doc comment for
+    /// why this is needed at all, not just cosmetic tuning.
+    pub reserved_right: f32,
     pub modifiers: Modifiers,
     pub scale: f32,
+    /// `false` skips drawing the groove/cap entirely — the click/drag/
+    /// wheel/double-click logic all stay fully live (the whole canvas
+    /// still counts as "over track", see `layout_x`'s `!show_meter`
+    /// branch), just invisible. Used by the Matrix view's crosspoint
+    /// cells: a bare numeric dB label (see `label`) is the only visible
+    /// thing, with a full drag-to-adjust fader hidden behind it —
+    /// "hidden mini-fader" rather than a second, visually-competing
+    /// control bolted onto the same cell.
+    pub show_track: bool,
+    /// Drawn centered in the canvas when set, regardless of
+    /// `show_track` — the Matrix view's own cell text (e.g. "-9.8"),
+    /// left empty by every strip fader (`None`).
+    pub label: Option<String>,
+    pub label_color: Color,
     pub on_press: Box<dyn Fn(f32, Option<(f32, f32)>) -> Message>,
     pub on_drag: Box<dyn Fn(f32) -> Message>,
     pub on_release: Box<dyn Fn() -> Message>,
@@ -147,15 +187,49 @@ pub struct Fader<Message> {
 }
 
 impl<Message> Fader<Message> {
-    /// Where the track starts, in canvas-local x — the track itself
-    /// centered on `bounds_width` (not the meter+track group, which would
-    /// pull the track off toward the meter's side). The strip's own column
-    /// gives this canvas `Length::Fill`, so `bounds_width` *is* the strip's
-    /// content width: centering the track on it, with the meter tucked
-    /// against its left, is what puts the slider in the middle of the
-    /// strip and the VU meter at the strip's left edge, TotalMix-style.
-    fn track_x(&self, bounds_width: f32) -> f32 {
-        ((bounds_width - TRACK_W * self.scale) / 2.0).max(0.0)
+    /// Left edge of the meter/ruler column and of the track, both in
+    /// canvas-local x — laid out left-to-right as `[meter+ruler][gap]
+    /// [track]`, matching the real TotalMix reference: the dB numbers are
+    /// printed directly on the VU meter itself (see `draw_ruler` drawing
+    /// on top of `draw_meter`'s same rect) and that combined column sits
+    /// to the *left* of the fader, not the right — confirmed via a live
+    /// screenshot at high zoom showing an actual green meter-fill segment
+    /// low in that left column, right next to the fader rail. An earlier
+    /// pass in this file had these swapped (`[track][meter+ruler]`,
+    /// meter on the right) from a shallower read of a narrower crop that
+    /// missed the live fill entirely — the user caught it.
+    ///
+    /// The *group* used to be centered on `bounds_width` alone — correct
+    /// for keeping the meter/ruler on-screen (that was this fix's
+    /// original point), but it centers the track on this *canvas's* own
+    /// bounds, not the strip's. Since the strip's icon column
+    /// (`reserved_right`) shrinks the canvas without the canvas knowing,
+    /// the true center of the strip's content sits to the *right* of the
+    /// canvas's own center — self-centering the group left the track a
+    /// couple pixels right of the strip's real center (confirmed via a
+    /// live screenshot pixel measurement: cap center 1.5-2px off from the
+    /// card's true center), which the user then caught by eye. Centering
+    /// the *track specifically* — not the meter+track group — on
+    /// `(bounds_width + reserved_right) / 2` fixes that: the meter just
+    /// goes wherever `GAP` puts it to the track's left, with a safety
+    /// clamp for narrow bounds identical in spirit to the original
+    /// negative-x fix this replaced (never let the meter go negative;
+    /// shift the whole group right instead of letting it clip).
+    fn layout_x(&self, bounds_width: f32) -> (f32, f32) {
+        let true_center = (bounds_width + self.reserved_right) / 2.0;
+        let track_x = true_center - (TRACK_W * self.scale) / 2.0;
+        if !self.show_meter {
+            // No meter, no `reserved_right` sibling either (see that
+            // field's own doc comment) — plain self-centering, exactly
+            // the pre-fix behavior for the Matrix view's compact fader.
+            return (track_x.max(0.0), 0.0);
+        }
+        let meter_x = track_x - (METER_RULER_W + GAP) * self.scale;
+        if meter_x < 0.0 {
+            (track_x - meter_x, 0.0)
+        } else {
+            (track_x, meter_x)
+        }
     }
 
     /// True if `pos_x` — in the same (parent/absolute) coordinate space as
@@ -168,7 +242,8 @@ impl<Message> Fader<Message> {
     /// of repeating the boundary math, so a future change to the layout
     /// constants can't leave one of them checking a stale boundary.
     fn is_over_track(&self, pos_x: f32, bounds_x: f32, bounds_width: f32) -> bool {
-        pos_x - bounds_x >= self.track_x(bounds_width) - (GAP / 2.0) * self.scale
+        let (track_x, _) = self.layout_x(bounds_width);
+        pos_x - bounds_x >= track_x - (GAP / 2.0) * self.scale
     }
 }
 
@@ -382,10 +457,10 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let track_x = self.track_x(bounds.width);
+        let (track_x, meter_x) = self.layout_x(bounds.width);
         if self.show_meter {
             let meter_rect = Rectangle::new(
-                Point::new(track_x - (GAP + METER_RULER_W) * self.scale, 0.0),
+                Point::new(meter_x, 0.0),
                 Size::new(METER_RULER_W * self.scale, bounds.height),
             );
             // Meter first, as a translucent wash; ruler ticks drawn on top
@@ -407,18 +482,31 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
                 .map(|d| d.at(Instant::now()))
                 .unwrap_or(self.value)
         };
-        draw_track(
-            &mut frame,
-            Rectangle::new(
-                Point::new(track_x, 0.0),
-                Size::new(TRACK_W * self.scale, bounds.height),
-            ),
-            display_value,
-            self.default_value,
-            self.range,
-            state.dragging,
-            self.scale,
-        );
+        if self.show_track {
+            draw_track(
+                &mut frame,
+                Rectangle::new(
+                    Point::new(track_x, 0.0),
+                    Size::new(TRACK_W * self.scale, bounds.height),
+                ),
+                display_value,
+                self.default_value,
+                self.range,
+                state.dragging,
+                self.scale,
+            );
+        }
+        if let Some(label) = &self.label {
+            frame.fill_text(canvas::Text {
+                content: label.clone(),
+                position: Point::new(bounds.width / 2.0, bounds.height / 2.0),
+                color: self.label_color,
+                size: (theme::TEXT_MICRO * self.scale).into(),
+                align_x: advanced_text::Alignment::Center,
+                align_y: iced::alignment::Vertical::Center,
+                ..canvas::Text::default()
+            });
+        }
         vec![frame.into_geometry()]
     }
 
@@ -440,7 +528,6 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
     }
 }
 
-const METER_PILL_W: f32 = 7.0;
 const METER_RADIUS: f32 = 3.5;
 const CLIP_H: f32 = 6.0;
 const CLIP_GAP: f32 = 3.0;
@@ -479,31 +566,54 @@ fn lerp_color(a: Color, b: Color, t: f32) -> Color {
 /// hot" well before it actually clips.
 const HOT_THRESHOLD: f32 = 0.85;
 
-/// A slim rounded pill instead of a wide block — one calm color for the
-/// signal, tinting progressively from green toward red above
-/// `HOT_THRESHOLD`, plus a separate clip "LED" above the track that lights
-/// up near 0 dBFS. Reads as a minimal modern level indicator, not a
-/// traffic light, while still giving continuous feedback as it climbs.
-/// Draws the meter column. `available` is a per-session backend capability
-/// (see `DeviceHandle::has_input_meters`/`has_playback_meters`), not a
-/// per-tick reading — when `false`, the channel has no real level data on
-/// this backend (e.g. playback meters on every real backend today; input
-/// meters too on the ALSA/kernel-driver backend, see `PROTOCOL.md`'s "VU
-/// meters: conclusion"). Rendering that as a normal meter pinned at 0 would
-/// read as "silence", which is a different claim than "not measured" — so
+/// How see-through the fill/clip-LED colors are — the ruler's numbers
+/// (see `draw_ruler`) are drawn *on top of* this same rectangle, TotalMix-
+/// style (confirmed via a live screenshot: the dB digits sit directly on
+/// the meter, not beside it in their own lane), so the fill can't be
+/// fully opaque or it'd blot the text out. Chosen high enough that the
+/// level is still clearly readable as a color, low enough that
+/// `theme::TEXT_SEC`-colored digits stay legible over green *or* red.
+const FILL_ALPHA: f32 = 0.55;
+
+/// A full-width wash spanning the whole ruler column — not a slim pill
+/// off to one side — precisely so `draw_ruler`'s numbers can be
+/// superimposed on it rather than pushed into their own extra lane
+/// (which used to widen this whole column well past what the numbers
+/// alone need, shoving the fader and everything after it further right
+/// than the reference: see `METER_RULER_W`'s own doc comment). Tints
+/// progressively from green toward red above `HOT_THRESHOLD`, plus a
+/// separate clip "LED" above the track that lights up near 0 dBFS.
+/// `available` is a per-session backend capability (see `DeviceHandle::
+/// has_input_meters`/`has_playback_meters`), not a per-tick reading —
+/// when `false`, the channel has no real level data on this backend
+/// (e.g. playback meters on every real backend today; input meters too
+/// on the ALSA/kernel-driver backend, see `PROTOCOL.md`'s "VU meters:
+/// conclusion"). Rendering that as a normal meter pinned at 0 would read
+/// as "silence", which is a different claim than "not measured" — so
 /// this draws a dashed, uncolored track instead of pretending there's a
 /// live reading.
-fn draw_meter(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available: bool) {
-    let l = level.clamp(0.0, 1.0);
-    let pill_w = METER_PILL_W * scale;
-    let radius = METER_RADIUS * scale;
+/// The meter's own fill track — the raw column rect, inset at the top
+/// by the clip-LED's reserved strip so the fill never draws under it.
+/// Deliberately *not* shared with `draw_ruler` — see that function's
+/// own comment on why its ticks measure off the full, uninset rect
+/// instead (keeping them aligned with the fader cap next to it, at the
+/// cost of a small, pre-existing gap versus this track's own top).
+fn meter_track(r: Rectangle, scale: f32) -> Rectangle {
     let clip_h = CLIP_H * scale;
     let clip_gap = CLIP_GAP * scale;
-
-    let track = Rectangle::new(
+    Rectangle::new(
         Point::new(r.x, r.y + clip_h + clip_gap),
-        Size::new(pill_w, (r.height - clip_h - clip_gap).max(0.0)),
-    );
+        Size::new(r.width, (r.height - clip_h - clip_gap).max(0.0)),
+    )
+}
+
+fn draw_meter(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available: bool) {
+    let l = level.clamp(0.0, 1.0);
+    let fill_w = r.width;
+    let radius = METER_RADIUS * scale;
+    let clip_h = CLIP_H * scale;
+
+    let track = meter_track(r, scale);
 
     frame.fill(
         &Path::new(|b| b.rounded_rectangle(track.position(), track.size(), radius.into())),
@@ -514,9 +624,9 @@ fn draw_meter(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available
         // A handful of short dashes down the middle of the track, in a
         // dim neutral gray — reads as "N/A" without needing text layout
         // inside a canvas this narrow.
-        let dash_w = pill_w * 0.5;
+        let dash_w = fill_w * 0.5;
         let dash_h = 2.0 * scale;
-        let dash_x = track.x + (pill_w - dash_w) / 2.0;
+        let dash_x = track.x + (fill_w - dash_w) / 2.0;
         let count = ((track.height / (dash_h * 2.5)).floor() as usize).max(1);
         for i in 0..count {
             let dash_y = track.y + track.height * (i as f32 + 0.5) / count as f32;
@@ -535,28 +645,43 @@ fn draw_meter(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available
     }
 
     if l > 0.0 {
-        let fill_h = track.height * l;
+        // `l` is linear amplitude (1.0 = 0 dBFS), but the ruler's
+        // ticks — and the fader track right next to this column — are
+        // positioned on the *tapered* dB curve (`db_to_t`/`vol_to_t`),
+        // not linearly. Filling by raw `l` used to land a -6 dBFS
+        // signal's fill top well below the "-6" gridline instead of
+        // right at it (checked: `vol_to_t(0.5)` ≈ 0.63, not 0.5) — real
+        // signal data only started flowing through here this session
+        // (previously every real backend read "N/A"), which is what
+        // made this actually matter rather than being a latent bug.
+        let fill_h = track.height * vol_to_t(l);
         let fill_pos = Point::new(track.x, track.y + track.height - fill_h);
         let hot_t = (l - HOT_THRESHOLD) / (1.0 - HOT_THRESHOLD);
-        let fill_color = lerp_color(theme::MGREEN, theme::MRED, hot_t);
+        let fill_color = Color {
+            a: FILL_ALPHA,
+            ..lerp_color(theme::MGREEN, theme::MRED, hot_t)
+        };
         frame.fill(
-            &Path::new(|b| b.rounded_rectangle(fill_pos, Size::new(pill_w, fill_h), radius.into())),
+            &Path::new(|b| b.rounded_rectangle(fill_pos, Size::new(fill_w, fill_h), radius.into())),
             fill_color,
         );
     }
 
     // Clip LED — a fixed indicator above the track, dim until triggered.
-    let clip_rect = Rectangle::new(Point::new(r.x, r.y), Size::new(pill_w, clip_h));
+    let clip_rect = Rectangle::new(Point::new(r.x, r.y), Size::new(fill_w, clip_h));
     let clipping = l >= 0.95;
     let clip_color = if clipping {
-        theme::MRED
+        Color {
+            a: FILL_ALPHA,
+            ..theme::MRED
+        }
     } else {
         Color::from_rgb8(0x3a, 0x16, 0x16)
     };
     if clipping {
         let glow = Rectangle::new(
             Point::new(r.x - 2.0 * scale, r.y - 2.0 * scale),
-            Size::new(pill_w + 4.0 * scale, clip_h + 4.0 * scale),
+            Size::new(fill_w + 4.0 * scale, clip_h + 4.0 * scale),
         );
         frame.fill(
             &Path::new(|b| {
@@ -697,20 +822,34 @@ fn draw_track(
     );
 }
 
-/// Drawn on top of the (translucent) meter wash, so it needs to stay
-/// legible against whatever color is lit behind it — brighter than the
-/// usual secondary text color, with a tick + number per breakpoint.
+/// Drawn on top of the (translucent, see `FILL_ALPHA`) meter wash, so it
+/// needs to stay legible against whatever color is lit behind it —
+/// numbers centered in the same rect `draw_meter` just filled, TotalMix-
+/// style, rather than pushed into their own lane to one side of it. The
+/// tick dash sits at the rect's own right edge — right where the fader
+/// track begins right after it (see `Fader::layout_x`), the same
+/// "shared between the meter and the fader" position the reference uses.
 fn draw_ruler(frame: &mut Frame, r: Rectangle, scale: f32) {
-    const TICKS: [f32; 7] = [6.0, 0.0, -6.0, -10.0, -20.0, -40.0, -65.0];
+    const TICKS: [f32; 6] = [0.0, -6.0, -10.0, -20.0, -40.0, -60.0];
     let label_color = theme::TEXT_SEC;
-    let x0 = r.x + METER_PILL_W * scale + 4.0 * scale;
-
+    let tick_x1 = r.x + r.width;
+    let tick_x0 = tick_x1 - 3.0 * scale;
+    let label_x = r.x + r.width / 2.0;
+    // Deliberately measured against the *full* `r`, not
+    // `meter_track`'s clip-LED-inset rect `draw_meter` fills against —
+    // this is what keeps a tick lined up with the fader cap at the
+    // same dB (`draw_track`'s own `pos_of` also measures off the full,
+    // uninset canvas height). Insetting to match `draw_meter` exactly
+    // would fix the meter/ruler pairing at the cost of breaking this
+    // one instead — the residual few-px gap between a tick and the
+    // meter fill's own top is the smaller, pre-existing cosmetic cost
+    // of the two, not chased further here.
     for db in TICKS {
         let t = db_to_t(db);
         let y = r.y + r.height - r.height * t;
         let y = safe_clamp(y, r.y + 4.0 * scale, r.y + r.height - 4.0 * scale);
 
-        let tick = Path::line(Point::new(x0, y), Point::new(x0 + 3.0 * scale, y));
+        let tick = Path::line(Point::new(tick_x0, y), Point::new(tick_x1, y));
         frame.stroke(
             &tick,
             Stroke::default().with_color(label_color).with_width(1.0),
@@ -723,9 +862,10 @@ fn draw_ruler(frame: &mut Frame, r: Rectangle, scale: f32) {
         };
         frame.fill_text(canvas::Text {
             content: label,
-            position: Point::new(x0 + 5.0 * scale, y - 4.0 * scale),
+            position: Point::new(label_x, y - 4.0 * scale),
             color: label_color,
             size: (theme::TEXT_MICRO * scale).into(),
+            align_x: advanced_text::Alignment::Center,
             ..canvas::Text::default()
         });
     }
@@ -819,14 +959,34 @@ pub fn vu_meter<'a, Message: 'a>(
         scale,
         available,
     })
-        .width(Length::Fixed(METER_RULER_W * scale))
-        .height(Length::Fixed(height))
-        .into()
+    .width(Length::Fixed(METER_RULER_W * scale))
+    .height(Length::Fixed(height))
+    .into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn meter_fill_curve_is_tapered_not_linear() {
+        // Guards `draw_meter`'s fill-height fix: a -6 dBFS signal
+        // (linear amplitude 0.5) must land its fill top at the
+        // ruler's own tapered "-6" position, not halfway up the
+        // column — the bug this fixed used raw linear amplitude
+        // directly as the fill fraction, which would make this
+        // assertion fail (0.5 vs 0.5, no taper).
+        let t = vol_to_t(0.5);
+        assert!(
+            (t - 0.5).abs() > 0.1,
+            "expected the tapered curve to differ meaningfully from linear 0.5, got {t}"
+        );
+        // And it should match `db_to_t` fed the actual dB value,
+        // since that's what the ruler's own ticks use — the whole
+        // point is these two agree.
+        let expected = db_to_t(20.0 * 0.5f32.log10());
+        assert!((t - expected).abs() < 1e-4);
+    }
 
     #[test]
     fn still_frame_is_never_settling() {

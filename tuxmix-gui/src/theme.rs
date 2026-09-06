@@ -5,24 +5,31 @@ use iced::widget::overlay::menu;
 use iced::widget::{button, container};
 use iced::{Background, Border, Color, Shadow};
 
-pub const BG_DEEP: Color = Color::from_rgb8(0x0d, 0x0d, 0x0d);
-pub const SURFACE: Color = Color::from_rgb8(0x18, 0x18, 0x1a);
-pub const BORDER: Color = Color::from_rgb8(0x2a, 0x2a, 0x30);
+// Palette sampled directly from real RME TotalMix FX (live screenshots,
+// see the reference-totalmix-ui-assets memory) rather than guessed — a
+// cool blue-gray strip card against a near-black window, cyan for Mute,
+// a muted terracotta orange for everything else "engaged" (Solo, stereo
+// link, EQ on, 48V, route/settings open). TotalMix's own accent is that
+// same orange almost everywhere; cyan is reserved specifically for Mute.
+pub const BG_DEEP: Color = Color::from_rgb8(0x14, 0x17, 0x1a);
+pub const SURFACE: Color = Color::from_rgb8(0x38, 0x41, 0x47);
+pub const BORDER: Color = Color::from_rgb8(0x4a, 0x54, 0x5c);
 pub const TEXT_PRIMARY: Color = Color::from_rgb8(0xe8, 0xe8, 0xec);
-pub const TEXT_SEC: Color = Color::from_rgb8(0x88, 0x88, 0x94);
-pub const ACCENT: Color = Color::from_rgb8(0x4f, 0xc3, 0xf7);
-pub const ACCENT_DIM: Color = Color::from_rgb8(0x2a, 0x6a, 0x88);
+pub const TEXT_SEC: Color = Color::from_rgb8(0x9a, 0xa0, 0xa6);
+pub const ACCENT: Color = Color::from_rgb8(0xd4, 0x83, 0x54);
+pub const ACCENT_DIM: Color = Color::from_rgb8(0x5c, 0x41, 0x30);
 /// Sober neutral used for the fader rail/handle — kept separate from
-/// `ACCENT` so the fader doesn't compete visually with the blue brand color.
+/// `ACCENT` so the fader doesn't compete visually with the orange brand
+/// color; matches the light silver/gray fader cap in the real reference.
 pub const FADER: Color = Color::from_rgb8(0xa8, 0xac, 0xb4);
 pub const MGREEN: Color = Color::from_rgb8(0x4c, 0xaf, 0x50);
 pub const MRED: Color = Color::from_rgb8(0xf4, 0x43, 0x36);
-pub const PHANTOM: Color = Color::from_rgb8(0xff, 0x45, 0x45);
+pub const PHANTOM: Color = Color::from_rgb8(0xd4, 0x83, 0x54);
 pub const GCONN: Color = Color::from_rgb8(0x4c, 0xaf, 0x50);
 pub const YSIM: Color = Color::from_rgb8(0xff, 0xc1, 0x07);
-pub const MUTE_COLOR: Color = Color::from_rgb8(0xff, 0x6b, 0x6b);
-pub const SOLO_COLOR: Color = Color::from_rgb8(0xff, 0xc1, 0x07);
-pub const ON_ACTIVE: Color = Color::from_rgb8(0x1a, 0x08, 0x08);
+pub const MUTE_COLOR: Color = Color::from_rgb8(0x17, 0xbf, 0xcf);
+pub const SOLO_COLOR: Color = Color::from_rgb8(0xd4, 0x83, 0x54);
+pub const ON_ACTIVE: Color = Color::from_rgb8(0x14, 0x17, 0x1a);
 
 // ── Type scale ───────────────────────────────────────────────────
 // Every text element in the app maps to one of these six tiers rather
@@ -46,11 +53,11 @@ pub const TEXT_XS: f32 = 10.0;
 /// Buttons and compact controls: M/S, 48V/PAD, the collapse toggle,
 /// the dB edit input.
 pub const TEXT_SM: f32 = 11.0;
-/// Default body text: channel names, section headers, top-bar labels
-/// and pick lists.
+/// Default body text: channel names, section headers, top-bar labels,
+/// pick lists, and the sidebar's device-chip model name (originally
+/// sized a tier up for emphasis, but that read as too big for the
+/// sidebar's dense 210px column — dropped back down to this tier).
 pub const TEXT_MD: f32 = 13.0;
-/// Emphasis: the connected device's model name in the top bar.
-pub const TEXT_LG: f32 = 15.0;
 /// The "TuxMix" wordmark.
 pub const TEXT_XL: f32 = 22.0;
 
@@ -62,6 +69,10 @@ pub const TEXT_XL: f32 = 22.0;
 /// fallback when there's nothing to size against yet (no channels); `MIN`/
 /// `MAX` bound how far the auto-fit math is allowed to shrink/grow it.
 pub const SCALE_DEFAULT: f32 = 1.0;
+/// Bounds for the *manual* UI zoom (Ctrl+molette / Ctrl+= / Ctrl+-). The
+/// scale is no longer tied to window size at all — window resizing just
+/// shows more or less via scroll, so these only constrain how far the user
+/// can zoom by hand (a readability floor and a sane ceiling).
 pub const SCALE_MIN: f32 = 0.75;
 pub const SCALE_MAX: f32 = 1.75;
 
@@ -128,7 +139,7 @@ pub fn panel(_theme: &iced::Theme) -> container::Style {
 /// card just enough to read as "this channel's category" at a glance
 /// without competing with the accent-colored selection border or making
 /// the card itself look like a colored badge.
-fn blend(base: Color, tint: Color, amount: f32) -> Color {
+pub(crate) fn blend(base: Color, tint: Color, amount: f32) -> Color {
     Color {
         r: base.r + (tint.r - base.r) * amount,
         g: base.g + (tint.g - base.g) * amount,
@@ -250,10 +261,7 @@ pub fn toggle_button(
     active_color: Color,
 ) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
     move |_theme, status| {
-        let hovered = matches!(
-            status,
-            button::Status::Hovered | button::Status::Pressed
-        );
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let pressed = matches!(status, button::Status::Pressed);
 
         let mut background = if active {
@@ -320,7 +328,10 @@ pub fn tab_toggle(active: bool) -> impl Fn(&iced::Theme, button::Status) -> butt
             // TRANSPARENT has nothing for `blend` toward black to darken —
             // give the inactive tab its own distinct, visible press color
             // instead of falling through to "looks like hover held longer."
-            Color { a: 0.35, ..ACCENT_DIM }
+            Color {
+                a: 0.35,
+                ..ACCENT_DIM
+            }
         } else if hovered {
             SURFACE
         } else {

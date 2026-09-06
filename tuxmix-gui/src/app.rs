@@ -3,21 +3,22 @@ use iced::keyboard::{self, Key};
 use iced::widget::{
     button, column, container, mouse_area, opaque, pick_list, row, scrollable, stack, text,
 };
-use iced::{window, Element, Length, Subscription, Task};
+use iced::{window, Color, Element, Length, Subscription, Task};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
+use tuxmix_core::channel::EqBandType;
 #[cfg(feature = "alsa")]
 use tuxmix_core::BabyfacePro;
 use tuxmix_core::{
     BabyfaceProUsb, ChannelId, ChannelType, MockBabyfacePro, RmeDevice, Scene, Sensitivity,
 };
-use tuxmix_core::channel::EqBandType;
 
 use crate::matrix;
 use crate::osc::{self, OscCommand, OscConfig, OscOutbound};
-use crate::scenes::{list_scene_files, load_scene_file, save_scene_file};
+use crate::scenes::{load_scene_file, save_scene_file};
+use crate::sidebar::{self, Group};
 use crate::theme;
 use crate::widgets::fader;
 use crate::widgets::knob::{knob, Knob};
@@ -45,11 +46,8 @@ pub fn short_label(name: &str) -> &str {
 /// and what TotalMix itself shows for a linked stereo bus. Falls back to
 /// `"{left}/{right}"` unmodified if `right` doesn't end in digits (not
 /// expected for this device's own channel names, but harmless).
-fn pair_bus_label(left: &str, right: &str) -> String {
-    let right_num: String = right
-        .chars()
-        .skip_while(|c| !c.is_ascii_digit())
-        .collect();
+pub(crate) fn pair_bus_label(left: &str, right: &str) -> String {
+    let right_num: String = right.chars().skip_while(|c| !c.is_ascii_digit()).collect();
     if right_num.is_empty() {
         format!("{left}/{right}")
     } else {
@@ -355,7 +353,7 @@ impl DeviceHandle {
             DeviceHandle::Mock(d) => (0..n).map(|i| d.input_meter(i)).collect(),
             DeviceHandle::Usb(d) => d.meters().unwrap_or_else(|| vec![0.0; n]),
             #[cfg(feature = "alsa")]
-            DeviceHandle::Real(_) => vec![0.0; n],
+            DeviceHandle::Real(d) => d.meters().unwrap_or_else(|| vec![0.0; n]),
         }
     }
     pub fn playback_meters(&self) -> Vec<f32> {
@@ -386,6 +384,24 @@ impl DeviceHandle {
             DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
             #[cfg(feature = "alsa")]
             DeviceHandle::Real(_) => false,
+        }
+    }
+    /// Per-channel version of `has_input_meters` — real across the
+    /// board for Mock/USB; on the ALSA/kernel-driver backend, only
+    /// AN1/AN2 (idx 0/1) have a capture-channel mapping confirmed
+    /// against real hardware (`PROTOCOL.md`'s "w0/1 = the AN1/2 record
+    /// bus" + a live mic test). Every other input's capture-word
+    /// mapping is either genuinely contextual (IN3/4 share a word pair
+    /// with the PH3/4 output bus's loopback signal) or disputed between
+    /// `PROTOCOL.md` and the more recent `KERNEL-DRIVER.md` — showing a
+    /// reading for those would risk attributing a level to the wrong
+    /// physical input, worse than the honest "N/A" dashes this falls
+    /// back to.
+    pub fn has_input_meter(&self, idx: usize) -> bool {
+        match self {
+            DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
+            #[cfg(feature = "alsa")]
+            DeviceHandle::Real(_) => idx < 2,
         }
     }
     /// Whether `playback_meters()` is real — true only for Mock. The USB
@@ -467,28 +483,45 @@ pub enum Message {
     /// the only place that builds the pick-list this feeds).
     QuickChannelSelected(ChannelId),
     SelectOutput(usize),
-    SceneNameChanged(String),
-    SceneSave,
-    SceneLoad(String),
     ModifiersChanged(keyboard::Modifiers),
     TabPressed,
     EscapePressed,
-    /// The OS window was resized (or just opened) — see
-    /// `TuxMix::window_width`. Also the trigger for recomputing `ui_scale`
-    /// (see `recompute_ui_scale`) — TotalMix-2.0-style adaptive scale
-    /// replaced manual zoom entirely, so window size is the only thing
-    /// that ever changes it now (that, and a strip's collapsed state
-    /// changing, which affects the same fit-to-window math — see
-    /// `set_collapsed`). Width-only, deliberately: an earlier version
-    /// also fit to height, but that meant a wide-but-short window could
-    /// shrink the scale enough to leave dead space on the sides — width
-    /// alone always fills the window edge to edge; a short window scrolls
-    /// vertically to reach Hardware Outputs instead, same as any normal
-    /// scrollable view.
+    /// The OS window was resized (or just opened) — tracks the current
+    /// width in `TuxMix::window_width` (coalesced, `RESIZE_THROTTLE`) so
+    /// `responsive_row` can decide whether a strip row fits or scrolls.
+    /// This no longer rescales anything: strips keep their current
+    /// `ui_scale` (changed only by the manual `Zoom*` / `WheelZoom`
+    /// messages), so a window drag is pure scroll/clip.
     WindowResized(f32),
+
+    /// Ctrl+wheel — zooms the UI in/out (see `zoom`). Ignored unless Ctrl
+    /// is held (`TuxMix::modifiers`); plain wheel scrolls as normal.
+    WheelZoom(f32),
+    /// Discrete manual zoom (Ctrl+= / Ctrl+- / Ctrl+0).
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
 
     Mute(ChannelId, bool),
     Solo(ChannelId, bool),
+    /// The sidebar's global "M" button (`sidebar::msf_row`) — a real
+    /// toggle, same shape as `GlobalSoloToggle`: if any channel isn't
+    /// muted yet, mutes exactly those and remembers which ones it
+    /// touched (`TuxMix::last_globally_muted`); if every channel is
+    /// already muted, restores mute *off* on exactly that remembered
+    /// set instead of blindly unmuting everything. That distinction
+    /// matters when a channel was already muted independently before
+    /// the global press — a second press won't un-mute it, since this
+    /// action never muted it in the first place.
+    GlobalMuteToggle,
+    /// The sidebar's global "S" button — a real toggle, symmetric with
+    /// `GlobalMuteToggle`: if anything is soloed, clears every solo and
+    /// remembers which channels those were (`TuxMix::last_cleared_solos`);
+    /// if nothing is soloed and there's a remembered set, restores solo
+    /// on exactly those channels instead. There's no sensible "solo
+    /// everything" (unlike mute), so restoring the prior set is the
+    /// toggle's other direction rather than that.
+    GlobalSoloToggle,
     Phantom(usize, bool),
     Pad(usize, bool),
     /// Raw preamp gain units (0..=`InputChannel::gain_max`), not dB —
@@ -496,6 +529,11 @@ pub enum Message {
     Gain(usize, u32),
     /// `true` = +4dBu, `false` = -10dBV.
     Sensitivity(usize, bool),
+    /// Trim in dB (-65..+6, see `RmeDevice::set_trim`) — `usize` is the
+    /// input index, same scale as every other Hardware Input, unlike
+    /// `Gain` which is raw per-model hardware units.
+    TrimChanged(usize, f32),
+    TrimReset(usize),
 
     /// Hardware 3-band + low-cut EQ (analog inputs only) — `usize` is
     /// always the input index; the `Eq*Band*` variants carry the band
@@ -588,6 +626,40 @@ pub enum Message {
     SpdifEnabledChanged(bool),
     SpdifEmphasisChanged(bool),
     SpdifProfessionalChanged(bool),
+
+    // ── Right sidebar ("control strip") ─────────────────────────────
+    /// Pops `undo_stack`, pushes the current state onto `redo_stack`,
+    /// applies the popped one. No-op if `undo_stack` is empty.
+    Undo,
+    /// Mirror of `Undo` against `redo_stack`.
+    Redo,
+    /// Expands/collapses one of the 4 sidebar panels (each has its own
+    /// "−"/"+" header, like the reference).
+    ToggleSidebarPanel(sidebar::Panel),
+    /// Expands/collapses the *whole* right sidebar — distinct from
+    /// `ToggleSidebarPanel`, see `TuxMix::sidebar_open`'s own doc comment.
+    ToggleSidebar,
+    /// Skeleton toggles — visually real 2-way switches (see
+    /// `sidebar::SkeletonPair`'s own doc comment), no behavior behind
+    /// them. Distinct from the M/S/F row, which isn't wired to
+    /// `on_press` at all (see `sidebar::msf_row`).
+    ToggleSkeletonPair(sidebar::SkeletonPair),
+    /// Recalls "Mix `u8`" (1-8) and marks it as the slot `SnapshotStore`
+    /// will save into.
+    SnapshotClicked(u8),
+    SnapshotStore,
+    /// Enters/exits group-assignment mode — while active, clicking a
+    /// group's mute/solo/fader cell assigns the current multi-selection
+    /// (`state.selected`) as that group's membership.
+    GroupEditToggle,
+    GroupLinkToggle(usize, sidebar::GroupLink),
+    /// Clears the group currently being edited (or all four, if none
+    /// is — see the handler).
+    GroupClear,
+    /// Recalls "Layout `u8`" (1-6) and marks it as the slot
+    /// `LayoutStore` will save into.
+    LayoutClicked(u8),
+    LayoutStore,
 }
 
 // ── App state ────────────────────────────────────────────────────
@@ -608,8 +680,6 @@ pub struct TuxMix {
     pub editing: Option<ChannelId>,
     pub edit_buf: String,
     pub drag_range: Option<(ChannelId, f32, f32)>,
-    pub scene_name: String,
-    pub scene_list: Vec<String>,
     pub modifiers: keyboard::Modifiers,
     /// Ballistics-smoothed meter values shown in the UI — the raw values
     /// from `device.input_meter`/`playback_meter` jump straight to their new
@@ -637,12 +707,11 @@ pub struct TuxMix {
     /// of either kind. Opens/closes instantly, no width tween — unlike
     /// `collapse_anim`, this isn't animated.
     pub flyout_open: Option<(ChannelId, strip::FlyoutKind)>,
-    /// Adaptive UI scale, multiplied into every text size and widget
-    /// dimension in the mixer/matrix views — recomputed by
-    /// `recompute_ui_scale` on every window resize (and strip
-    /// collapse/expand) so the widest strip row always fits without
-    /// horizontal scrolling, not a manual zoom control. `theme::SCALE_*`
-    /// constants define the default/bounds.
+    /// Manual UI zoom for the mixer/matrix views — every text size and
+    /// widget dimension there is multiplied by this. Changed only by
+    /// `ZoomIn`/`ZoomOut`/`ZoomReset`/Ctrl+molette (`zoom`); it is NOT tied
+    /// to window size, so resizing never rescales anything — strips keep
+    /// fixed geometry and rows/pages scroll. `SCALE_DEFAULT` is the default.
     pub ui_scale: f32,
     /// Current window width in logical pixels, kept in sync via
     /// `Message::WindowResized` — lets `mixer_view` decide whether a
@@ -653,6 +722,15 @@ pub struct TuxMix {
     /// skipping the scrollable entirely when content already fits —
     /// which needs the real window width tracked in state.
     pub window_width: f32,
+    /// When the last resize was actually applied to `window_width`/
+    /// `ui_scale` (`None` = never) — the resize coalescing throttle (see
+    /// `RESIZE_THROTTLE`) compares against this so a stream of `Resized`
+    /// events doesn't rebuild the whole view on every single one.
+    last_resize_applied: Option<Instant>,
+    /// The most recent resize width still waiting to be applied (it arrived
+    /// inside `RESIZE_THROTTLE` of the last applied one) — flushed by the
+    /// next due resize or the next `Message::Tick`. See `apply_pending_resize`.
+    pending_resize_width: Option<f32>,
     /// Multi-selected strips — Ctrl+click toggles just the clicked strip,
     /// Shift+click selects the whole range from `select_anchor` (standard
     /// file-manager convention), click empty background to clear.
@@ -694,6 +772,41 @@ pub struct TuxMix {
     pub last_auto_save: Instant,
     /// Last JSON written to the "auto" scene, to skip redundant writes.
     pub last_saved_json: Option<String>,
+
+    // ── Right sidebar ────────────────────────────────────────────────
+    /// Coarse, `Scene`-snapshot-based undo — see `Message::Undo`'s own
+    /// doc comment for the granularity trade-off. Capped at
+    /// `UNDO_STACK_CAP`.
+    pub undo_stack: Vec<Scene>,
+    pub redo_stack: Vec<Scene>,
+    pub groups: [Group; 4],
+    /// Whether the "edit" button is engaged — while `true`, clicking a
+    /// group's mute/solo/fader cell assigns `selected` as that group's
+    /// membership (see `Message::GroupLinkToggle`); while `false`, the
+    /// same click just flips that link type on/off for the group's
+    /// existing membership.
+    pub group_editing: bool,
+    /// `None` = that slot has never been stored to.
+    pub layouts: [Option<HashSet<ChannelId>>; 6],
+    pub active_layout: Option<usize>,
+    pub active_snapshot: Option<usize>,
+    /// Which channels `Message::GlobalSoloToggle` most recently cleared
+    /// — restored on the next press if nothing's been soloed again in
+    /// the meantime. Empty when there's nothing to restore.
+    pub last_cleared_solos: Vec<ChannelId>,
+    /// Which channels `Message::GlobalMuteToggle` most recently muted
+    /// (i.e. weren't already muted before that press) — un-muted again
+    /// on the next press, leaving any channel that was independently
+    /// muted beforehand untouched. Empty when there's nothing to
+    /// restore.
+    pub last_globally_muted: Vec<ChannelId>,
+    pub sidebar_panels_open: sidebar::PanelsOpen,
+    pub skeleton_pairs: sidebar::SkeletonPairs,
+    /// Whether the whole right sidebar is expanded — distinct from
+    /// `sidebar_panels_open`, which collapses individual panels *within*
+    /// an expanded sidebar. `false` reclaims its width for the mixer,
+    /// leaving only a thin rail with the button to bring it back.
+    pub sidebar_open: bool,
 }
 
 /// Matches the "Max lines" default in oscmix's own OSC debug log — enough
@@ -804,8 +917,6 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         editing: None,
         edit_buf: String::new(),
         drag_range: None,
-        scene_name: String::new(),
-        scene_list: list_scene_files(),
         modifiers: keyboard::Modifiers::default(),
         input_meters: vec![MeterAnim::new(); n_inputs],
         playback_meters: vec![MeterAnim::new(); n_playbacks],
@@ -817,6 +928,8 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         // Matches `window::Settings::size` in main.rs — updated for real
         // as soon as the first `Opened`/`Resized` event arrives.
         window_width: 1280.0,
+        last_resize_applied: None,
+        pending_resize_width: None,
         selected: HashSet::new(),
         select_anchor: None,
         hovered_strip: None,
@@ -829,6 +942,18 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         // TotalMix re-applies its saved state; this is our equivalent).
         last_auto_save: Instant::now(),
         last_saved_json: None,
+        undo_stack: Vec::new(),
+        redo_stack: Vec::new(),
+        groups: Default::default(),
+        group_editing: false,
+        layouts: std::array::from_fn(|i| crate::layouts::load_layout_file((i + 1) as u8)),
+        active_layout: None,
+        active_snapshot: None,
+        last_cleared_solos: Vec::new(),
+        last_globally_muted: Vec::new(),
+        sidebar_panels_open: sidebar::PanelsOpen::default(),
+        skeleton_pairs: sidebar::SkeletonPairs::default(),
+        sidebar_open: true,
     }
 }
 
@@ -918,36 +1043,114 @@ fn set_channel_solo(state: &mut TuxMix, cid: ChannelId, s: bool) {
     };
 }
 
-fn apply_grouped_volume(state: &mut TuxMix, cid: ChannelId, out: usize, v: f32) {
+fn channel_is_muted(state: &TuxMix, cid: ChannelId) -> bool {
+    match cid {
+        ChannelId::Input(ch) => state.device.inputs()[ch].mute,
+        ChannelId::Playback(ch) => state.device.playbacks()[ch].mute,
+        ChannelId::Output(ch) => state.device.outputs()[ch].mute,
+    }
+}
+
+fn channel_is_soloed(state: &TuxMix, cid: ChannelId) -> bool {
+    match cid {
+        ChannelId::Input(ch) => state.device.inputs()[ch].solo,
+        ChannelId::Playback(ch) => state.device.playbacks()[ch].solo,
+        ChannelId::Output(ch) => state.device.outputs()[ch].solo,
+    }
+}
+
+/// Every channel the device currently exposes, across all three types
+/// — what the sidebar's global "M"/"S" buttons
+/// (`Message::GlobalMuteToggle`/`GlobalSoloClear`) act on.
+fn all_channel_ids(state: &TuxMix) -> Vec<ChannelId> {
+    (0..state.device.inputs().len())
+        .map(ChannelId::Input)
+        .chain((0..state.device.playbacks().len()).map(ChannelId::Playback))
+        .chain((0..state.device.outputs().len()).map(ChannelId::Output))
+        .collect()
+}
+
+/// Whether every channel is currently muted — drives both the global
+/// "M" button's toggle direction and its lit state (`sidebar::msf_row`
+/// reads this too, hence `pub(crate)`).
+pub(crate) fn all_channels_muted(state: &TuxMix) -> bool {
+    all_channel_ids(state).into_iter().all(|cid| channel_is_muted(state, cid))
+}
+
+/// Whether at least one channel is currently soloed — drives the
+/// global "S" button's lit state (there's something for it to clear).
+pub(crate) fn any_channel_soloed(state: &TuxMix) -> bool {
+    all_channel_ids(state).into_iter().any(|cid| channel_is_soloed(state, cid))
+}
+
+/// Every *other* channel that should move/mute/solo alongside `cid`
+/// right now: the active multi-selection (if `cid` is part of one, same
+/// as before the sidebar's Groups panel existed) unioned with the
+/// membership of any of `state.groups` whose `link` is engaged and that
+/// `cid` belongs to. `cid` itself is never included, so callers can
+/// `is_empty()`-check this directly instead of re-deriving "is anything
+/// else supposed to move." A `HashSet` (not `Vec`) since a channel can
+/// be both multi-selected *and* in a linked group — the union must
+/// de-duplicate, not propagate to the same channel twice.
+fn propagation_set(
+    state: &TuxMix,
+    cid: ChannelId,
+    link: sidebar::GroupLink,
+) -> HashSet<ChannelId> {
+    let mut set = HashSet::new();
     if state.selected.len() > 1 && state.selected.contains(&cid) {
-        let old = state.device.volume(cid, out).unwrap_or(v);
-        let delta_db = vol_to_db(v) - vol_to_db(old);
-        for sel in state.selected.clone() {
-            let cur = state.device.volume(sel, out).unwrap_or(0.0);
-            let new_vol = db_to_vol(vol_to_db(cur) + delta_db).clamp(0.0, 2.0);
-            set_channel_volume(state, sel, out, new_vol);
-            notify_osc(state, OscOutbound::Volume(sel, out, new_vol));
+        set.extend(state.selected.iter().copied());
+    }
+    for g in &state.groups {
+        let linked = match link {
+            sidebar::GroupLink::Mute => g.mute_linked,
+            sidebar::GroupLink::Solo => g.solo_linked,
+            sidebar::GroupLink::Fader => g.fader_linked,
+        };
+        if linked && g.members.contains(&cid) {
+            set.extend(g.members.iter().copied());
         }
-    } else {
+    }
+    set.remove(&cid);
+    set
+}
+
+fn apply_grouped_volume(state: &mut TuxMix, cid: ChannelId, out: usize, v: f32) {
+    let others = propagation_set(state, cid, sidebar::GroupLink::Fader);
+    if others.is_empty() {
         set_channel_volume(state, cid, out, v);
         notify_osc(state, OscOutbound::Volume(cid, out, v));
+        return;
+    }
+    let old = state.device.volume(cid, out).unwrap_or(v);
+    let delta_db = vol_to_db(v) - vol_to_db(old);
+    set_channel_volume(state, cid, out, v);
+    notify_osc(state, OscOutbound::Volume(cid, out, v));
+    for sel in others {
+        let cur = state.device.volume(sel, out).unwrap_or(0.0);
+        let new_vol = db_to_vol(vol_to_db(cur) + delta_db).clamp(0.0, 2.0);
+        set_channel_volume(state, sel, out, new_vol);
+        notify_osc(state, OscOutbound::Volume(sel, out, new_vol));
     }
 }
 
 /// Same relative-delta grouping as `apply_grouped_volume`, for pan.
 fn apply_grouped_pan(state: &mut TuxMix, cid: ChannelId, out: usize, pan: i8) {
-    if state.selected.len() > 1 && state.selected.contains(&cid) {
-        let old = i16::from(state.device.pan(cid, out).unwrap_or(pan));
-        let delta = i16::from(pan) - old;
-        for sel in state.selected.clone() {
-            let cur = i16::from(state.device.pan(sel, out).unwrap_or(0));
-            let new = (cur + delta).clamp(-100, 100) as i8;
-            let _ = state.device.set_pan(sel, out, new);
-            notify_osc(state, OscOutbound::Pan(sel, out, new));
-        }
-    } else {
+    let others = propagation_set(state, cid, sidebar::GroupLink::Fader);
+    if others.is_empty() {
         let _ = state.device.set_pan(cid, out, pan);
         notify_osc(state, OscOutbound::Pan(cid, out, pan));
+        return;
+    }
+    let old = i16::from(state.device.pan(cid, out).unwrap_or(pan));
+    let delta = i16::from(pan) - old;
+    let _ = state.device.set_pan(cid, out, pan);
+    notify_osc(state, OscOutbound::Pan(cid, out, pan));
+    for sel in others {
+        let cur = i16::from(state.device.pan(sel, out).unwrap_or(0));
+        let new = (cur + delta).clamp(-100, 100) as i8;
+        let _ = state.device.set_pan(sel, out, new);
+        notify_osc(state, OscOutbound::Pan(sel, out, new));
     }
 }
 
@@ -996,7 +1199,6 @@ fn set_collapsed(state: &mut TuxMix, cid: ChannelId, target: bool) {
     } else {
         state.collapsed.remove(&cid);
     }
-    recompute_ui_scale(state);
 }
 
 /// `target = None` closes whatever's open; `Some((cid, kind))` opens that
@@ -1006,9 +1208,99 @@ fn set_flyout_open(state: &mut TuxMix, target: Option<(ChannelId, strip::FlyoutK
     state.flyout_open = target;
 }
 
+/// Cap on `TuxMix::undo_stack`/`redo_stack` — unbounded growth over a
+/// long session would otherwise hold one full `Scene` (every channel's
+/// full state) per mutating action forever.
+const UNDO_STACK_CAP: usize = 50;
+
+/// Whether `message` should push a pre-action snapshot onto
+/// `undo_stack` before being handled — a blacklist of messages that
+/// either don't touch device state at all (view/selection/animation/
+/// text-in-progress UI) or would flood the stack with one entry per
+/// event if included (`VolumeChanged` fires continuously during a fader
+/// drag; the drag's *start*, `FaderPressed`, is what actually captures
+/// the "before" state — deliberately not blacklisted). Defaults to
+/// "capture" for anything not explicitly listed, so a future `Message`
+/// variant that *does* mutate device state is undoable by default
+/// rather than silently missed.
+///
+/// Known, accepted gap: knob-driven values (`PanChanged`, `Gain`,
+/// `TrimChanged`, the EQ band params) have no distinct "drag start"
+/// message the way faders do, so a knob drag pushes one snapshot per
+/// tick rather than one per gesture — coarser undo than fader moves,
+/// not worth a `Knob` widget API change in this pass (see the sidebar
+/// implementation plan).
+///
+/// Also known: `undo_stack`/`redo_stack` hold `Scene`s, which only
+/// capture *device* state (`RmeDevice::capture_scene`) — sidebar-only
+/// concepts (group membership, which layout/snapshot slot is selected,
+/// panel collapse state) aren't part of a `Scene` at all, so those
+/// messages are excluded below not just to avoid noise but because
+/// capturing around them would be a no-op anyway.
+fn is_undoable(message: &Message) -> bool {
+    !matches!(
+        message,
+        Message::Tick
+            | Message::SetView(_)
+            | Message::QuickChannelSelected(_)
+            | Message::SelectOutput(_)
+            | Message::ModifiersChanged(_)
+            | Message::TabPressed
+            | Message::EscapePressed
+            | Message::WindowResized(_)
+            | Message::WheelZoom(_)
+            | Message::ZoomIn
+            | Message::ZoomOut
+            | Message::ZoomReset
+            | Message::VolumeChanged(..)
+            | Message::RangeCleared(_)
+            | Message::ToggleCollapse(_)
+            | Message::ToggleFlyout(..)
+            | Message::CloseFlyout
+            | Message::CollapseTick
+            | Message::SaveNow
+            | Message::EditStart(..)
+            | Message::EditChanged(_)
+            | Message::StripClicked(_)
+            | Message::ClearSelection
+            | Message::StripHovered(_)
+            | Message::OscReady(_)
+            | Message::OscCommand(_)
+            | Message::OscLog(_)
+            | Message::ToggleOscLog
+            | Message::ClearOscLog
+            | Message::ToggleDevicePanel
+            | Message::Undo
+            | Message::Redo
+            | Message::ToggleSidebarPanel(_)
+            | Message::ToggleSidebar
+            | Message::ToggleSkeletonPair(_)
+            | Message::SnapshotStore
+            | Message::GroupEditToggle
+            | Message::GroupLinkToggle(..)
+            | Message::GroupClear
+            | Message::LayoutClicked(_)
+            | Message::LayoutStore
+    )
+}
+
 pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
+    if is_undoable(&message) {
+        let scene = state.device.capture_scene();
+        state.undo_stack.push(scene);
+        if state.undo_stack.len() > UNDO_STACK_CAP {
+            state.undo_stack.remove(0);
+        }
+        state.redo_stack.clear();
+    }
     match message {
         Message::Tick => {
+            // Resize coalescing: if the last `Resized` of a drag landed
+            // inside the throttle window, flush it here so the width always
+            // settles (even if no further `Resized` arrives). 50 ms is well
+            // past `RESIZE_THROTTLE`, so this only ever catches the tail end
+            // of a drag.
+            apply_pending_resize(state);
             let _ = state.device.poll_events();
             // Follow the front panel's OUT selection (TotalMix
             // highlights the panel's current submix) — only when it
@@ -1099,6 +1391,16 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             };
         }
         Message::SetView(v) => state.view = v,
+        Message::WheelZoom(y) => {
+            // Only zoom on Ctrl+wheel; plain wheel keeps scrolling the
+            // hovered scrollable (which iced handles on its own).
+            if state.modifiers.contains(keyboard::Modifiers::CTRL) {
+                zoom(state, if y > 0.0 { ZOOM_STEP } else { -ZOOM_STEP });
+            }
+        }
+        Message::ZoomIn => zoom(state, ZOOM_STEP),
+        Message::ZoomOut => zoom(state, -ZOOM_STEP),
+        Message::ZoomReset => state.ui_scale = theme::SCALE_DEFAULT,
         Message::QuickChannelSelected(cid) => state.quick_channel = cid,
         Message::SelectOutput(i) => {
             state.sel_out = i;
@@ -1106,31 +1408,16 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             // flyout) dismisses whatever flyout is open — it did its job.
             set_flyout_open(state, None);
         }
-        Message::SceneNameChanged(s) => state.scene_name = s,
-        Message::SceneSave => {
-            let n = state.scene_name.trim().to_string();
-            if !n.is_empty() && save_scene_file(&n, &state.device.capture_scene()).is_ok() {
-                state.scene_name.clear();
-                state.scene_list = list_scene_files();
-            }
-        }
-        Message::SceneLoad(name) => {
-            if let Some(scene) = load_scene_file(&name) {
-                // Was previously `let _ = ...` — silently discarded a
-                // scene/device model mismatch (or any other apply
-                // failure) with no way for the user to ever find out
-                // why nothing happened. No toast/notification system
-                // exists yet, so a log line is the minimum fix that
-                // makes the failure observable at all.
-                if let Err(err) = state.device.apply_scene(&scene) {
-                    log::warn!("Failed to apply scene '{name}': {err}");
-                }
-            }
-        }
         Message::ModifiersChanged(m) => state.modifiers = m,
         Message::WindowResized(width) => {
-            state.window_width = width;
-            recompute_ui_scale(state);
+            // Coalesce: a live window drag fires `Resized` faster than the
+            // display can present. Stash the width and only rebuild/recompute
+            // when `RESIZE_THROTTLE` has elapsed since the last applied one,
+            // so the UI doesn't do N full rebuilds for N intermediate sizes
+            // that were never even rendered. The throttle is flushed by the
+            // next due resize or `Message::Tick` (above).
+            state.pending_resize_width = Some(width);
+            apply_pending_resize(state);
         }
         Message::EscapePressed => {
             if state.editing.is_some() {
@@ -1138,25 +1425,53 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::Mute(cid, m) => {
-            if state.selected.len() > 1 && state.selected.contains(&cid) {
-                for sel in state.selected.clone() {
-                    set_channel_mute(state, sel, m);
-                    notify_osc(state, OscOutbound::Mute(sel, m));
-                }
-            } else {
-                set_channel_mute(state, cid, m);
-                notify_osc(state, OscOutbound::Mute(cid, m));
+            // `propagation_set` covers both the pre-existing multi-select
+            // case and (new) any mute-linked group `cid` belongs to.
+            set_channel_mute(state, cid, m);
+            notify_osc(state, OscOutbound::Mute(cid, m));
+            for other in propagation_set(state, cid, sidebar::GroupLink::Mute) {
+                set_channel_mute(state, other, m);
+                notify_osc(state, OscOutbound::Mute(other, m));
             }
         }
         Message::Solo(cid, s) => {
-            if state.selected.len() > 1 && state.selected.contains(&cid) {
-                for sel in state.selected.clone() {
-                    set_channel_solo(state, sel, s);
-                    notify_osc(state, OscOutbound::Solo(sel, s));
+            set_channel_solo(state, cid, s);
+            notify_osc(state, OscOutbound::Solo(cid, s));
+            for other in propagation_set(state, cid, sidebar::GroupLink::Solo) {
+                set_channel_solo(state, other, s);
+                notify_osc(state, OscOutbound::Solo(other, s));
+            }
+        }
+        Message::GlobalMuteToggle => {
+            let to_mute: Vec<ChannelId> =
+                all_channel_ids(state).into_iter().filter(|&cid| !channel_is_muted(state, cid)).collect();
+            if to_mute.is_empty() {
+                for cid in std::mem::take(&mut state.last_globally_muted) {
+                    set_channel_mute(state, cid, false);
+                    notify_osc(state, OscOutbound::Mute(cid, false));
                 }
             } else {
-                set_channel_solo(state, cid, s);
-                notify_osc(state, OscOutbound::Solo(cid, s));
+                for &cid in &to_mute {
+                    set_channel_mute(state, cid, true);
+                    notify_osc(state, OscOutbound::Mute(cid, true));
+                }
+                state.last_globally_muted = to_mute;
+            }
+        }
+        Message::GlobalSoloToggle => {
+            let soloed: Vec<ChannelId> =
+                all_channel_ids(state).into_iter().filter(|&cid| channel_is_soloed(state, cid)).collect();
+            if soloed.is_empty() {
+                for cid in std::mem::take(&mut state.last_cleared_solos) {
+                    set_channel_solo(state, cid, true);
+                    notify_osc(state, OscOutbound::Solo(cid, true));
+                }
+            } else {
+                for &cid in &soloed {
+                    set_channel_solo(state, cid, false);
+                    notify_osc(state, OscOutbound::Solo(cid, false));
+                }
+                state.last_cleared_solos = soloed;
             }
         }
         Message::Phantom(idx, p) => {
@@ -1175,6 +1490,12 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 tuxmix_core::Sensitivity::Minus10dBV
             };
             let _ = state.device.set_sensitivity(idx, s);
+        }
+        Message::TrimChanged(idx, db) => {
+            let _ = state.device.set_trim(idx, db);
+        }
+        Message::TrimReset(idx) => {
+            let _ = state.device.set_trim(idx, 0.0);
         }
         Message::EqEnabled(idx, on) => {
             let _ = state.device.set_eq_enabled(idx, on);
@@ -1438,6 +1759,91 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::SpdifProfessionalChanged(v) => {
             let _ = state.device.set_spdif_professional(v);
         }
+
+        // ── Right sidebar ────────────────────────────────────────────
+        Message::Undo => {
+            if let Some(scene) = state.undo_stack.pop() {
+                state.redo_stack.push(state.device.capture_scene());
+                if let Err(e) = state.device.apply_scene(&scene) {
+                    log::warn!("Undo failed to apply scene: {e}");
+                }
+            }
+        }
+        Message::Redo => {
+            if let Some(scene) = state.redo_stack.pop() {
+                state.undo_stack.push(state.device.capture_scene());
+                if let Err(e) = state.device.apply_scene(&scene) {
+                    log::warn!("Redo failed to apply scene: {e}");
+                }
+            }
+        }
+        Message::ToggleSidebarPanel(panel) => state.sidebar_panels_open.toggle(panel),
+        Message::ToggleSidebar => state.sidebar_open = !state.sidebar_open,
+        Message::ToggleSkeletonPair(pair) => state.skeleton_pairs.toggle(pair),
+        Message::SnapshotClicked(n) => {
+            state.active_snapshot = Some(n as usize);
+            if let Some(scene) = load_scene_file(&format!("Mix {n}")) {
+                if let Err(e) = state.device.apply_scene(&scene) {
+                    log::warn!("Failed to apply snapshot 'Mix {n}': {e}");
+                }
+            }
+        }
+        Message::SnapshotStore => {
+            if let Some(n) = state.active_snapshot {
+                if let Err(e) =
+                    save_scene_file(&format!("Mix {n}"), &state.device.capture_scene())
+                {
+                    log::warn!("Failed to store snapshot 'Mix {n}': {e}");
+                }
+            }
+        }
+        Message::GroupEditToggle => state.group_editing = !state.group_editing,
+        Message::GroupLinkToggle(idx, link) => {
+            if let Some(g) = state.groups.get_mut(idx) {
+                if state.group_editing {
+                    // Assign the current multi-selection as this
+                    // group's membership and engage this link type —
+                    // the existing Ctrl/Shift-click selection is the
+                    // whole "picker UI" here, deliberately, rather than
+                    // a bespoke channel-assignment dialog.
+                    g.members = state.selected.iter().copied().collect();
+                    match link {
+                        sidebar::GroupLink::Mute => g.mute_linked = true,
+                        sidebar::GroupLink::Solo => g.solo_linked = true,
+                        sidebar::GroupLink::Fader => g.fader_linked = true,
+                    }
+                } else {
+                    match link {
+                        sidebar::GroupLink::Mute => g.mute_linked = !g.mute_linked,
+                        sidebar::GroupLink::Solo => g.solo_linked = !g.solo_linked,
+                        sidebar::GroupLink::Fader => g.fader_linked = !g.fader_linked,
+                    }
+                }
+            }
+        }
+        Message::GroupClear => {
+            state.groups = Default::default();
+            state.group_editing = false;
+        }
+        Message::LayoutClicked(n) => {
+            state.active_layout = Some(n as usize);
+            if let Some(set) = state.layouts.get((n - 1) as usize).cloned().flatten() {
+                state.collapsed = set;
+                // Bulk recall snaps instantly (matching Scene recall,
+                // which doesn't animate faders either) — clear any
+                // in-flight collapse animations so a stale one can't
+                // fight the new target state.
+                state.collapse_anim.clear();
+            }
+        }
+        Message::LayoutStore => {
+            if let Some(n) = state.active_layout {
+                state.layouts[(n - 1) as usize] = Some(state.collapsed.clone());
+                if let Err(e) = crate::layouts::save_layout_file(n as u8, &state.collapsed) {
+                    log::warn!("Failed to store layout {n}: {e}");
+                }
+            }
+        }
     }
     Task::none()
 }
@@ -1468,13 +1874,40 @@ fn handle_global_event(
     _id: window::Id,
 ) -> Option<Message> {
     match event {
-        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, .. }) => match key {
-            Key::Named(keyboard::key::Named::Tab) => Some(Message::TabPressed),
-            Key::Named(keyboard::key::Named::Escape) => Some(Message::EscapePressed),
-            _ => None,
-        },
+        iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            // Ctrl+= / Ctrl+- / Ctrl+0 — manual zoom. Accept "=" and "+"
+            // (shifted/unshifted) and "0"; requires Ctrl.
+            if modifiers.contains(keyboard::Modifiers::CTRL) {
+                if let Key::Character(c) = &key {
+                    let zoom = match c.as_str() {
+                        "=" | "+" => Some(Message::ZoomIn),
+                        "-" | "_" => Some(Message::ZoomOut),
+                        "0" => Some(Message::ZoomReset),
+                        _ => None,
+                    };
+                    if zoom.is_some() {
+                        return zoom;
+                    }
+                }
+            }
+            match key {
+                Key::Named(keyboard::key::Named::Tab) => Some(Message::TabPressed),
+                Key::Named(keyboard::key::Named::Escape) => Some(Message::EscapePressed),
+                _ => None,
+            }
+        }
         iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
             Some(Message::ModifiersChanged(m))
+        }
+        iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta, .. }) => {
+            // Reported every wheel tick; `update` decides whether it's a
+            // zoom (Ctrl held) or leaves it alone (plain scroll handled by
+            // the widget tree).
+            let y = match delta {
+                iced::mouse::ScrollDelta::Lines { y, .. } => y,
+                iced::mouse::ScrollDelta::Pixels { y, .. } => y,
+            };
+            Some(Message::WheelZoom(y))
         }
         iced::Event::Window(window::Event::Resized(size)) => {
             Some(Message::WindowResized(size.width))
@@ -1504,7 +1937,10 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
     // indistinguishable on screen from a genuinely non-interactive one.
     // That's what made `page()`'s click-to-clear-selection silently miss
     // every click below the shortest section's natural content height.
-    let mut col = column![top, content]
+    let body = row![content, sidebar::sidebar(state)]
+        .width(Length::Fill)
+        .height(Length::Fill);
+    let mut col = column![top, body]
         .width(Length::Fill)
         .height(Length::Fill);
     if state.show_osc_log {
@@ -1680,6 +2116,9 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
             value: settings.pitch_percent,
             range: (-5.0, 5.0),
             label: format!("{:+.1}%", settings.pitch_percent),
+            arc_from_center: true,
+            interactive: true,
+            log_scale: false,
             modifiers,
             scale,
             on_change: Box::new(|v| Message::PitchChanged(v.clamp(-5.0, 5.0))),
@@ -1692,6 +2131,9 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
             value: settings.width,
             range: (-1.0, 1.0),
             label: format!("{:+.2}", settings.width),
+            arc_from_center: true,
+            interactive: true,
+            log_scale: false,
             modifiers,
             scale,
             on_change: Box::new(|v| Message::WidthChanged(v.clamp(-1.0, 1.0))),
@@ -1707,21 +2149,15 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
             .size(theme::TEXT_XS * scale),
         spdif_toggle("MS Proc", settings.ms_proc, Message::MsProcChanged),
         spdif_toggle("AN 1>2", settings.an12, Message::An12Changed),
-        spdif_toggle(
-            "Input Link",
-            settings.input_link,
-            Message::InputLinkChanged
-        ),
+        spdif_toggle("Input Link", settings.input_link, Message::InputLinkChanged),
     ]
     .spacing(theme::SPACE_MD * scale)
     .align_y(iced::Alignment::Center);
 
     container(
-        column![
-            header, clock_row, rate_row, spdif_row, pitch_row, toggle_row
-        ]
-        .spacing(theme::SPACE_LG * scale)
-        .width(Length::Fill),
+        column![header, clock_row, rate_row, spdif_row, pitch_row, toggle_row]
+            .spacing(theme::SPACE_LG * scale)
+            .width(Length::Fill),
     )
     .style(theme::top_bar)
     .padding(theme::SPACE_MD * scale)
@@ -1794,34 +2230,15 @@ fn v_divider<'a>(scale: f32) -> Element<'a, Message> {
 
 fn top_bar(state: &TuxMix) -> Element<'_, Message> {
     let scale = state.ui_scale;
-    let status_color = if state.device.is_mock() {
-        theme::YSIM
-    } else {
-        theme::GCONN
-    };
-    let status_label = if state.device.is_mock() {
-        "Simulated"
-    } else {
-        "Connected"
-    };
 
-    // Primary identity: brand + connected device. The one element in the
-    // bar that's meant to be visually loud — everything else is a tool,
-    // this is "what am I even looking at".
-    let device_chip = chip(
-        row![
-            text("●").color(status_color).size(theme::TEXT_SM * scale),
-            text(state.device.model_name())
-                .color(theme::TEXT_PRIMARY)
-                .size(theme::TEXT_LG * scale),
-            text(status_label)
-                .color(status_color)
-                .size(theme::TEXT_MD * scale),
-        ]
-        .spacing(theme::SPACE_MD)
-        .align_y(iced::Alignment::Center),
-        scale,
-    );
+    // The device identity chip (name + connected/simulated status) used
+    // to live here — removed as a straight duplicate now that the
+    // sidebar's own device chip shows the same thing (see
+    // `sidebar::device_chip`, which absorbed the status dot/label this
+    // one used to carry). Everything else in this bar (view tabs, the
+    // Scene/Submix/Clock session tools) has no sidebar equivalent, so it
+    // stays — TotalMix's own control strip doesn't replace *this* bar's
+    // job, and neither does ours.
 
     // View switch: a plain segmented toggle, not a chip — it's navigation,
     // not a status readout, so it shouldn't carry the same visual weight
@@ -1844,32 +2261,14 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
     ]
     .spacing(theme::SPACE_TIGHT);
 
-    // Secondary session tools: scene / submix / clock. These used to be
-    // three separate chips carrying the same visual weight as the device
-    // identity chip — merged into one quieter toolbar so the bar reads as
-    // "one important thing, one toolbar" instead of five equal boxes.
-    let scene_list = state.scene_list.clone();
+    // Secondary session tools: submix / clock. Scene save/load used to
+    // live here too — moved into the sidebar's Snapshots panel (see
+    // `sidebar::snapshots_panel`'s own comment), since it's the exact
+    // same `save_scene_file`/`load_scene_file` mechanism as the Mix 1-8
+    // slots there, just with free-form names instead of fixed ones —
+    // no reason to keep two separate homes for one feature.
     let session = chip(
         row![
-            text("Scene")
-                .color(theme::TEXT_SEC)
-                .size(theme::TEXT_XS * scale),
-            iced::widget::text_input("name", &state.scene_name)
-                .on_input(Message::SceneNameChanged)
-                .on_submit(Message::SceneSave)
-                .style(theme::text_input)
-                .width(Length::Fixed(90.0 * scale))
-                .size(theme::TEXT_MD * scale),
-            iced::widget::button(text("Save").size(theme::TEXT_MD * scale))
-                .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
-                .style(theme::plain_button)
-                .on_press(Message::SceneSave),
-            pick_list(scene_list, None::<String>, Message::SceneLoad)
-                .placeholder("load...")
-                .style(theme::pick_list)
-                .menu_style(theme::menu)
-                .text_size(theme::TEXT_MD * scale),
-            v_divider(scale),
             text("Submix")
                 .color(theme::TEXT_SEC)
                 .size(theme::TEXT_XS * scale),
@@ -1902,7 +2301,6 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
         text("TuxMix")
             .color(theme::ACCENT)
             .size(theme::TEXT_XL * scale),
-        device_chip,
         tab_toggle,
         // A small flexible pusher rather than the whole remaining width —
         // `session` below claims the bulk of it (`FillPortion(20)`), so
@@ -1989,6 +2387,8 @@ fn strip_params<'a>(
         sensitivity_plus4: false,
         has_eq: false,
         eq_enabled: false,
+        has_trim: false,
+        trim: 0.0,
         loopback: false,
         stereo_linked: false,
         open_flyout: state.flyout_open.and_then(|(c, k)| (c == cid).then_some(k)),
@@ -2020,7 +2420,7 @@ fn strip_params<'a>(
                     .get(i)
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
-                meter_available: state.device.has_input_meters(),
+                meter_available: state.device.has_input_meter(i),
                 has_48v,
                 has_pad: has_48v,
                 phantom: ch.phantom,
@@ -2032,6 +2432,8 @@ fn strip_params<'a>(
                 sensitivity_plus4: ch.sensitivity == Some(Sensitivity::Plus4dBu),
                 has_eq: ch.eq.is_some(),
                 eq_enabled: ch.eq.is_some_and(|e| e.enabled),
+                has_trim: true,
+                trim: ch.trim,
                 stereo_linked: state.device.input_pair_linked(i / 2),
                 mute: ch.mute,
                 solo: ch.solo,
@@ -2087,121 +2489,45 @@ fn strip_params<'a>(
     }
 }
 
-/// A row's `scale == 1.0` width, split into the part that scales with
-/// `ui_scale` (every strip's own base width — `strip::full_width`/
-/// `COLLAPSED_W`, honoring current collapse state) and the part that
-/// doesn't: the `SPACE_MD` gaps `mixer_view`'s own `row![].spacing(SPACE_MD)`
-/// puts between items, and (when `types` is given — Hardware Inputs only)
-/// the 1px rule + its own gap inserted between channel-type groups.
-/// `recompute_ui_scale` needs them kept apart to solve
-/// `scaling * scale + fixed <= available_width` for `scale` — collapsing
-/// them into one total and solving `available_width / (scaling + fixed)`
-/// looks reasonable but answers the wrong equation (it implicitly scales
-/// the gaps too, which don't actually scale), landing a few pixels wider
-/// than `available_width` and popping an unwanted horizontal scrollbar.
-/// Mirrors `mixer_view`'s own width bookkeeping for its input/pb/out
-/// loops; kept as a separate, widget-free computation (rather than
-/// factored out of those loops, which build widgets at the same time) so
-/// `recompute_ui_scale` can solve for the scale that makes a row fit,
-/// instead of only checking whether the *current* scale already does.
-fn row_width_parts(
-    state: &TuxMix,
-    n: usize,
-    cid_at: impl Fn(usize) -> ChannelId,
-    types: Option<&[ChannelType]>,
-) -> (f32, f32) {
-    let mut scaling = 0.0f32;
-    let mut fixed = 0.0f32;
-    let mut item_count = 0usize;
-    let mut prev_type: Option<ChannelType> = None;
-    for i in 0..n {
-        if let Some(types) = types {
-            let t = types[i];
-            if prev_type.is_some_and(|p| p != t) {
-                fixed += 1.0;
-                item_count += 1;
-            }
-            prev_type = Some(t);
-        }
-        let cid = cid_at(i);
-        scaling += if state.collapsed.contains(&cid) {
-            strip::COLLAPSED_W
-        } else {
-            strip::full_width(cid)
-        };
-        item_count += 1;
-    }
-    fixed += item_count.saturating_sub(1) as f32 * theme::SPACE_MD;
-    (scaling, fixed)
-}
+/// Minimum interval between two applied window-resize updates. A live window
+/// drag fires `Resized` events at pointer/mouse rate — often several between
+/// two display frames — and each one that mutates state forces a full view
+/// rebuild. Throttling to ~one per frame stops the UI from doing N rebuilds
+/// for N intermediate widths that most of them never even got shown; the
+/// latest width is stashed and applied when the window elapses (see
+/// `apply_pending_resize`). ~16 ms keeps it at or just under display-refresh
+/// cadence without feeling laggy.
+const RESIZE_THROTTLE: Duration = Duration::from_millis(16);
 
-/// The largest scale that keeps `scaling * scale + fixed` within `limit`,
-/// or `None` if there's nothing to scale (`scaling <= 0`, an empty row) —
-/// `recompute_ui_scale` takes the smallest of these across every row/axis
-/// it cares about, since that's the one constraint that's actually
-/// binding.
-fn max_scale_to_fit(scaling: f32, fixed: f32, limit: f32) -> Option<f32> {
-    (scaling > 0.0).then(|| (limit - fixed) / scaling)
-}
-
-/// Recomputes `ui_scale` so every strip row (Hardware Inputs, Software
-/// Playback, Hardware Outputs) fits the window without horizontal
-/// scrolling — TotalMix-2.0-style: adaptive scale on resize replaces
-/// manual zoom entirely, so this is the *only* place `ui_scale` ever
-/// changes (called from `Message::WindowResized` and from
-/// `set_collapsed`, the two things that can change a row's total width).
-///
-/// Width-only, deliberately — an earlier version also solved against
-/// `window_height` so Hardware Outputs would never need a vertical
-/// scroll, but that meant a wide-but-short window could shrink the scale
-/// enough to leave visibly dead space on the sides (the one axis it
-/// *wasn't* solving for stops filling the window once a different axis
-/// becomes the binding constraint). Width alone always fills the window
-/// edge to edge, by construction; a short window scrolls vertically to
-/// reach Hardware Outputs instead — the page's own vertical scrollable
-/// (see `page()`) already exists for exactly this, and scrolling for
-/// content that doesn't fit is normal, expected behavior, not something
-/// to design around.
-///
-/// Solves each row independently (`max_scale_to_fit`) and takes the
-/// smallest result — the one row that's actually binding — clamped to
-/// `SCALE_MIN`/`SCALE_MAX`.
-fn recompute_ui_scale(state: &mut TuxMix) {
-    let input_types: Vec<ChannelType> = state
-        .device
-        .inputs()
-        .iter()
-        .map(|c| c.channel_type)
-        .collect();
-    let rows = [
-        row_width_parts(
-            state,
-            state.device.inputs().len(),
-            ChannelId::Input,
-            Some(&input_types),
-        ),
-        row_width_parts(
-            state,
-            state.device.playbacks().len(),
-            ChannelId::Playback,
-            None,
-        ),
-        row_width_parts(state, state.device.outputs().len(), ChannelId::Output, None),
-    ];
-
-    // Same page padding `responsive_row`'s `available_width` uses.
-    let available_width = (state.window_width - 2.0 * theme::SPACE_XL - 4.0).max(1.0);
-
-    let scale = rows
-        .into_iter()
-        .filter_map(|(scaling, fixed)| max_scale_to_fit(scaling, fixed, available_width))
-        .fold(f32::INFINITY, f32::min);
-
-    state.ui_scale = if scale.is_finite() {
-        scale.clamp(theme::SCALE_MIN, theme::SCALE_MAX)
-    } else {
-        theme::SCALE_DEFAULT
+/// Apply the stashed resize width to `window_width`/`ui_scale`, but at most
+/// once per `RESIZE_THROTTLE` — see `Message::WindowResized` and the const
+/// above for why. No-op when there's nothing pending or the throttle window
+/// hasn't elapsed yet.
+fn apply_pending_resize(state: &mut TuxMix) {
+    let Some(width) = state.pending_resize_width else {
+        return;
     };
+    let due = match state.last_resize_applied {
+        Some(t) => t.elapsed() >= RESIZE_THROTTLE,
+        None => true,
+    };
+    if !due {
+        return;
+    }
+    state.pending_resize_width = None;
+    state.last_resize_applied = Some(Instant::now());
+    state.window_width = width;
+}
+
+/// How much one zoom step changes `ui_scale` (a Ctrl+molette notch, or one
+/// Ctrl+= / Ctrl+- press). The scale is decoupled from window size — fixed
+/// geometry, rows and pages scroll — so this is the only thing that moves it.
+const ZOOM_STEP: f32 = 0.1;
+
+/// Moves `ui_scale` by `delta`, clamped to the manual-zoom range
+/// (`SCALE_MIN`..`SCALE_MAX`). `ZoomReset` sets `SCALE_DEFAULT` directly.
+fn zoom(state: &mut TuxMix, delta: f32) {
+    state.ui_scale = (state.ui_scale + delta).clamp(theme::SCALE_MIN, theme::SCALE_MAX);
 }
 
 /// A strip's on-screen width at the current zoom, matching whatever
@@ -2310,6 +2636,9 @@ fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, M
                     // Gain is tracked in dB (0-65 Mic / 0-18 Instr),
                     // 1 dB steps, like TotalMix.
                     label: p.gain.to_string(),
+                    arc_from_center: false,
+                    interactive: true,
+                    log_scale: false,
                     modifiers: p.modifiers,
                     scale,
                     on_change: Box::new(move |v| Message::Gain(
@@ -2355,14 +2684,73 @@ fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, M
         } else {
             "-10dBV"
         };
-        col = col.push(
-            button(text(label).size(theme::TEXT_SM * scale))
-                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
-                .width(Length::Fill)
-                .style(theme::plain_button)
-                .on_press(Message::Sensitivity(idx, !p.sensitivity_plus4)),
-        );
+        // Neither real backend actually has this control yet
+        // (`RmeDevice::set_sensitivity` errors on both ALSA and USB —
+        // see `babyface.rs`/`usb.rs`'s own doc comments) — dimmed and
+        // unpressable on real hardware, same treatment as this
+        // session's other confirmed-N/A controls (Output balance,
+        // `meters: post fx/RMS`). Mock keeps it live since it's the
+        // only backend that actually implements the switch, so the
+        // wiring stays exercisable without real hardware.
+        if state.device.is_mock() {
+            col = col.push(
+                button(text(label).size(theme::TEXT_SM * scale))
+                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+                    .width(Length::Fill)
+                    .style(theme::plain_button)
+                    .on_press(Message::Sensitivity(idx, !p.sensitivity_plus4)),
+            );
+        } else {
+            let dim = Color { a: 0.4, ..theme::TEXT_SEC };
+            col = col.push(
+                button(text(label).size(theme::TEXT_SM * scale).color(dim))
+                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+                    .width(Length::Fill)
+                    .style(theme::plain_button),
+            );
+        }
     }
+
+    container(col)
+        .padding(theme::SPACE_SM * scale)
+        .width(Length::Fixed(width))
+        .style(theme::top_bar)
+        .clip(true)
+        .into()
+}
+
+/// The Trim flyout's content: a single knob, -65..+6 dB on the fader's
+/// own master curve (see `RmeDevice::set_trim`). Every hardware input
+/// gets this trigger (`StripParams::has_trim`, unconditional — unlike
+/// Gain, which is Mic/Instrument-only), so unlike `eq_popover` there's
+/// no `Option`-shaped hardware gate to check here, just the channel kind.
+/// Same "pushes the row" shape as `settings_popover`/`eq_popover`.
+fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message> {
+    let scale = state.ui_scale;
+    let ChannelId::Input(idx) = cid else {
+        return container(iced::widget::Space::new()).into();
+    };
+    let modifiers = state.modifiers;
+    let trim = state.device.inputs()[idx].trim;
+
+    let col = column![
+        text("Trim").size(theme::TEXT_SM * scale).color(theme::TEXT_SEC),
+        container(knob(Knob {
+            value: trim,
+            range: (-65.0, 6.0),
+            label: format!("{trim:+.1}"),
+            arc_from_center: false,
+            interactive: true,
+            log_scale: false,
+            modifiers,
+            scale,
+            on_change: Box::new(move |v| Message::TrimChanged(idx, v)),
+            on_reset: Box::new(move || Message::TrimReset(idx)),
+        }))
+        .width(Length::Fill)
+        .center_x(Length::Fill),
+    ]
+    .spacing(theme::SPACE_SM * scale);
 
     container(col)
         .padding(theme::SPACE_SM * scale)
@@ -2437,6 +2825,9 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
                         value: b.freq_hz as f32,
                         range: (20.0, 20_000.0),
                         label: format!("{}Hz", b.freq_hz),
+                        arc_from_center: false,
+                        interactive: true,
+                        log_scale: true,
                         modifiers,
                         scale,
                         on_change: Box::new(move |v| {
@@ -2454,9 +2845,16 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
                         value: b.q,
                         range: (0.05, 10.0),
                         label: format!("{:.2}", b.q),
+                        arc_from_center: false,
+                        interactive: true,
+                        log_scale: false,
                         modifiers,
                         scale,
-                        on_change: Box::new(move |v| Message::EqBandQ(idx, band, v.clamp(0.05, 10.0))),
+                        on_change: Box::new(move |v| Message::EqBandQ(
+                            idx,
+                            band,
+                            v.clamp(0.05, 10.0)
+                        )),
                         on_reset: Box::new(move || Message::EqBandQ(idx, band, 0.7)),
                     }),
                     "Band Q",
@@ -2469,6 +2867,9 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
                         value: b.gain_db,
                         range: (-24.0, 24.0),
                         label: format!("{:+.1}", b.gain_db),
+                        arc_from_center: true,
+                        interactive: true,
+                        log_scale: false,
                         modifiers,
                         scale,
                         on_change: Box::new(move |v| {
@@ -2498,6 +2899,9 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
                 value: eq.low_cut_freq_hz as f32,
                 range: (20.0, 20_000.0),
                 label: format!("{}Hz", eq.low_cut_freq_hz),
+                arc_from_center: false,
+                interactive: true,
+                log_scale: true,
                 modifiers,
                 scale,
                 on_change: Box::new(move |v| {
@@ -2603,35 +3007,28 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
     // groups same-type channels together), so iterating by pair instead
     // of by individual channel doesn't change where the type dividers
     // land.
+    // No channel-type dividers — used to insert a 1px `rule::vertical`
+    // between channel-type groups (Mic/Instrument/Line/ADAT), which read
+    // as a wider gap there (`SPACE_MD` + the rule + `SPACE_MD`, ~13px)
+    // than between two strips of the same type (`SPACE_MD` alone, ~6px).
+    // The user caught the inconsistency directly, comparing against
+    // Software Playback/Hardware Outputs (see their own comment below —
+    // neither ever had dividers, so they were already uniform): removed
+    // so every gap on every row is the same `SPACE_MD`, everywhere.
     let mut input_strips = row![].spacing(theme::SPACE_MD);
     let mut input_width = 0.0f32;
     let mut input_item_count = 0usize;
     let mut input_open_x: Option<f32> = None;
-    let mut prev_type: Option<ChannelType> = None;
     let n_input_pairs = state.device.inputs().len() / 2;
     for pair in 0..n_input_pairs {
         let l = pair * 2;
-        let ch_type = state.device.inputs()[l].channel_type;
-        if prev_type.is_some_and(|t| t != ch_type) {
-            // `rule::vertical` hardcodes `height: Length::Fill` with no way
-            // to override it — inside this row (itself `Length::Shrink`,
-            // sized to its tallest strip), that Fill child was pulling the
-            // *entire row* up to whatever space the window happened to
-            // have, leaving a large empty gap below Hardware Inputs on any
-            // window taller than its content. Wrapping it in a
-            // `Length::Shrink` container stops the Fill from escaping
-            // upward — it collapses to the container's own (content-sized)
-            // height instead of the whole window's.
-            input_strips = input_strips
-                .push(container(iced::widget::rule::vertical(1)).height(Length::Shrink));
-            input_width += 1.0;
-            input_item_count += 1;
-        }
-        prev_type = Some(ch_type);
-
         let linked = state.device.input_pair_linked(pair);
         let pair_channels = [l, l + 1];
-        let shown: &[usize] = if linked { &pair_channels[..1] } else { &pair_channels[..] };
+        let shown: &[usize] = if linked {
+            &pair_channels[..1]
+        } else {
+            &pair_channels[..]
+        };
         for &ch_idx in shown {
             let cid = ChannelId::Input(ch_idx);
             let mut params = strip_params(state, cid, state.sel_out);
@@ -2673,6 +3070,17 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                     row![strip_widget, eq_popover(state, cid, panel_w)].spacing(theme::SPACE_MD),
                 );
                 item_width += panel_w + theme::SPACE_MD;
+            } else if state.flyout_open == Some((cid, strip::FlyoutKind::Trim)) {
+                // One knob — reuses the Route flyout's own fixed width
+                // rather than a third bespoke constant; Settings' "match
+                // the strip's own width" doesn't apply here since there's
+                // no strip-width-scaling content (no button rows) to fit.
+                let panel_w = strip::FLYOUT_W;
+                input_strips = input_strips.push(
+                    row![strip_widget, trim_popover(state, cid, panel_w)]
+                        .spacing(theme::SPACE_MD),
+                );
+                item_width += panel_w + theme::SPACE_MD;
             } else {
                 input_strips = input_strips.push(strip_widget);
             }
@@ -2682,8 +3090,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // Gaps placed so far (`item_count - 1`, spacing is between
                 // items) plus the content accumulated up to and including this
                 // strip is exactly its right edge on screen.
-                input_open_x =
-                    Some(input_width + (input_item_count - 1) as f32 * theme::SPACE_MD);
+                input_open_x = Some(input_width + (input_item_count - 1) as f32 * theme::SPACE_MD);
             }
         }
     }
@@ -2699,7 +3106,11 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
         let l = pair * 2;
         let linked = state.device.playback_linked(pair);
         let pair_channels = [l, l + 1];
-        let shown: &[usize] = if linked { &pair_channels[..1] } else { &pair_channels[..] };
+        let shown: &[usize] = if linked {
+            &pair_channels[..1]
+        } else {
+            &pair_channels[..]
+        };
         for &ch_idx in shown {
             let cid = ChannelId::Playback(ch_idx);
             let mut params = strip_params(state, cid, state.sel_out);
@@ -2742,7 +3153,11 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
         let l = pair * 2;
         let linked = state.device.output_linked(pair);
         let pair_channels = [l, l + 1];
-        let shown: &[usize] = if linked { &pair_channels[..1] } else { &pair_channels[..] };
+        let shown: &[usize] = if linked {
+            &pair_channels[..1]
+        } else {
+            &pair_channels[..]
+        };
         for &ch_idx in shown {
             let cid = ChannelId::Output(ch_idx);
             let mut params = strip_params(state, cid, state.sel_out);
@@ -2906,110 +3321,51 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
 
 #[cfg(test)]
 mod tests {
-    use super::{max_scale_to_fit, new, recompute_ui_scale, row_width_parts, MeterAnim};
-    use tuxmix_core::{ChannelId, RmeDevice};
-
-    fn widest_row_width_parts(state: &super::TuxMix) -> (f32, f32) {
-        let input_types: Vec<_> = state
-            .device
-            .inputs()
-            .iter()
-            .map(|c| c.channel_type)
-            .collect();
-        [
-            row_width_parts(
-                state,
-                state.device.inputs().len(),
-                ChannelId::Input,
-                Some(&input_types),
-            ),
-            row_width_parts(
-                state,
-                state.device.playbacks().len(),
-                ChannelId::Playback,
-                None,
-            ),
-            row_width_parts(state, state.device.outputs().len(), ChannelId::Output, None),
-        ]
-        .into_iter()
-        .max_by(|a, b| (a.0 + a.1).total_cmp(&(b.0 + b.1)))
-        .unwrap()
-    }
+    use super::{
+        all_channel_ids, all_channels_muted, any_channel_soloed, apply_pending_resize,
+        channel_is_muted, channel_is_soloed, new, update, zoom, ChannelId, MeterAnim, Message,
+        ZOOM_STEP,
+    };
+    use crate::sidebar;
+    use std::collections::HashSet;
+    use tuxmix_core::RmeDevice;
 
     #[test]
-    fn scale_clamps_to_min_when_window_is_very_narrow() {
+    fn zoom_in_steps_up_from_default() {
         let mut state = new(true, None, None);
-        state.window_width = 50.0;
-        recompute_ui_scale(&mut state);
-        assert_eq!(state.ui_scale, crate::theme::SCALE_MIN);
-    }
-
-    #[test]
-    fn scale_clamps_to_max_when_window_is_very_wide() {
-        let mut state = new(true, None, None);
-        state.window_width = 20_000.0;
-        recompute_ui_scale(&mut state);
-        assert_eq!(state.ui_scale, crate::theme::SCALE_MAX);
-    }
-
-    #[test]
-    fn width_scale_exactly_fits_the_widest_row_at_the_solved_boundary() {
-        let mut state = new(true, None, None);
-        let (scaling, fixed) = widest_row_width_parts(&state);
-        // Inverse of `recompute_ui_scale`'s own `available_width` math —
-        // the exact window width that makes `scale == 1.0` the answer.
-        state.window_width = scaling + fixed + 2.0 * crate::theme::SPACE_XL + 4.0;
-
-        recompute_ui_scale(&mut state);
+        assert_eq!(state.ui_scale, crate::theme::SCALE_DEFAULT);
+        zoom(&mut state, ZOOM_STEP);
         assert!(
-            (state.ui_scale - crate::theme::SCALE_DEFAULT).abs() < 0.01,
-            "expected ~{}, got {}",
-            crate::theme::SCALE_DEFAULT,
+            (state.ui_scale - (crate::theme::SCALE_DEFAULT + ZOOM_STEP)).abs() < 1e-6,
+            "one zoom-in should add exactly ZOOM_STEP: {}",
             state.ui_scale
         );
     }
 
     #[test]
-    fn scale_grows_monotonically_with_window_width() {
+    fn zoom_clamps_to_min_and_max() {
         let mut state = new(true, None, None);
-        state.window_width = 600.0;
-        recompute_ui_scale(&mut state);
-        let narrow = state.ui_scale;
-
-        state.window_width = 1600.0;
-        recompute_ui_scale(&mut state);
-        let wide = state.ui_scale;
-
-        assert!(
-            wide > narrow,
-            "wider window should yield a larger scale: {narrow} vs {wide}"
-        );
+        for _ in 0..200 {
+            zoom(&mut state, -ZOOM_STEP);
+        }
+        assert_eq!(state.ui_scale, crate::theme::SCALE_MIN);
+        for _ in 0..400 {
+            zoom(&mut state, ZOOM_STEP);
+        }
+        assert_eq!(state.ui_scale, crate::theme::SCALE_MAX);
     }
 
     #[test]
-    fn max_scale_to_fit_is_none_for_an_empty_row() {
-        assert_eq!(max_scale_to_fit(0.0, 10.0, 500.0), None);
-    }
-
-    #[test]
-    fn collapsing_a_strip_shrinks_the_row_it_belongs_to() {
-        let state = new(true, None, None);
-        let (before, _) =
-            row_width_parts(&state, state.device.inputs().len(), ChannelId::Input, None);
-
-        let mut collapsed_state = new(true, None, None);
-        collapsed_state.collapsed.insert(ChannelId::Input(0));
-        let (after, _) = row_width_parts(
-            &collapsed_state,
-            collapsed_state.device.inputs().len(),
-            ChannelId::Input,
-            None,
-        );
-
-        assert!(
-            after < before,
-            "collapsing a strip should shrink the row's total scaling width: {before} vs {after}"
-        );
+    fn window_resize_does_not_change_the_zoom() {
+        // The whole point of fixed geometry: a resize must NOT rescale.
+        // `zoom` is the only thing that moves `ui_scale`; a resize just
+        // updates `window_width` (see `apply_pending_resize`).
+        let mut state = new(true, None, None);
+        let before = state.ui_scale;
+        state.pending_resize_width = Some(700.0);
+        apply_pending_resize(&mut state);
+        assert_eq!(state.ui_scale, before);
+        assert_eq!(state.window_width, 700.0);
     }
 
     #[test]
@@ -3053,5 +3409,283 @@ mod tests {
         m.step(0.0);
         m.step(1.0); // new peak — release curve should restart from here
         assert_eq!(m.release_elapsed_ms, 0.0);
+    }
+
+    // ── Right sidebar: Undo/Redo, Groups, Layout ──────────────────────
+    // Interactive click-testing (`--mock` + synthetic clicks) turned out
+    // to be unreliable in this sandbox for this pass — see the
+    // `project_bus_redesign_2026_09` memory. These exercise the same
+    // `update()` codepath a real click would, directly, which needs no
+    // window/focus/click-coordinate cooperation from the environment.
+
+    #[test]
+    fn undo_reverts_a_mute() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(0);
+        let _ = update(&mut state, Message::Mute(cid, true));
+        assert!(state.device.inputs()[0].mute);
+        let _ = update(&mut state, Message::Undo);
+        assert!(!state.device.inputs()[0].mute, "undo should revert the mute");
+    }
+
+    #[test]
+    fn redo_reapplies_after_undo() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(0);
+        let _ = update(&mut state, Message::Mute(cid, true));
+        let _ = update(&mut state, Message::Undo);
+        assert!(!state.device.inputs()[0].mute);
+        let _ = update(&mut state, Message::Redo);
+        assert!(state.device.inputs()[0].mute, "redo should reapply the mute");
+    }
+
+    #[test]
+    fn a_new_mutating_action_clears_the_redo_stack() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(0);
+        let _ = update(&mut state, Message::Mute(cid, true));
+        let _ = update(&mut state, Message::Undo);
+        assert!(!state.redo_stack.is_empty(), "sanity: undo should have populated redo");
+        let _ = update(&mut state, Message::Mute(cid, true));
+        assert!(
+            state.redo_stack.is_empty(),
+            "a fresh mutating action should invalidate the old redo history"
+        );
+    }
+
+    #[test]
+    fn ui_only_messages_do_not_grow_the_undo_stack() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::Tick);
+        let _ = update(&mut state, Message::StripHovered(Some(ChannelId::Input(0))));
+        assert!(
+            state.undo_stack.is_empty(),
+            "Tick/hover are UI-only and shouldn't be undoable steps"
+        );
+    }
+
+    // `Input(0)`/`Input(4)` deliberately — channels 0/1 are a *stereo
+    // link* pair by default in mock (`input_pair_link`, see
+    // `mock.rs::test_input_pair_linked_by_default_and_moves_both_channels`),
+    // which propagates independently of anything Groups-related and
+    // would confound these tests (caught by an earlier failing run of
+    // this exact test using `Input(0)`/`Input(1)` — the stereo-pair
+    // mechanism was moving "b" too, for a reason that had nothing to do
+    // with the group). Channels 0 and 4 are in different pairs.
+
+    #[test]
+    fn group_mute_link_propagates_to_members() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(4);
+        state.selected.insert(a);
+        state.selected.insert(b);
+        let _ = update(&mut state, Message::GroupEditToggle);
+        let _ = update(&mut state, Message::GroupLinkToggle(0, sidebar::GroupLink::Mute));
+        assert_eq!(state.groups[0].members.len(), 2);
+        assert!(state.groups[0].mute_linked);
+        // Clear the selection used to assign membership — isolates
+        // group-driven propagation from the pre-existing multi-select
+        // one, which would also propagate here and mask a group-only bug.
+        state.selected.clear();
+
+        let _ = update(&mut state, Message::Mute(a, true));
+        assert!(state.device.inputs()[0].mute);
+        assert!(
+            state.device.inputs()[4].mute,
+            "muting one mute-linked group member should mute the other"
+        );
+    }
+
+    #[test]
+    fn group_solo_link_does_not_propagate_mute() {
+        // A solo-linked-only group shouldn't cross-propagate mute, and
+        // vice versa — the three link types are independent.
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(4);
+        state.selected.insert(a);
+        state.selected.insert(b);
+        let _ = update(&mut state, Message::GroupEditToggle);
+        let _ = update(&mut state, Message::GroupLinkToggle(0, sidebar::GroupLink::Solo));
+        state.selected.clear();
+
+        let _ = update(&mut state, Message::Mute(a, true));
+        assert!(state.device.inputs()[0].mute);
+        assert!(
+            !state.device.inputs()[4].mute,
+            "solo-linked (not mute-linked) group shouldn't propagate mute"
+        );
+    }
+
+    #[test]
+    fn group_fader_link_moves_members_by_the_same_relative_delta() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(4);
+        state.selected.insert(a);
+        state.selected.insert(b);
+        let _ = update(&mut state, Message::GroupEditToggle);
+        let _ = update(&mut state, Message::GroupLinkToggle(0, sidebar::GroupLink::Fader));
+        state.selected.clear();
+
+        // Both start at the default unity volume (1.0) — an equal
+        // relative move should land them at the same place.
+        let _ = update(&mut state, Message::VolumeChanged(a, 0, 0.5));
+        let vol_a = state.device.inputs()[0].volumes[0];
+        let vol_b = state.device.inputs()[4].volumes[0];
+        assert!((vol_a - 0.5).abs() < 1e-4);
+        assert!(
+            (vol_b - 0.5).abs() < 1e-4,
+            "fader-linked member starting at the same volume should track exactly: {vol_b}"
+        );
+    }
+
+    #[test]
+    fn group_clear_removes_all_membership() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        state.selected.insert(a);
+        let _ = update(&mut state, Message::GroupEditToggle);
+        let _ = update(&mut state, Message::GroupLinkToggle(0, sidebar::GroupLink::Mute));
+        assert!(!state.groups[0].members.is_empty());
+
+        let _ = update(&mut state, Message::GroupClear);
+        assert!(state.groups.iter().all(|g| g.members.is_empty()));
+        assert!(!state.group_editing);
+    }
+
+    #[test]
+    fn toggle_sidebar_flips_and_is_not_undoable() {
+        let mut state = new(true, None, None);
+        assert!(state.sidebar_open, "sidebar starts expanded");
+        let _ = update(&mut state, Message::ToggleSidebar);
+        assert!(!state.sidebar_open);
+        let _ = update(&mut state, Message::ToggleSidebar);
+        assert!(state.sidebar_open);
+        assert!(
+            state.undo_stack.is_empty(),
+            "collapsing/expanding the sidebar is UI chrome, not a device change"
+        );
+    }
+
+    #[test]
+    fn global_mute_toggle_mutes_everything_then_unmutes_on_second_press() {
+        let mut state = new(true, None, None);
+        assert!(!all_channels_muted(&state), "mock starts fully unmuted");
+
+        let _ = update(&mut state, Message::GlobalMuteToggle);
+        assert!(all_channels_muted(&state));
+        for cid in all_channel_ids(&state) {
+            assert!(channel_is_muted(&state, cid), "{cid:?} should be muted");
+        }
+
+        let _ = update(&mut state, Message::GlobalMuteToggle);
+        assert!(!all_channels_muted(&state));
+        for cid in all_channel_ids(&state) {
+            assert!(!channel_is_muted(&state, cid), "{cid:?} should be unmuted");
+        }
+    }
+
+    #[test]
+    fn global_mute_toggle_leaves_a_pre_muted_channel_muted_after_restoring() {
+        let mut state = new(true, None, None);
+        // Input(8) is half of a hardware-linked pair by default, so
+        // muting it mirrors onto Input(9) too — both are the
+        // "independently muted before the global press" channels here.
+        let pre_muted = ChannelId::Input(8);
+        let its_pair_sibling = ChannelId::Input(9);
+        let _ = update(&mut state, Message::Mute(pre_muted, true));
+
+        let _ = update(&mut state, Message::GlobalMuteToggle);
+        assert!(all_channels_muted(&state));
+
+        let _ = update(&mut state, Message::GlobalMuteToggle);
+        assert!(
+            channel_is_muted(&state, pre_muted),
+            "a channel muted before the global press must stay muted after restoring"
+        );
+        assert!(channel_is_muted(&state, its_pair_sibling));
+        // Everything the global press itself muted should be back off.
+        for cid in all_channel_ids(&state) {
+            if cid != pre_muted && cid != its_pair_sibling {
+                assert!(!channel_is_muted(&state, cid), "{cid:?} should be unmuted");
+            }
+        }
+    }
+
+    #[test]
+    fn global_solo_toggle_clears_active_solos_without_touching_mute() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(4);
+        let _ = update(&mut state, Message::Solo(a, true));
+        let _ = update(&mut state, Message::Solo(b, true));
+        let _ = update(&mut state, Message::Mute(a, true));
+        assert!(any_channel_soloed(&state));
+
+        let _ = update(&mut state, Message::GlobalSoloToggle);
+        assert!(!any_channel_soloed(&state));
+        assert!(channel_is_muted(&state, a), "solo-clear must not touch mute state");
+    }
+
+    #[test]
+    fn global_solo_toggle_restores_the_previously_cleared_solos() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(4);
+        let _ = update(&mut state, Message::Solo(a, true));
+        let _ = update(&mut state, Message::Solo(b, true));
+
+        let _ = update(&mut state, Message::GlobalSoloToggle);
+        assert!(!any_channel_soloed(&state), "first press clears");
+
+        let _ = update(&mut state, Message::GlobalSoloToggle);
+        assert!(channel_is_soloed(&state, a), "second press restores a");
+        assert!(channel_is_soloed(&state, b), "second press restores b");
+    }
+
+    #[test]
+    fn global_solo_toggle_soloing_a_new_channel_after_a_clear_replaces_the_restore_set() {
+        let mut state = new(true, None, None);
+        // Input(0) and Input(8) are each half of a hardware-linked pair
+        // by default (see `mock.rs::test_input_pair_linked_by_default`),
+        // so soloing either one mirrors onto its sibling too — accounted
+        // for below rather than fought.
+        let a = ChannelId::Input(0);
+        let c = ChannelId::Input(8);
+        let _ = update(&mut state, Message::Solo(a, true));
+        let _ = update(&mut state, Message::GlobalSoloToggle);
+        assert!(!any_channel_soloed(&state));
+
+        // Solo a different channel manually before pressing the global
+        // toggle again — the toggle should clear *that* one (and its
+        // linked sibling), not try to restore the stale `a`/`Input(1)`
+        // pair from before.
+        let _ = update(&mut state, Message::Solo(c, true));
+        let _ = update(&mut state, Message::GlobalSoloToggle);
+        assert!(!any_channel_soloed(&state));
+        assert!(state.last_cleared_solos.contains(&c));
+        assert!(!state.last_cleared_solos.contains(&a));
+        assert!(!state.last_cleared_solos.contains(&ChannelId::Input(1)));
+    }
+
+    #[test]
+    fn global_mute_toggle_is_undoable() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::GlobalMuteToggle);
+        assert!(!state.undo_stack.is_empty());
+        let _ = update(&mut state, Message::Undo);
+        assert!(!all_channels_muted(&state));
+    }
+
+    #[test]
+    fn layout_clicked_recalls_the_stored_collapsed_set() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(0);
+        state.layouts[0] = Some(HashSet::from([cid]));
+        let _ = update(&mut state, Message::LayoutClicked(1));
+        assert_eq!(state.active_layout, Some(1));
+        assert!(state.collapsed.contains(&cid));
     }
 }

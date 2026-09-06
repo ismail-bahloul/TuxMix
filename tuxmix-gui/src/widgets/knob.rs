@@ -49,6 +49,38 @@ pub struct Knob<Message> {
     /// Printed centered inside the knob face — the reference design has no
     /// separate value readout below it, the knob doubles as the readout.
     pub label: String,
+    /// Draws a filled orange arc from the 12-o'clock (center-of-range)
+    /// position round to the current value, like the real TotalMix pan
+    /// knob (confirmed in a live screenshot: e.g. "L57" shows a gold arc
+    /// swept from top toward the left). Only meaningful for knobs whose
+    /// range has a centered default — `false` for gain/freq/Q/low-cut,
+    /// where TotalMix draws just the plain tick.
+    pub arc_from_center: bool,
+    /// `false` renders a dimmed, inert knob that ignores all mouse
+    /// input — for a slot the reference visually has a knob in, but
+    /// `tuxmix-core`/`tuxmix-usb` has no real control backing yet (e.g.
+    /// an Output strip's own pan/balance — see `widgets/strip.rs`'s
+    /// `full_strip` doc comment on why that one specifically has no
+    /// working control). A knob that's just visually absent (a blank
+    /// spacer) reads as "control not built yet"; a knob that's present
+    /// but greyed out reads as "not applicable to this channel" — a
+    /// clearer, more honest signal than either a working-looking fake or
+    /// nothing at all.
+    pub interactive: bool,
+    /// `true` maps `value`↔drag-position logarithmically instead of
+    /// linearly — for frequency knobs (EQ band freq, low-cut freq),
+    /// where `range` spans 20-20,000 Hz. A linear mapping there
+    /// compresses almost the entire musically-useful range (20 Hz-2
+    /// kHz — bass through low-mid, most of what EQ work actually
+    /// targets) into a sliver of the knob's drag travel, while the top
+    /// octave (10-20 kHz) alone eats roughly a quarter of it. Every
+    /// other knob (pan/gain/Q/pitch/width/trim) stays linear —
+    /// correct there, since those values are already additive (dB,
+    /// percent, a linear pan position) rather than multiplicative like
+    /// frequency. Requires `range` to be strictly positive on both
+    /// ends; falls back to linear otherwise rather than taking `ln`
+    /// of a non-positive number.
+    pub log_scale: bool,
     pub modifiers: Modifiers,
     pub scale: f32,
     pub on_change: Box<dyn Fn(f32) -> Message>,
@@ -77,16 +109,26 @@ pub struct State {
 impl<Message> Knob<Message> {
     fn value_to_t(&self, value: f32) -> f32 {
         let (lo, hi) = self.range;
-        if hi > lo {
-            ((value - lo) / (hi - lo)).clamp(0.0, 1.0)
+        if hi <= lo {
+            return 0.0;
+        }
+        if self.log_scale && lo > 0.0 {
+            let (log_lo, log_hi) = (lo.ln(), hi.ln());
+            ((value.max(f32::MIN_POSITIVE).ln() - log_lo) / (log_hi - log_lo)).clamp(0.0, 1.0)
         } else {
-            0.0
+            ((value - lo) / (hi - lo)).clamp(0.0, 1.0)
         }
     }
 
     fn t_to_value(&self, t: f32) -> f32 {
         let (lo, hi) = self.range;
-        lo + t.clamp(0.0, 1.0) * (hi - lo)
+        let t = t.clamp(0.0, 1.0);
+        if self.log_scale && lo > 0.0 && hi > lo {
+            let (log_lo, log_hi) = (lo.ln(), hi.ln());
+            (log_lo + t * (log_hi - log_lo)).exp()
+        } else {
+            lo + t * (hi - lo)
+        }
     }
 }
 
@@ -104,6 +146,9 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
+        if !self.interactive {
+            return None;
+        }
         match event {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let pos = cursor.position_over(bounds)?;
@@ -227,50 +272,86 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
             state.display.map(|d| d.at(Instant::now())).unwrap_or(self.value)
         };
         let t = self.value_to_t(display_value);
+        // Dims everything but the face (which is already dark enough not
+        // to need it) when `!interactive` — a faded knob reads as "not
+        // applicable here" at a glance, without a second visual language
+        // to design for.
+        let dim = if self.interactive { 1.0 } else { 0.4 };
 
         // Face — flat filled disc, near-black like the reference's knob
-        // plastic, lit up while dragging the same way the fader cap is.
+        // plastic. Used to flip to near-white while dragging (mirroring
+        // the fader cap's own drag-lit look), but on a knob that's small
+        // enough for the label text to fill most of the face, a full
+        // light/dark flip blew the label away entirely — user report:
+        // "ça s'allume en blanc, ça fait qu'on voit plus rien." A subtle
+        // lighten instead keeps the face dark enough that the label/tick/
+        // arc below don't need their own dragging-only color flip to stay
+        // readable — one visual state to reason about, not two.
+        const DRAG_LIGHTEN: f32 = 0.18;
         let face_color = if state.dragging {
-            Color::from_rgb8(0xf0, 0xf1, 0xf4)
+            theme::blend(theme::SURFACE, Color::WHITE, DRAG_LIGHTEN)
         } else {
             theme::SURFACE
         };
         frame.fill(&Path::circle(center, radius.max(1.0)), face_color);
         frame.stroke(
             &Path::circle(center, radius.max(1.0)),
-            Stroke::default().with_color(theme::BORDER).with_width(border_w),
+            Stroke::default()
+                .with_color(Color { a: dim, ..theme::BORDER })
+                .with_width(border_w),
         );
+
+        // Orange arc from the centered (t=0.5) position round to the
+        // current value — the real TotalMix pan-knob signature (see
+        // `arc_from_center`'s doc comment). Skipped when `!interactive`
+        // even if `arc_from_center` is set — there's no real value behind
+        // it to point at (see `interactive`'s own doc comment), and an
+        // arc implies a live reading a dimmed, inert knob shouldn't.
+        if self.arc_from_center && self.interactive {
+            let center_angle = angle_of(0.5).0;
+            let value_angle = angle_of(t).0;
+            let (start_angle, end_angle) = if center_angle <= value_angle {
+                (center_angle, value_angle)
+            } else {
+                (value_angle, center_angle)
+            };
+            frame.stroke(
+                &Path::new(|b| {
+                    b.arc(canvas::path::Arc {
+                        center,
+                        radius: radius - border_w,
+                        start_angle: Radians(start_angle),
+                        end_angle: Radians(end_angle),
+                    })
+                }),
+                Stroke::default().with_color(theme::ACCENT).with_width(2.5 * self.scale),
+            );
+        }
 
         // A single tick at the current angle, poking out past the rim —
         // the precise readout the label text backs up, not a full needle
         // or arc fill (see `Bus_design.png`: just a mark at 12 o'clock
-        // when centered).
-        //
-        // Both the tick and the label below switch to a *dark* color while
-        // dragging, not `ACCENT` — the face itself goes near-white then
-        // (see `face_color`), and `ACCENT`'s a light cyan, so light-on-light
-        // there read as the knob going blank mid-drag rather than lighting
-        // up (the fader cap never had this problem: its dB readout is a
-        // separate text sibling on the dark strip background, not drawn on
-        // the cap itself).
+        // when centered). No dragging-only color flip needed here or on
+        // the label below (see `face_color`'s own doc comment) — both
+        // stay their normal color regardless of drag state.
         let angle = angle_of(t).0;
         let (pc, ps) = (angle.cos(), angle.sin());
-        let tick_color = if state.dragging { theme::SURFACE } else { theme::TEXT_SEC };
         frame.stroke(
             &Path::line(
                 iced::Point::new(center.x + pc * (radius - border_w), center.y + ps * (radius - border_w)),
                 iced::Point::new(center.x + pc * (radius + tick_len), center.y + ps * (radius + tick_len)),
             ),
-            Stroke::default().with_color(tick_color).with_width(1.5 * self.scale),
+            Stroke::default()
+                .with_color(Color { a: dim, ..theme::TEXT_SEC })
+                .with_width(1.5 * self.scale),
         );
 
         // Value label, centered in the face — the knob doubles as its own
         // readout instead of a separate text element below it.
-        let label_color = if state.dragging { theme::SURFACE } else { theme::TEXT_PRIMARY };
         frame.fill_text(canvas::Text {
             content: self.label.clone(),
             position: center,
-            color: label_color,
+            color: Color { a: dim, ..theme::TEXT_PRIMARY },
             size: (theme::TEXT_MICRO * self.scale).into(),
             align_x: text::Alignment::Center,
             align_y: alignment::Vertical::Center,
@@ -286,7 +367,9 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        if state.dragging {
+        if !self.interactive {
+            mouse::Interaction::Idle
+        } else if state.dragging {
             mouse::Interaction::Grabbing
         } else if cursor.is_over(bounds) {
             mouse::Interaction::Grab
@@ -296,11 +379,14 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
     }
 }
 
+/// A knob's total footprint (at `scale == 1.0`).
+const BOX_SIZE: f32 = DIAMETER + MARGIN * 2.0;
+
 pub fn knob<'a, Message: 'a>(knob: Knob<Message>) -> Element<'a, Message>
 where
     Message: Clone,
 {
-    let size = (DIAMETER + MARGIN * 2.0) * knob.scale;
+    let size = BOX_SIZE * knob.scale;
     Canvas::new(knob)
         .width(Length::Fixed(size))
         .height(Length::Fixed(size))
@@ -310,6 +396,59 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_knob(range: (f32, f32), log_scale: bool) -> Knob<()> {
+        Knob {
+            value: range.0,
+            range,
+            label: String::new(),
+            arc_from_center: false,
+            interactive: true,
+            log_scale,
+            modifiers: Modifiers::default(),
+            scale: 1.0,
+            on_change: Box::new(|_| ()),
+            on_reset: Box::new(|| ()),
+        }
+    }
+
+    #[test]
+    fn log_scale_midpoint_t_is_the_geometric_not_arithmetic_mean() {
+        // A linear-mapped 20-20,000 Hz knob would put t=0.5 at 10,010 Hz
+        // (the arithmetic mean) — exactly the bug this field fixes: the
+        // entire bass/low-mid range (20 Hz-2 kHz) would be squeezed into
+        // a sliver of the knob's travel. Logarithmic mapping puts t=0.5
+        // at the *geometric* mean instead (~632 Hz for this range).
+        let k = test_knob((20.0, 20_000.0), true);
+        let midpoint = k.t_to_value(0.5);
+        let geometric_mean = (20.0f32 * 20_000.0).sqrt();
+        assert!(
+            (midpoint - geometric_mean).abs() < 1.0,
+            "expected ~{geometric_mean} (geometric mean), got {midpoint}"
+        );
+        assert!(
+            midpoint < 10_010.0 - 1000.0,
+            "midpoint {midpoint} should be far below the arithmetic mean 10,010"
+        );
+    }
+
+    #[test]
+    fn log_scale_round_trips_value_and_t() {
+        let k = test_knob((20.0, 20_000.0), true);
+        for hz in [20.0, 100.0, 1000.0, 5000.0, 20_000.0] {
+            let t = k.value_to_t(hz);
+            let back = k.t_to_value(t);
+            assert!((back - hz).abs() / hz < 0.001, "hz={hz} round-tripped to {back}");
+        }
+    }
+
+    #[test]
+    fn non_log_knob_stays_linear() {
+        // A pan/gain-style knob (log_scale: false) must be completely
+        // unaffected — the midpoint is the plain arithmetic mean.
+        let k = test_knob((-100.0, 100.0), false);
+        assert_eq!(k.t_to_value(0.5), 0.0);
+    }
 
     #[test]
     fn angle_at_zero_is_start_angle() {

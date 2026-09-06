@@ -8,9 +8,11 @@
 //! ```
 
 mod app;
+mod layouts;
 mod matrix;
 mod osc;
 mod scenes;
+mod sidebar;
 mod theme;
 mod widgets;
 
@@ -75,7 +77,10 @@ fn main() -> iced::Result {
     .default_font(Font::with_name("Inter"))
     .window(window::Settings {
         size: Size::new(1280.0, 800.0),
-        min_size: Some(Size::new(960.0, 600.0)),
+        // No enforced minimum — the adaptive scale (down to `SCALE_MIN`)
+        // plus per-row horizontal scroll and the page's vertical scroll
+        // handle small windows fine now, so a fixed 960×600 floor is just
+        // an outdated restriction on shrinking.
         ..window::Settings::default()
     })
     .run()
