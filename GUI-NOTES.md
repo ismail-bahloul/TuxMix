@@ -2241,14 +2241,32 @@ index (not just 0-3), calling Trim on e.g. AS1/2 through the USB
 backend would silently compute the WRONG sibling's register (the "+1"
 adjacency trick that correctly pairs AN1/AN2 and AN3/4 does not hold
 for other source types) and corrupt an unrelated channel's crosspoint
-— a real latent bug in already-shipped code, surfaced but **not fixed
-here**, since fixing it means auditing/restricting the GUI's own
-`has_trim` gate too, a separate task from wiring this backend's own
-control. Also added attach-time readback (didn't exist before either).
-New `live_hardware_trim_round_trip` test, ran with `--ignored` against
-the real card, passed (including a negative dB value), hardware
+— a real latent bug in already-shipped code, surfaced but not fixed in
+that same pass. Also added attach-time readback (didn't exist before
+either). New `live_hardware_trim_round_trip` test, ran with `--ignored`
+against the real card, passed (including a negative dB value), hardware
 confirmed restored to 0 afterward. No GUI/TUI changes needed — Trim
 already had a real knob in both, now it actually reaches hardware on
 the ALSA backend too instead of silently doing nothing. 162/162
 non-ignored workspace tests (plus the new ignored live-hardware test,
 run separately).
+
+**That USB-backend corruption bug fixed right after, user: "tu peux
+t'y attaquer."** Added the identical `idx >= 4` guard to `usb.rs::
+set_trim` that `babyface.rs` already had, turning a silent wrong-
+channel write into an honest `Err`. Deliberately did **not** narrow the
+GUI's own `has_trim` gate to match — that's a separate, previously
+made design decision (TotalMix itself shows a T button on every
+hardware input, analog and digital alike; TuxMix matched that scope
+for Hardware Inputs on purpose in an earlier session), not something
+to unilaterally reverse just because the underlying protocol write
+needed restricting. Net effect: the T button still renders everywhere
+it did before, but now safely errors instead of corrupting a sibling
+channel's crosspoint when clicked on a non-analog input — matches
+babyface.rs's own behavior exactly, full parity between both backends.
+Not live-hardware-tested (same standing limitation: the USB backend
+can't open the device while the kernel driver holds it) — a one-line
+bounds guard, verified by code review and the already-passing
+`cargo test --workspace`. 162/162 workspace tests, unchanged (no new
+test added — the guard is too trivial to warrant extracting into its
+own pure function, unlike this session's other composition fixes).

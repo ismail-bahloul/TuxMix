@@ -973,6 +973,22 @@ impl RmeDevice for BabyfaceProUsb {
     }
 
     fn set_trim(&mut self, idx: usize, db: f32) -> Result<(), Error> {
+        // Restricted to AN1-4: `protocol::set_trim` always also writes
+        // the sibling channel's registers via a `+1`-adjacency trick
+        // (index_l/r(src)+1), which only lands on the correct sibling
+        // for the two pairs PROTOCOL.md's captures actually cover
+        // (AN1/2, AN3/4 — cap_trim2/3/4.pcap). `input_source(idx)`
+        // itself succeeds for every hardware input, so without this
+        // guard, calling Trim on e.g. AS1/2 would silently compute
+        // ADAT3/4's registers instead and corrupt that unrelated
+        // channel — found 2026-09-06 while wiring the sibling ALSA
+        // backend's own Trim control, fixed here to match (that
+        // backend's own `set_trim` already has the identical guard).
+        if idx >= 4 {
+            return Err(Error::InvalidChannel(format!(
+                "Input {idx} has no trim control"
+            )));
+        }
         let src = input_source(idx)?;
         // cap_trim2.pcap + cap_trim3/4.pcap (2026-08-24): the low map
         // = the trim ALONE on the master curve (0x2000 = 0 dB, 0 =
