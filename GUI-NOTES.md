@@ -2270,3 +2270,28 @@ bounds guard, verified by code review and the already-passing
 `cargo test --workspace`. 162/162 workspace tests, unchanged (no new
 test added — the guard is too trivial to warrant extracting into its
 own pure function, unlike this session's other composition fixes).
+
+**Gear-icon flyouts made independently multi-open, closing a real UX
+gap vs real TotalMix.** User: "sur totalmix on peut en avoir plusieurs,
+[TuxMix] les ferment pas" [sic] — real TotalMix lets you have several
+channels' settings panels open simultaneously; TuxMix forced a single
+global `Option<(ChannelId, FlyoutKind)>`, so opening a second gear icon
+silently closed whatever was already open. `TuxMix::flyout_open` is now
+a `HashSet<(ChannelId, FlyoutKind)>` — any number of Settings/EQ/Trim
+panels can be open across different strips at once, matching the
+reference. Two exceptions kept, both real rendering constraints rather
+than a design choice, documented inline: (1) `Route` still closes any
+other open `Route` first — its Stack-based overlay (`with_flyout`) only
+ever positions one popover at a time; (2) opening a second Settings/EQ/
+Trim panel on the SAME strip replaces the first rather than both
+lingering — the inline-push render loop is an `if`/`else if` chain,
+only the first match ever renders. New `open_flyout()`/
+`close_route_flyout()` helpers replace the old single-slot
+`set_flyout_open()`; `FlyoutKind` gained `Hash` (needed for the
+`HashSet`). 2 new `update()`-driven tests covering both the cross-strip
+case (the actual bug) and the two exceptions. Live-verified via the
+`new()`-default-flip trick (this sandbox's own established workaround
+for the click-testing limitation): a `--mock` screenshot with Input(0)'s
+Settings and Input(2)'s EQ both pre-opened confirms they render
+side-by-side, neither closing the other. 164/164 non-ignored workspace
+tests.

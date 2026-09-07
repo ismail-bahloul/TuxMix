@@ -765,13 +765,22 @@ pub struct TuxMix {
     /// settled (see `Message::CollapseTick`), which also lets the extra
     /// high-frequency redraw timer in `subscription()` shut itself off.
     pub collapse_anim: HashMap<ChannelId, strip::CollapseAnim>,
-    /// The one strip+flyout (at most) currently open — either the route
-    /// bus picker or the 48V/PAD/Sensitivity settings panel (see
+    /// Every strip+flyout currently open — the route bus picker or the
+    /// 48V/PAD/Sensitivity settings panel, EQ, or Trim (see
     /// `strip::FlyoutKind`, `route_popover`, `settings_popover`,
-    /// `Message::ToggleFlyout`). Only one flyout is ever open at a time,
-    /// of either kind. Opens/closes instantly, no width tween — unlike
-    /// `collapse_anim`, this isn't animated.
-    pub flyout_open: Option<(ChannelId, strip::FlyoutKind)>,
+    /// `Message::ToggleFlyout`). Any number can be open at once, on
+    /// different strips or different kinds on the same strip — matches
+    /// real TotalMix, which doesn't close one panel just because another
+    /// opened (user-caught: TuxMix used to force a single global
+    /// `Option`, closing whatever was open the moment a new gear icon
+    /// was clicked). **Exception**: `Route` stays exclusive with itself
+    /// (opening a new one still closes any other Route flyout) — its
+    /// Stack-based overlay (`with_flyout`) only ever positions/renders
+    /// one popover at a time, a real rendering constraint, not a design
+    /// choice; Settings/Eq/Trim have no such limit, they push the row's
+    /// own layout instead of overlaying it. Opens/closes instantly, no
+    /// width tween — unlike `collapse_anim`, this isn't animated.
+    pub flyout_open: HashSet<(ChannelId, strip::FlyoutKind)>,
     /// Manual UI zoom for the mixer/matrix views — every text size and
     /// widget dimension there is multiplied by this. Changed only by
     /// `ZoomIn`/`ZoomOut`/`ZoomReset`/Ctrl+molette (`zoom`); it is NOT tied
@@ -988,7 +997,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         output_meters: vec![MeterAnim::new(); n_outputs],
         collapsed: HashSet::new(),
         collapse_anim: HashMap::new(),
-        flyout_open: None,
+        flyout_open: HashSet::new(),
         ui_scale: theme::SCALE_DEFAULT,
         // Matches `window::Settings::size` in main.rs — updated for real
         // as soon as the first `Opened`/`Resized` event arrives.
@@ -1266,11 +1275,34 @@ fn set_collapsed(state: &mut TuxMix, cid: ChannelId, target: bool) {
     }
 }
 
-/// `target = None` closes whatever's open; `Some((cid, kind))` opens that
-/// flyout, closing any other one first (of either kind — only one is ever
-/// open at a time). Instant, no animation.
-fn set_flyout_open(state: &mut TuxMix, target: Option<(ChannelId, strip::FlyoutKind)>) {
-    state.flyout_open = target;
+/// Opens `(cid, kind)` — adds it to the open set without disturbing any
+/// OTHER strip's flyout, matching real TotalMix (see `TuxMix::
+/// flyout_open`'s own doc comment). Two exceptions, both real rendering
+/// constraints rather than a design choice:
+/// - `Route` closes any other open `Route` first (its Stack overlay only
+///   positions one popover at a time).
+/// - Settings/Eq/Trim close any OTHER Settings/Eq/Trim already open on
+///   the SAME `cid` first — the inline-push render loop only handles one
+///   panel per strip (an `if`/`else if` chain), a second entry for the
+///   same strip would just sit in the set unrendered.
+fn open_flyout(state: &mut TuxMix, cid: ChannelId, kind: strip::FlyoutKind) {
+    if kind == strip::FlyoutKind::Route {
+        state.flyout_open.retain(|&(_, k)| k != strip::FlyoutKind::Route);
+    } else {
+        state
+            .flyout_open
+            .retain(|&(c, k)| !(c == cid && k != strip::FlyoutKind::Route));
+    }
+    state.flyout_open.insert((cid, kind));
+}
+
+/// Closes every currently-open `Route` flyout — the only kind
+/// `Message::CloseFlyout` is ever sent for (the click-outside catcher in
+/// `with_flyout`, `Route`'s own Stack overlay); Settings/Eq/Trim have no
+/// such catcher, they're plain inline layout with their own explicit
+/// close (re-pressing the same gear/EQ/T icon).
+fn close_route_flyout(state: &mut TuxMix) {
+    state.flyout_open.retain(|&(_, k)| k != strip::FlyoutKind::Route);
 }
 
 /// Cap on `TuxMix::undo_stack`/`redo_stack` — unbounded growth over a
@@ -1469,9 +1501,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::QuickChannelSelected(cid) => state.quick_channel = cid,
         Message::SelectOutput(i) => {
             state.sel_out = i;
-            // Selecting a bus from anywhere (top bar or a strip's own route
-            // flyout) dismisses whatever flyout is open — it did its job.
-            set_flyout_open(state, None);
+            // Selecting a bus dismisses the Route flyout — it did its
+            // job. Doesn't touch any other (Settings/Eq/Trim) flyout
+            // that happens to be open elsewhere.
+            close_route_flyout(state);
         }
         Message::ModifiersChanged(m) => state.modifiers = m,
         Message::WindowResized(width) => {
@@ -1694,15 +1727,14 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::ToggleFlyout(cid, kind) => {
-            let target = if state.flyout_open == Some((cid, kind)) {
-                None
+            if state.flyout_open.contains(&(cid, kind)) {
+                state.flyout_open.remove(&(cid, kind));
             } else {
-                Some((cid, kind))
-            };
-            set_flyout_open(state, target);
+                open_flyout(state, cid, kind);
+            }
         }
         Message::CloseFlyout => {
-            set_flyout_open(state, None);
+            close_route_flyout(state);
         }
         Message::CollapseTick => {
             let now = Instant::now();
@@ -2491,7 +2523,11 @@ fn strip_params<'a>(
         split: false,
         loopback: false,
         stereo_linked: false,
-        open_flyout: state.flyout_open.and_then(|(c, k)| (c == cid).then_some(k)),
+        open_flyout: state
+            .flyout_open
+            .iter()
+            .find(|(c, _)| *c == cid)
+            .map(|(_, k)| *k),
         mute: false,
         solo: false,
         has_cue: false,
@@ -3068,9 +3104,16 @@ fn with_flyout<'a>(
     row_element: Element<'a, Message>,
     open_x: Option<f32>,
 ) -> Element<'a, Message> {
-    let (Some(x), Some((_cid, strip::FlyoutKind::Route))) = (open_x, state.flyout_open) else {
+    let Some(x) = open_x else {
         return row_element;
     };
+    if !state
+        .flyout_open
+        .iter()
+        .any(|(_, k)| *k == strip::FlyoutKind::Route)
+    {
+        return row_element;
+    }
     let content = route_popover(state, strip::FLYOUT_W);
     // `opaque` captures clicks across its *own* widget's bounds — those
     // have to be just the small popover itself (its natural, tightly-fit
@@ -3156,7 +3199,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             // `with_flyout`, since ordinary `row!` layout already pushes
             // every later sibling over for free once this one item is
             // wider.
-            if state.flyout_open == Some((cid, strip::FlyoutKind::Settings)) {
+            if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
                 // Same width as the strip itself (see the reference
                 // design), not the Route flyout's own fixed `FLYOUT_W` —
                 // a dropdown list of bus names and a settings panel of
@@ -3168,7 +3211,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                         .spacing(theme::SPACE_MD),
                 );
                 item_width += panel_w + theme::SPACE_MD;
-            } else if state.flyout_open == Some((cid, strip::FlyoutKind::Eq)) {
+            } else if state.flyout_open.contains(&(cid, strip::FlyoutKind::Eq)) {
                 // Unlike Settings, sized to fit 3 knobs per band row rather
                 // than matching the (much narrower) strip width — see
                 // `strip::EQ_FLYOUT_W`'s doc comment.
@@ -3177,7 +3220,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                     row![strip_widget, eq_popover(state, cid, panel_w)].spacing(theme::SPACE_MD),
                 );
                 item_width += panel_w + theme::SPACE_MD;
-            } else if state.flyout_open == Some((cid, strip::FlyoutKind::Trim)) {
+            } else if state.flyout_open.contains(&(cid, strip::FlyoutKind::Trim)) {
                 // One knob — reuses the Route flyout's own fixed width
                 // rather than a third bespoke constant; Settings' "match
                 // the strip's own width" doesn't apply here since there's
@@ -3193,7 +3236,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             }
             input_width += item_width;
             input_item_count += 1;
-            if state.flyout_open.map(|(c, _)| c) == Some(cid) {
+            if state.flyout_open.contains(&(cid, strip::FlyoutKind::Route)) {
                 // Gaps placed so far (`item_count - 1`, spacing is between
                 // items) plus the content accumulated up to and including this
                 // strip is exactly its right edge on screen.
@@ -3228,7 +3271,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             }
             let strip_widget = strip::strip(params);
             let mut item_width = rendered_strip_width(state, cid);
-            if state.flyout_open == Some((cid, strip::FlyoutKind::Settings)) {
+            if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
                 let panel_w = item_width;
                 pb_strips = pb_strips.push(
                     row![strip_widget, settings_popover(state, cid, panel_w)]
@@ -3240,7 +3283,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             }
             pb_width += item_width;
             pb_item_count += 1;
-            if state.flyout_open.map(|(c, _)| c) == Some(cid) {
+            if state.flyout_open.contains(&(cid, strip::FlyoutKind::Route)) {
                 pb_open_x = Some(pb_width + (pb_item_count - 1) as f32 * theme::SPACE_MD);
             }
         }
@@ -3275,7 +3318,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             }
             let strip_widget = strip::strip(params);
             let mut item_width = rendered_strip_width(state, cid);
-            if state.flyout_open == Some((cid, strip::FlyoutKind::Settings)) {
+            if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
                 let panel_w = item_width;
                 out_strips = out_strips.push(
                     row![strip_widget, settings_popover(state, cid, panel_w)]
@@ -3434,6 +3477,7 @@ mod tests {
         ChannelId, MeterAnim, Message, ZOOM_STEP,
     };
     use crate::sidebar;
+    use crate::widgets::strip;
     use std::collections::HashSet;
     use tuxmix_core::RmeDevice;
 
@@ -3802,6 +3846,59 @@ mod tests {
         let _ = update(&mut state, Message::StereoSplitChanged(cid, false));
         assert!(!state.device.playbacks()[0].split);
         assert!(!state.device.playbacks()[1].split);
+    }
+
+    #[test]
+    fn opening_a_flyout_on_one_strip_does_not_close_another_strips_flyout() {
+        // User-caught regression: TuxMix used to force a single global
+        // `Option<(ChannelId, FlyoutKind)>`, so opening Settings on a
+        // second strip silently closed whatever was open on the first —
+        // real TotalMix allows several channel-settings panels open at
+        // once.
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(2);
+
+        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Settings));
+        let _ = update(&mut state, Message::ToggleFlyout(b, strip::FlyoutKind::Settings));
+        assert!(state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
+        assert!(state.flyout_open.contains(&(b, strip::FlyoutKind::Settings)));
+
+        // Re-pressing the same strip's own trigger still closes just it.
+        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Settings));
+        assert!(!state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
+        assert!(state.flyout_open.contains(&(b, strip::FlyoutKind::Settings)));
+    }
+
+    #[test]
+    fn a_second_kind_on_the_same_strip_replaces_the_first_but_route_stays_exclusive_globally() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(2);
+
+        // Settings then EQ on the SAME strip: only one inline panel can
+        // render per strip (the render loop is an if/else-if chain), so
+        // the second replaces the first rather than both lingering
+        // unrendered in the set.
+        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Settings));
+        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Eq));
+        assert!(!state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
+        assert!(state.flyout_open.contains(&(a, strip::FlyoutKind::Eq)));
+
+        // Route stays exclusive with itself across DIFFERENT strips too
+        // (the Stack overlay only positions one popover) — but doesn't
+        // touch `a`'s still-open EQ.
+        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Route));
+        let _ = update(&mut state, Message::ToggleFlyout(b, strip::FlyoutKind::Route));
+        assert!(
+            !state.flyout_open.contains(&(a, strip::FlyoutKind::Route)),
+            "opening b's Route flyout must close a's"
+        );
+        assert!(state.flyout_open.contains(&(b, strip::FlyoutKind::Route)));
+        assert!(
+            state.flyout_open.contains(&(a, strip::FlyoutKind::Eq)),
+            "a's EQ flyout must survive b's Route opening"
+        );
     }
 
     #[test]

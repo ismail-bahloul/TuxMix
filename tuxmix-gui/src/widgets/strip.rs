@@ -88,7 +88,7 @@ pub(crate) const EQ_FLYOUT_W: f32 = 220.0;
 /// strip's right neighbor — see `app.rs::with_flyout` (Route) and
 /// `mixer_view`'s input loop (Settings/Eq/Trim, which push the row
 /// instead).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FlyoutKind {
     Route,
     Settings,
