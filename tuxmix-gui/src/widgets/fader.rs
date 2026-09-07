@@ -152,6 +152,13 @@ pub struct Fader<Message> {
     /// Whether `meter` reflects a real reading on this backend — see
     /// `draw_meter`'s doc comment. Irrelevant when `show_meter` is `false`.
     pub meter_available: bool,
+    /// The right channel's own meter, `Some` only for a LINKED stereo
+    /// pair's combined strip — splits the single meter column into two
+    /// thin side-by-side bars instead of showing just `meter`'s (left/
+    /// even channel's) level alone. `None` for every unlinked/mono
+    /// strip, unaffected.
+    pub meter2: Option<MeterFrame>,
+    pub meter2_available: bool,
     pub height: f32,
     pub show_meter: bool,
     /// Extra width (at `scale == 1.0`... no, already-scaled pixels, same
@@ -482,6 +489,8 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
                 self.meter.at(Instant::now()),
                 self.scale,
                 self.meter_available,
+                self.meter2
+                    .map(|m| (m.at(Instant::now()), self.meter2_available)),
             );
             draw_ruler(&mut frame, meter_rect, self.scale);
         }
@@ -602,7 +611,37 @@ const FILL_ALPHA: f32 = 0.55;
 /// as "silence", which is a different claim than "not measured" — so
 /// this draws a dashed, uncolored track instead of pretending there's a
 /// live reading.
-fn draw_meter(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available: bool) {
+/// Dispatches to one full-width bar, or — when `right` is `Some` — two
+/// thin bars side by side sharing `r` (same height as a single bar,
+/// half the width each, a small gap between): a linked stereo pair's
+/// meter in real TotalMix isn't one wide bar, it's the two mono meters
+/// placed edge to edge (user-confirmed against the reference, having
+/// caught this session's own earlier gap where a linked pair silently
+/// only ever showed its left/even channel's level).
+fn draw_meter(
+    frame: &mut Frame,
+    r: Rectangle,
+    level: f32,
+    scale: f32,
+    available: bool,
+    right: Option<(f32, bool)>,
+) {
+    let Some((level2, available2)) = right else {
+        draw_meter_bar(frame, r, level, scale, available);
+        return;
+    };
+    let gap = 1.0 * scale;
+    let half_w = ((r.width - gap) / 2.0).max(0.0);
+    let left_rect = Rectangle::new(r.position(), Size::new(half_w, r.height));
+    let right_rect = Rectangle::new(
+        Point::new(r.x + half_w + gap, r.y),
+        Size::new(half_w, r.height),
+    );
+    draw_meter_bar(frame, left_rect, level, scale, available);
+    draw_meter_bar(frame, right_rect, level2, scale, available2);
+}
+
+fn draw_meter_bar(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available: bool) {
     let l = level.clamp(0.0, 1.0);
     let fill_w = r.width;
     let radius = METER_RADIUS * scale;
@@ -941,6 +980,10 @@ impl<Message> canvas::Program<Message> for VuMeter {
             self.level.at(Instant::now()),
             self.scale,
             self.available,
+            // Collapsed strips are a glance-only view with no room for a
+            // second bar even if this were a linked pair — out of scope
+            // for this pass, single-bar only here.
+            None,
         );
         draw_ruler(&mut frame, meter_rect, self.scale);
         vec![frame.into_geometry()]

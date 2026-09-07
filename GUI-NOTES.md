@@ -2295,3 +2295,46 @@ for the click-testing limitation): a `--mock` screenshot with Input(0)'s
 Settings and Input(2)'s EQ both pre-opened confirms they render
 side-by-side, neither closing the other. 164/164 non-ignored workspace
 tests.
+
+**A linked stereo pair's meter now splits into two thin bars, matching
+real TotalMix — closes the gap flagged the same day ("le VU meter
+d'AN2 invisible quand la paire est liée").** User described the actual
+reference behavior precisely: same height as the single-bar case, each
+half the width, side by side ("les 2 mono font la même hauteur que le
+stereo, mais 2 fois moins la largeur... mis bout à bout") — not a
+detail this file could have gotten right by guessing. Previously a
+linked pair's strip only ever showed its left/even channel's meter;
+the right channel's own real level (captured correctly all along, just
+never displayed — see the 2026-09-07 finding this fixes) was
+completely invisible.
+
+`fader::draw_meter` is now a thin dispatcher: `right: Option<(f32,
+bool)>` `None` calls the renamed `draw_meter_bar` once at full width
+(every existing call site, byte-for-byte the same rendering as
+before); `Some` splits the rect into two half-width bars with a small
+gap, one call each. New `Fader::meter2`/`meter2_available` and
+`StripParams::meter2`/`meter2_available` thread this through; wired at
+all 3 `mixer_view` loops (Input/Playback/Output) right where the
+linked-pair combined name already gets set — `params.meter2 =
+<right-channel-index's meter>` only when `linked`, mirroring the
+existing per-channel-index lookups already used for the single-meter
+case. Output pairs benefit too, not just Input — `output_meters()` is
+already computed per individual channel (`power_sum_output_meters`),
+so the right channel's own real level was already sitting there
+unused, same story as Input.
+
+Live-verified via a `--mock` screenshot (every pair linked by default
+there, so every strip's meter shows the split): a zoomed crop confirms
+two independently-leveled green bars sharing one ruler, same shape on
+both Hardware Inputs and Software Playback. Not unit-tested — this
+file has no pixel-level tests for any `draw_*` function, `draw_meter`
+included before this change; visual verification matches the
+established convention for canvas rendering code here. Matrix cells
+and collapsed strips deliberately excluded (`None` passed explicitly,
+with a one-line comment each) — no room for a second bar in either
+compact view, out of scope for this pass. TUI not touched — its own
+meter is a horizontal percentage bar with a single number, not a
+vertical VU column, so this specific fix doesn't translate; no
+equivalent gap exists there. 164/164 tests (unchanged — a rendering-
+only change, nothing to newly assert against beyond what's already
+covered).

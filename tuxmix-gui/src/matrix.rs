@@ -87,6 +87,8 @@ fn interactive_cell(
         default_value: 1.0,
         meter: MeterFrame::still(0.0),
         meter_available: false,
+        meter2: None,
+        meter2_available: false,
         height: CELL_H * scale,
         show_meter: false,
         reserved_right: 0.0,

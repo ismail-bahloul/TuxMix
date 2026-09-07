@@ -2504,6 +2504,8 @@ fn strip_params<'a>(
         pan: 0,
         meter: fader::MeterFrame::still(0.0),
         meter_available: false,
+        meter2: None,
+        meter2_available: false,
         has_48v: false,
         has_pad: false,
         phantom: false,
@@ -3190,6 +3192,13 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 if let Some(right) = state.device.inputs().get(l + 1) {
                     params.name = pair_bus_label(&params.name, &right.name);
                 }
+                // Real TotalMix splits a linked pair's meter into two
+                // thin bars (this channel + its sibling), not one bar
+                // showing only the left/even channel — previously the
+                // right channel's own real level was captured but never
+                // displayed at all while linked (found 2026-09-07).
+                params.meter2 = state.input_meters.get(l + 1).map(MeterAnim::frame);
+                params.meter2_available = state.device.has_input_meter(l + 1);
             }
             let strip_widget = strip::strip(params);
             let mut item_width = rendered_strip_width(state, cid);
@@ -3268,6 +3277,8 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 if let Some(right) = state.device.playbacks().get(l + 1) {
                     params.name = pair_bus_label(&params.name, &right.name);
                 }
+                params.meter2 = state.playback_meters.get(l + 1).map(MeterAnim::frame);
+                params.meter2_available = state.device.has_playback_meters();
             }
             let strip_widget = strip::strip(params);
             let mut item_width = rendered_strip_width(state, cid);
@@ -3315,6 +3326,9 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 if let Some(right) = state.device.outputs().get(l + 1) {
                     params.name = pair_bus_label(&params.name, &right.name);
                 }
+                params.meter2 = state.output_meters.get(l + 1).map(MeterAnim::frame);
+                params.meter2_available =
+                    state.device.has_input_meters() || state.device.has_playback_meters();
             }
             let strip_widget = strip::strip(params);
             let mut item_width = rendered_strip_width(state, cid);

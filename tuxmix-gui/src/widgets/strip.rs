@@ -143,6 +143,12 @@ pub struct StripParams<'a> {
     /// Whether `meter` is a real reading on the active backend — see
     /// `fader::draw_meter`'s doc comment.
     pub meter_available: bool,
+    /// Set only when this strip represents a LINKED pair — the right
+    /// channel's own meter, splitting the meter column into two thin
+    /// bars (see `fader::Fader::meter2`'s own doc comment). `None` for
+    /// every unlinked/mono strip.
+    pub meter2: Option<MeterFrame>,
+    pub meter2_available: bool,
     pub has_48v: bool,
     pub has_pad: bool,
     pub phantom: bool,
@@ -607,6 +613,8 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         default_value: default_vol,
         meter: p.meter,
         meter_available: p.meter_available,
+        meter2: p.meter2,
+        meter2_available: p.meter2_available,
         height: fader_h,
         show_meter: true,
         // The icon column (`icon_col`, built below) is this canvas's
