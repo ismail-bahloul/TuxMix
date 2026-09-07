@@ -832,7 +832,7 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                                 let idx = selected_input_idx(dev, channel);
                                 if let Some(ic) = dev.inputs().get(idx) {
                                     let new_state = !ic.phantom;
-                                    let _ = dev.set_phantom(idx, new_state);
+                                    let _ = dev.set_input_phantom(idx, new_state);
                                 }
                             }
                         }
@@ -841,7 +841,7 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                                 let idx = selected_input_idx(dev, channel);
                                 if let Some(ic) = dev.inputs().get(idx) {
                                     let new_state = !ic.pad;
-                                    let _ = dev.set_pad(idx, new_state);
+                                    let _ = dev.set_input_pad(idx, new_state);
                                 }
                             }
                         }
@@ -855,7 +855,7 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                                 if let Some(ic) = dev.inputs().get(idx) {
                                     if let Some(max) = ic.gain_max {
                                         let new_gain = (ic.gain.unwrap_or(0) + 1).min(max);
-                                        let _ = dev.set_gain(idx, new_gain);
+                                        let _ = dev.set_input_gain(idx, new_gain);
                                     }
                                 }
                             }
@@ -866,7 +866,7 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                                 if let Some(ic) = dev.inputs().get(idx) {
                                     if ic.gain_max.is_some() {
                                         let new_gain = ic.gain.unwrap_or(0).saturating_sub(1);
-                                        let _ = dev.set_gain(idx, new_gain);
+                                        let _ = dev.set_input_gain(idx, new_gain);
                                     }
                                 }
                             }

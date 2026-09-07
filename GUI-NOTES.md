@@ -2338,3 +2338,36 @@ vertical VU column, so this specific fix doesn't translate; no
 equivalent gap exists there. 164/164 tests (unchanged — a rendering-
 only change, nothing to newly assert against beyond what's already
 covered).
+
+**48V/PAD/Gain didn't move together on a linked pair — real bug, found
+by the user asking the right question.** "Le toggle du 48V doit pas
+faire les 2 in en même temps ?" — checked rather than assumed: `Volume`
+and `Mute`/`Solo` already had pair-aware wrappers (`RmeDevice::
+set_input_volume`/`set_input_mute`/`set_input_solo`, each checking
+`input_pair_linked` and writing both channels when linked), but
+`Message::Phantom`/`Pad`/`Gain` called `set_phantom`/`set_pad`/
+`set_gain` directly — no pair-awareness at all, on either UI. Toggling
+48V on a linked AN1/2 strip only ever touched the strip's own (left)
+channel; the right channel's phantom power silently stayed wherever it
+last was, even though the UI showed one unified control.
+
+New `RmeDevice::set_input_phantom`/`set_input_pad`/`set_input_gain`
+default trait methods (`tuxmix-core/src/device.rs`), same idea as the
+existing `set_input_mute` but simpler — `idx` alone is enough (no
+separate `pair`/`which`), since a linked pair only ever exposes one
+strip so the caller never needs to disambiguate which side was
+clicked. GUI's 3 `Message` handlers and TUI's 4 key handlers (`p`/`P`/
+`]`+`g`/`[`+`d`) switched to call these instead of the raw per-channel
+setters — both UIs shared the identical bug, fixed identically.
+
+Verified at 3 layers: a `tuxmix-core` mock test (`test_linked_input_
+pair_phantom_pad_and_gain_move_both_channels` + a split-pair
+counterpart proving it does NOT mirror when unlinked) — had to
+normalize mock's own demo default first (`open()`'s own comment: both
+mics start with phantom on, "so the UI has something interesting to
+show immediately" — a naive true→true toggle wouldn't have proven
+mirroring actually fired, caught before trusting a green test); a GUI
+`update()` test (`phantom_changed_mirrors_across_a_linked_input_pair`);
+and a new `live_hardware_input_phantom_mirrors_across_a_linked_pair`
+test, run with `--ignored` against the real card — passed, hardware
+confirmed left exactly as found afterward. 167/167 non-ignored tests.

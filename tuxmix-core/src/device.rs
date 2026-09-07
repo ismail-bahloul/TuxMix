@@ -215,6 +215,49 @@ pub trait RmeDevice {
     /// type has no gain control.
     fn set_gain(&mut self, idx: usize, gain: u32) -> Result<(), Error>;
 
+    /// Sets input `idx`'s phantom power, respecting its pair's link
+    /// state — same idea as [`Self::set_input_mute`]/[`Self::
+    /// set_input_volume`], but `idx` alone is enough here (no separate
+    /// `pair`/`which`): a linked pair only ever exposes ONE strip (the
+    /// left/even channel), so the caller never needs to disambiguate
+    /// which side was clicked the way Mute/Solo/Volume's own callers
+    /// do when driven from a bare pair index.
+    ///
+    /// Previously missing entirely — every caller called [`Self::
+    /// set_phantom`] directly, so toggling 48V on a linked strip only
+    /// ever touched its own (left) channel, silently leaving the right
+    /// channel's phantom power wherever it last was — found 2026-09-07
+    /// (the user noticed AN1/2's 48V toggle wasn't actually affecting
+    /// both physical inputs).
+    fn set_input_phantom(&mut self, idx: usize, on: bool) -> Result<(), Error> {
+        self.set_phantom(idx, on)?;
+        let pair = idx / 2;
+        if self.input_pair_linked(pair) {
+            self.set_phantom(idx ^ 1, on)?;
+        }
+        Ok(())
+    }
+
+    /// Same idea as [`Self::set_input_phantom`], for the -20dB pad.
+    fn set_input_pad(&mut self, idx: usize, on: bool) -> Result<(), Error> {
+        self.set_pad(idx, on)?;
+        let pair = idx / 2;
+        if self.input_pair_linked(pair) {
+            self.set_pad(idx ^ 1, on)?;
+        }
+        Ok(())
+    }
+
+    /// Same idea as [`Self::set_input_phantom`], for preamp gain.
+    fn set_input_gain(&mut self, idx: usize, gain: u32) -> Result<(), Error> {
+        self.set_gain(idx, gain)?;
+        let pair = idx / 2;
+        if self.input_pair_linked(pair) {
+            self.set_gain(idx ^ 1, gain)?;
+        }
+        Ok(())
+    }
+
     /// Set the sample clock pitch/varispeed in percent (-5..+5, 0 = nominal).
     /// The 0x1B DDS quad shifts the device clock dynamically (the
     /// actual sample rate moves with the pitch).

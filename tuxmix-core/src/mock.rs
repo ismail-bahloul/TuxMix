@@ -839,6 +839,49 @@ mod tests {
     }
 
     #[test]
+    fn test_linked_input_pair_phantom_pad_and_gain_move_both_channels() {
+        // Previously missing: set_phantom/set_pad/set_gain had no
+        // pair-aware wrapper at all (unlike volume/mute/solo above),
+        // so toggling 48V on a linked strip only ever touched its own
+        // channel — found 2026-09-07.
+        let mut dev = MockBabyfacePro::open().unwrap();
+        assert!(dev.input_pair_linked(0));
+        // Mock's own demo default starts both mics' phantom on (see
+        // `open()`'s own comment) — normalize to off first, so setting
+        // it back on below actually exercises the mirroring rather than
+        // re-observing a default that was already true either way.
+        dev.set_phantom(0, false).unwrap();
+        dev.set_phantom(1, false).unwrap();
+
+        dev.set_input_phantom(0, true).unwrap();
+        assert!(dev.inputs()[0].phantom);
+        assert!(dev.inputs()[1].phantom, "phantom must mirror across a linked pair");
+
+        dev.set_input_pad(0, true).unwrap();
+        assert!(dev.inputs()[0].pad);
+        assert!(dev.inputs()[1].pad, "pad must mirror across a linked pair");
+
+        dev.set_input_gain(0, 20).unwrap();
+        assert_eq!(dev.inputs()[0].gain, Some(20));
+        assert_eq!(dev.inputs()[1].gain, Some(20), "gain must mirror across a linked pair");
+    }
+
+    #[test]
+    fn test_split_input_pair_phantom_moves_only_the_selected_channel() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        // Mock's own demo default starts both mics' phantom on (see
+        // `open()`'s own comment) — normalize to a known baseline first
+        // so this test isn't just re-asserting that default.
+        dev.set_input_pair_linked(0, false).unwrap();
+        dev.set_phantom(0, false).unwrap();
+        dev.set_phantom(1, false).unwrap();
+
+        dev.set_input_phantom(0, true).unwrap();
+        assert!(dev.inputs()[0].phantom);
+        assert!(!dev.inputs()[1].phantom);
+    }
+
+    #[test]
     fn test_split_input_pair_moves_only_the_selected_channel() {
         let mut dev = MockBabyfacePro::open().unwrap();
         dev.set_input_pair_linked(0, false).unwrap();

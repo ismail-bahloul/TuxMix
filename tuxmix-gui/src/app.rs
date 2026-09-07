@@ -1573,13 +1573,13 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::Phantom(idx, p) => {
-            let _ = state.device.set_phantom(idx, p);
+            let _ = state.device.set_input_phantom(idx, p);
         }
         Message::Pad(idx, p) => {
-            let _ = state.device.set_pad(idx, p);
+            let _ = state.device.set_input_pad(idx, p);
         }
         Message::Gain(idx, g) => {
-            let _ = state.device.set_gain(idx, g);
+            let _ = state.device.set_input_gain(idx, g);
         }
         Message::Sensitivity(idx, plus4) => {
             let s = if plus4 {
@@ -3846,6 +3846,25 @@ mod tests {
 
         let _ = update(&mut state, Message::PhaseChanged(cid, false));
         assert!(!state.device.inputs()[1].phase);
+    }
+
+    #[test]
+    fn phantom_changed_mirrors_across_a_linked_input_pair() {
+        // User-caught: toggling 48V on a linked AN1/2 strip only ever
+        // touched its own (left) channel — Message::Phantom called
+        // set_phantom directly, bypassing the new pair-aware
+        // set_input_phantom entirely.
+        let mut state = new(true, None, None);
+        assert!(state.device.input_pair_linked(0));
+        let _ = update(&mut state, Message::Phantom(0, false));
+        let _ = update(&mut state, Message::Phantom(1, false));
+
+        let _ = update(&mut state, Message::Phantom(0, true));
+        assert!(state.device.inputs()[0].phantom);
+        assert!(
+            state.device.inputs()[1].phantom,
+            "48V must mirror to AN2 when the pair is linked"
+        );
     }
 
     #[test]

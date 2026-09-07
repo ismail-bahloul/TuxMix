@@ -1697,6 +1697,41 @@ mod tests {
 
     #[test]
     #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    fn live_hardware_input_phantom_mirrors_across_a_linked_pair() {
+        // User-caught: toggling 48V on a linked AN1/2 strip only ever
+        // touched its own channel (Message::Phantom called set_phantom
+        // directly, no pair-awareness at all) — verified here against
+        // the real card, not just mock, since this is orchestration
+        // over already-hardware-verified set_phantom/input_pair_linked.
+        let mut dev = BabyfacePro::open().expect("real device attached");
+        let was_linked = dev.input_pair_linked(0);
+        if !was_linked {
+            dev.set_input_pair_linked(0, true).unwrap();
+        }
+        let orig0 = dev.inputs()[0].phantom;
+        let orig1 = dev.inputs()[1].phantom;
+
+        dev.set_input_phantom(0, false).unwrap();
+        let dev2 = BabyfacePro::open().expect("real device attached");
+        assert!(!dev2.inputs()[0].phantom);
+        assert!(!dev2.inputs()[1].phantom, "48V off must mirror to AN2 when linked");
+        drop(dev2);
+
+        dev.set_input_phantom(0, true).unwrap();
+        let dev3 = BabyfacePro::open().expect("real device attached");
+        assert!(dev3.inputs()[0].phantom);
+        assert!(dev3.inputs()[1].phantom, "48V on must mirror to AN2 when linked");
+        drop(dev3);
+
+        dev.set_phantom(0, orig0).unwrap();
+        dev.set_phantom(1, orig1).unwrap();
+        if !was_linked {
+            dev.set_input_pair_linked(0, false).unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
     fn live_hardware_stereo_split_round_trip() {
         let mut dev = BabyfacePro::open().expect("real device attached");
         let pb = 0; // PB1 (playback channels 0/1)
