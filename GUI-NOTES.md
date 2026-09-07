@@ -2371,3 +2371,67 @@ mirroring actually fired, caught before trusting a green test); a GUI
 and a new `live_hardware_input_phantom_mirrors_across_a_linked_pair`
 test, run with `--ignored` against the real card — passed, hardware
 confirmed left exactly as found afterward. 167/167 non-ignored tests.
+
+## 2026-09-07 — AUR PKGBUILD (`aur/tuxmix/PKGBUILD`) fixed and hardware-tested end to end
+
+Prompted by "on devrait faire quoi pour le driver et tuxmix ? AUR ?
+flatpak ?" — recommended AUR for both (driver: no Flatpak, it's a
+kernel module; TuxMix: AUR first, Flatpak later only if there's real
+non-Arch demand, given its need for direct USB/ALSA access that would
+need real sandbox-permission work). User confirmed preparing (not yet
+publishing — that's gated on the "genuinely ready" bar for the public
+announcement, see project memory) the existing PKGBUILD.
+
+Ran a full local `makepkg` build (via `git archive` + a fake local
+source URL override, not published) rather than just reading the file
+— found 3 real bugs the file had shipped with unnoticed:
+
+- **Wrong extracted-directory name.** GitHub names an archive after
+  the repo's real casing (`TuxMix-0.1.0/`, confirmed by actually
+  downloading `archive/refs/heads/main.tar.gz` and checking), not the
+  lowercase `pkgname` (`tuxmix-0.1.0`) the `build()`/`package()`
+  functions `cd`'d into — would have failed with "no such directory"
+  on the very first real build.
+- **`url` pointed at a renamed GitHub account** (`iswad-lab/TuxMix`) —
+  currently a 301 redirect to the real `ismail-bahloul/TuxMix`, so not
+  yet broken, but relying on a redirect indefinitely isn't sound.
+  Pointed at the canonical URL.
+- **makepkg's default `lto` option breaks the build.** `tuxmix-usb`
+  depends on `rusb` with the `vendored` feature (compiles libusb from
+  C source via the `cc` crate — deliberately no runtime `libusb`
+  dependency as a result). `/etc/makepkg.conf`'s default
+  `OPTIONS=(... lto ...)` injects `-flto=auto` into `CFLAGS`, which
+  the vendored C build picks up; the resulting LTO-bitcode static
+  archive then fails to link into the (non-LTO) Rust binary with a
+  wall of `undefined symbol: libusb_*` errors. Reproduced in isolation
+  (`CFLAGS="-flto=auto -O2" cargo build` alone reproduces it, with no
+  makepkg involved at all) before concluding this was the cause, not
+  guessed from the error text. Fixed with `options=('!lto')` in the
+  PKGBUILD, scoped to this package only.
+
+Also added `systemd-libs` to `depends=` — `ldd` on the packaged
+binaries showed a real `libudev.so.1` link (owned by `systemd-libs` on
+Arch) that wasn't declared. Confirmed via `ldd` that neither binary
+links `libusb` at all (matches the vendored/static build, so no
+runtime libusb dependency is needed or was missing).
+
+After all 3 fixes: full `makepkg` (no `--nodeps`/checksum skip needed
+for the *build* step itself, those flags were only there to substitute
+a local tarball for the not-yet-tagged GitHub source) completed clean,
+produced a real `.pkg.tar.zst`, contents verified (`tar -tvf`) against
+what `package()` installs, both binaries confirmed to actually run
+(the `--mock` TUI's `Os { code: 6 }` ENXIO on a piped/non-tty
+invocation was cross-checked against the plain dev build under the
+identical piped invocation — same error there too, so it's crossterm's
+raw-mode init needing a real tty, not a packaging regression).
+`cargo test --workspace --release`: still 30/30 (core) + full suite
+green, unaffected (packaging-only change, no source edits).
+
+**Not published** — `makepkg`/AUR publish needs a real Git tag (this
+repo has none yet, matching [[project_release_timeline]]'s "no tag
+until the user says so"), and pushing to AUR is itself a public/
+discoverable action the user wants deferred until the single
+"genuinely ready" announcement moment, not treated as a side effect of
+prep work. The corrected PKGBUILD is committed so it's a `git tag` +
+`makepkg --printsrcinfo > .SRCINFO` + `git push aur` away whenever
+that call is made.
