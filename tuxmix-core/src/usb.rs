@@ -1108,23 +1108,8 @@ impl RmeDevice for BabyfaceProUsb {
         Ok(())
     }
 
-    fn set_spdif_enabled(&mut self, _enabled: bool) -> Result<(), Error> {
-        Err(Error::InvalidChannel(
-            "SPDIF control is not mapped in the USB protocol yet".into(),
-        ))
-    }
 
-    fn set_spdif_emphasis(&mut self, _enabled: bool) -> Result<(), Error> {
-        Err(Error::InvalidChannel(
-            "SPDIF control is not mapped in the USB protocol yet".into(),
-        ))
-    }
 
-    fn set_spdif_professional(&mut self, _enabled: bool) -> Result<(), Error> {
-        Err(Error::InvalidChannel(
-            "SPDIF control is not mapped in the USB protocol yet".into(),
-        ))
-    }
 
     fn set_clock_source(&mut self, source: &str) -> Result<(), Error> {
         if !self.settings.clock_sources.iter().any(|s| s == source) {

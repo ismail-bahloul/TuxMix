@@ -194,15 +194,6 @@ impl RmeDevice for DeviceHandle {
     ) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_sensitivity(idx, sensitivity))
     }
-    fn set_spdif_enabled(&mut self, enabled: bool) -> Result<(), tuxmix_core::Error> {
-        delegate!(self, set_spdif_enabled(enabled))
-    }
-    fn set_spdif_emphasis(&mut self, enabled: bool) -> Result<(), tuxmix_core::Error> {
-        delegate!(self, set_spdif_emphasis(enabled))
-    }
-    fn set_spdif_professional(&mut self, enabled: bool) -> Result<(), tuxmix_core::Error> {
-        delegate!(self, set_spdif_professional(enabled))
-    }
     fn set_clock_source(&mut self, source: &str) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_clock_source(source))
     }
@@ -695,9 +686,6 @@ pub enum Message {
     ToggleDevicePanel,
     ClockSourceSelected(String),
     SampleRateSelected(u32),
-    SpdifEnabledChanged(bool),
-    SpdifEmphasisChanged(bool),
-    SpdifProfessionalChanged(bool),
 
     // ── Right sidebar ("control strip") ─────────────────────────────
     /// Pops `undo_stack`, pushes the current state onto `redo_stack`,
@@ -1875,15 +1863,6 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::SampleRateSelected(rate) => {
             let _ = state.device.set_sample_rate(rate);
         }
-        Message::SpdifEnabledChanged(v) => {
-            let _ = state.device.set_spdif_enabled(v);
-        }
-        Message::SpdifEmphasisChanged(v) => {
-            let _ = state.device.set_spdif_emphasis(v);
-        }
-        Message::SpdifProfessionalChanged(v) => {
-            let _ = state.device.set_spdif_professional(v);
-        }
 
         // ── Right sidebar ────────────────────────────────────────────
         Message::Undo => {
@@ -2202,35 +2181,28 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
     .spacing(theme::SPACE_MD * scale)
     .align_y(iced::Alignment::Center);
 
-    let spdif_toggle = |label: &'static str, active: bool, on_toggle: fn(bool) -> Message| {
+    // Generic toggle-button helper for this panel's rows. (Was named
+    // `spdif_toggle` when the panel's first row was the SPDIF one —
+    // that row is gone, see below, but every other row used the same
+    // helper.)
+    let panel_toggle = |label: &'static str, active: bool, on_toggle: fn(bool) -> Message| {
         iced::widget::button(text(label).size(theme::TEXT_SM * scale))
             .padding([theme::SPACE_SM * scale, theme::SPACE_LG * scale])
             .style(theme::toggle_button(active, theme::ACCENT))
             .on_press(on_toggle(!active))
     };
 
-    let spdif_row = row![
-        text("SPDIF")
-            .color(theme::TEXT_SEC)
-            .size(theme::TEXT_XS * scale),
-        spdif_toggle(
-            "Enabled",
-            settings.spdif_enabled,
-            Message::SpdifEnabledChanged
-        ),
-        spdif_toggle(
-            "Emphasis",
-            settings.spdif_emphasis,
-            Message::SpdifEmphasisChanged
-        ),
-        spdif_toggle(
-            "Professional",
-            settings.spdif_professional,
-            Message::SpdifProfessionalChanged
-        ),
-    ]
-    .spacing(theme::SPACE_MD * scale)
-    .align_y(iced::Alignment::Center);
+    // NOTE: there used to be a "SPDIF: Enabled / Emphasis / Professional"
+    // row here. Removed 2026-09-12: those were never Babyface Pro
+    // features. They are generic IEC958 controls that `snd-usb-audio`
+    // synthesizes for any class-compliant device with an S/PDIF
+    // endpoint — RME's own Fireface USB Settings dialog for this card
+    // offers no such options (its SPDIF settings are "Optical Out
+    // ADAT/SPDIF" and "SPDIF In TMS"; see PROTOCOL.md's captured UI
+    // reference). They reached TuxMix through the CC-mode ALSA surface,
+    // and once `open()` started refusing CC-mode cards they were three
+    // buttons that could not do anything on any backend. The real
+    // optical-format control lives in `toggle_row` below.
 
     let modifiers = state.modifiers;
     let pitch_row = row![
@@ -2272,15 +2244,15 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
         text("Global")
             .color(theme::TEXT_SEC)
             .size(theme::TEXT_XS * scale),
-        spdif_toggle("MS Proc", settings.ms_proc, Message::MsProcChanged),
-        spdif_toggle("AN 1>2", settings.an12, Message::An12Changed),
-        spdif_toggle("Input Link", settings.input_link, Message::InputLinkChanged),
-        spdif_toggle(
+        panel_toggle("MS Proc", settings.ms_proc, Message::MsProcChanged),
+        panel_toggle("AN 1>2", settings.an12, Message::An12Changed),
+        panel_toggle("Input Link", settings.input_link, Message::InputLinkChanged),
+        panel_toggle(
             "EQ for Record",
             settings.eq_for_record,
             Message::EqForRecordChanged
         ),
-        spdif_toggle(
+        panel_toggle(
             "Opt Out: SPDIF",
             settings.optical_out_spdif,
             Message::OpticalOutFormatChanged
@@ -2290,7 +2262,7 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
     .align_y(iced::Alignment::Center);
 
     container(
-        column![header, clock_row, rate_row, spdif_row, pitch_row, toggle_row]
+        column![header, clock_row, rate_row, pitch_row, toggle_row]
             .spacing(theme::SPACE_LG * scale)
             .width(Length::Fill),
     )

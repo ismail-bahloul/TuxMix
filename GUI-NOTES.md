@@ -2512,3 +2512,70 @@ autant ne pas avoir à le refaire. C'est la référence qui permettrait de
 chiffrer un vrai support CC — question stratégique laissée ouverte
 (ça vaudrait "TuxMix marche sans installer de module kernel"), pas
 tranchée ici.
+
+## 2026-09-12 (suite) — retrait des contrôles SPDIF Emphasis/Professional/Enabled
+
+Suite directe de la garde CC ci-dessus. En voulant "réparer" les deux
+tests SPDIF devenus injouables, découvert qu'ils gardaient en vie une
+fonctionnalité inerte — puis, en creusant, qu'elle n'avait jamais eu
+lieu d'être.
+
+**Deux erreurs de ma part corrigées en route, les deux signalées :**
+d'abord j'ai annoncé une "vraie régression" sur la sensibilité en CC
+mode (faux : le support CC avait été abandonné délibérément en août par
+`564986a`) ; ensuite j'ai affirmé que ces setters SPDIF n'avaient
+"aucun appelant UI" — faux aussi, mon `grep` était tronqué par un
+`head`. Il y avait bien **trois boutons cliquables** dans le panneau
+device (`SPDIF — Enabled / Emphasis / Professional`).
+
+Ces trois boutons ne faisaient rien sur aucun backend : ALSA injoignable
+depuis la garde CC, USB renvoyant `Err("not mapped in the USB protocol
+yet")`, et le handler faisant `let _ = …` donc avalant l'erreur. Comme
+`settings.spdif_*` n'est alimenté qu'à l'attache en CC mode, ils ne
+changeaient même pas d'état visuellement au clic.
+
+**Ce qui a tranché la question — le matériel, pas le code.** L'objection
+légitime était : "c'est une fonctionnalité de TotalMix / Fireface USB
+Settings / la carte, non ?" Vérifié dans notre propre RE :
+`PROTOCOL.md:1155-1163` contient la transcription du dialogue *Fireface
+USB Settings* pour ce Babyface Pro précis (fournie le 2026-08-23). Ses
+options SPDIF sont **Optical Out (SPDIF/ADAT)** et **SPDIF In "TMS"** —
+il n'y a ni Emphasis ni Professional. Et `grep -i
+"emphasis\|professional\|pro mask\|aes/ebu"` sur toute la RE ne renvoie
+**rien** : jamais vu dans une seule capture Windows. Ce sont des
+contrôles génériques de la classe USB Audio que `snd-usb-audio`
+fabrique pour tout périphérique ayant un endpoint S/PDIF — arrivés dans
+TuxMix par la surface ALSA du mode CC, jamais par RME. (Les Fireface
+UCX/802/UFX, eux, ont un vrai contrôle du statut AES.)
+
+Retiré : la ligne SPDIF du panneau device, les 3 `Message`, les 3
+handlers, les 3 arms `delegate!` **dans les deux UI**, les 3
+déclarations du trait, les impls dans les 3 backends, et les 2 tests.
+Le helper `spdif_toggle` était en fait générique (réutilisé par la
+ligne "Global") — gardé, renommé `panel_toggle`.
+
+**Gardé volontairement :** les champs `spdif_enabled/emphasis/
+professional` de `DeviceSettings`, annotés "vestigial", pour que les
+scènes déjà sur disque (`auto.json`, `rentree.json`) continuent de
+round-tripper à l'identique. Et bien sûr `optical_out_spdif`, le vrai
+contrôle optique, qui reste dans la ligne "Global".
+
+**Piège évité :** `usb.rs` est en CRLF, et mon premier script de retrait
+y a introduit 3 CR isolés en découpant sur `\n`. Repéré via `file`,
+fichier restauré par `git checkout --`, refait en traitant `\r\n` comme
+séparateur. Même classe de piège que la conversion LF accidentelle de ce
+fichier plus tôt dans le projet — vérifier `file` après tout script sur
+`usb.rs` reste la bonne habitude.
+
+**Non vérifié :** le rendu visuel du panneau sans la ligne. La fenêtre
+GUI n'est pas apparue via `xdotool` dans ce sandbox (limitation connue),
+donc pas de capture. C'est un retrait de ligne dans un `column![]` sans
+logique, mais ce n'est pas confirmé à l'œil.
+
+**Vraie piste SPDIF restante, si le sujet revient :** `SPDIF In TMS`,
+seule option SPDIF réelle non implémentée. Curiosité notée dans
+`PROTOCOL.md:657` — « TMS = no USB write in v1.276 », donc même le
+driver RME ne semble rien envoyer quand on coche la case.
+
+167 tests verts, build sans warning, 2 warnings `cargo doc`
+préexistants inchangés.

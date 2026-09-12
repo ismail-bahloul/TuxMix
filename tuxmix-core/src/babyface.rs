@@ -1263,13 +1263,6 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
-    fn set_spdif_enabled(&mut self, enabled: bool) -> Result<(), Error> {
-        if let Some(selem) = self.mixer.find_selem("IEC958", 0) {
-            selem.set_playback_switch(SelemChannelId::mono(), enabled as i32)?;
-        }
-        self.settings.spdif_enabled = enabled;
-        Ok(())
-    }
 
     fn set_pitch(&mut self, pitch_percent: f32) -> Result<(), Error> {
         // "Varispeed Pitch" exists over ALSA too (mixer.c:1021-1030),
@@ -1430,21 +1423,7 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
-    fn set_spdif_emphasis(&mut self, enabled: bool) -> Result<(), Error> {
-        if let Some(selem) = self.mixer.find_selem("IEC958 Emphasis", 0) {
-            selem.set_playback_switch(SelemChannelId::mono(), enabled as i32)?;
-        }
-        self.settings.spdif_emphasis = enabled;
-        Ok(())
-    }
 
-    fn set_spdif_professional(&mut self, enabled: bool) -> Result<(), Error> {
-        if let Some(selem) = self.mixer.find_selem("IEC958 Pro Mask", 0) {
-            selem.set_playback_switch(SelemChannelId::mono(), enabled as i32)?;
-        }
-        self.settings.spdif_professional = enabled;
-        Ok(())
-    }
 
     fn set_clock_source(&mut self, source: &str) -> Result<(), Error> {
         let selem = self
@@ -1922,50 +1901,6 @@ mod tests {
                  lying to the user again"
             ),
         }
-    }
-
-    #[test]
-    #[ignore = "SUPERSEDED 2026-09-12 and no longer runnable: needs Class \
-                Compliant mode (only there does IEC958 exist — the \
-                from-scratch snd-usb-babyface-pro driver still has no \
-                IEC958 control), but `open()` now refuses CC-mode cards \
-                outright (see its UnsupportedDeviceMode guard). Kept as the \
-                record that SPDIF is a CC-only control; it would come back \
-                with real CC support, or once the driver grows IEC958"]
-    fn live_hardware_spdif_enabled_round_trip() {
-        let mut dev = BabyfacePro::open().expect("real device attached");
-        let orig = dev.settings().spdif_enabled;
-
-        dev.set_spdif_enabled(!orig).unwrap();
-        assert_eq!(dev.settings().spdif_enabled, !orig);
-
-        let dev2 = BabyfacePro::open().expect("real device attached");
-        assert_eq!(dev2.settings().spdif_enabled, !orig);
-        drop(dev2);
-
-        dev.set_spdif_enabled(orig).unwrap();
-    }
-
-    #[test]
-    #[ignore = "SUPERSEDED 2026-09-12, same reason as \
-                live_hardware_spdif_enabled_round_trip above: IEC958 \
-                Emphasis/Pro Mask exist only in Class Compliant mode, which \
-                `open()` now refuses outright"]
-    fn live_hardware_spdif_emphasis_and_professional_round_trip() {
-        let mut dev = BabyfacePro::open().expect("real device attached");
-        let orig_emph = dev.settings().spdif_emphasis;
-        let orig_prof = dev.settings().spdif_professional;
-
-        dev.set_spdif_emphasis(!orig_emph).unwrap();
-        dev.set_spdif_professional(!orig_prof).unwrap();
-
-        let dev2 = BabyfacePro::open().expect("real device attached");
-        assert_eq!(dev2.settings().spdif_emphasis, !orig_emph);
-        assert_eq!(dev2.settings().spdif_professional, !orig_prof);
-        drop(dev2);
-
-        dev.set_spdif_emphasis(orig_emph).unwrap();
-        dev.set_spdif_professional(orig_prof).unwrap();
     }
 
     #[test]

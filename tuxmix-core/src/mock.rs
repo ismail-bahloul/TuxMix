@@ -405,10 +405,6 @@ impl RmeDevice for MockBabyfacePro {
         Ok(())
     }
 
-    fn set_spdif_enabled(&mut self, enabled: bool) -> Result<(), Error> {
-        self.settings.spdif_enabled = enabled;
-        Ok(())
-    }
 
     fn set_pitch(&mut self, pitch_percent: f32) -> Result<(), Error> {
         self.settings.pitch_percent = pitch_percent.clamp(-5.0, 5.0);
@@ -629,15 +625,7 @@ impl RmeDevice for MockBabyfacePro {
         Ok(())
     }
 
-    fn set_spdif_emphasis(&mut self, enabled: bool) -> Result<(), Error> {
-        self.settings.spdif_emphasis = enabled;
-        Ok(())
-    }
 
-    fn set_spdif_professional(&mut self, enabled: bool) -> Result<(), Error> {
-        self.settings.spdif_professional = enabled;
-        Ok(())
-    }
 
     fn set_clock_source(&mut self, source: &str) -> Result<(), Error> {
         if !self.settings.clock_sources.iter().any(|s| s == source) {

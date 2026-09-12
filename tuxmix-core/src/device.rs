@@ -19,12 +19,24 @@ pub struct DeviceSettings {
     /// field is currently unmapped and always `false`.
     pub spdif_optical: bool,
     /// SPDIF emphasis (`IEC958 Emphasis`).
+    ///
+    /// **Vestigial since 2026-09-12 — read-only, in practice always
+    /// `false`.** This and the two fields below are only ever populated
+    /// by `BabyfacePro::attach_mixer_elements`, from generic IEC958
+    /// controls that exist solely in Class Compliant mode, which
+    /// `BabyfacePro::open` now refuses. Their setters were removed at
+    /// the same time (they were never Babyface Pro features — see the
+    /// note next to `set_optical_out_format`). Kept as fields so scenes
+    /// written before that date keep round-tripping unchanged; the
+    /// card's real optical/SPDIF state is `optical_out_spdif`.
     pub spdif_emphasis: bool,
     /// SPDIF professional/consumer format flag (`IEC958 Pro Mask`).
+    /// Vestigial — see [`DeviceSettings::spdif_emphasis`].
     pub spdif_professional: bool,
     /// Whether the SPDIF output is actively transmitting (`IEC958
     /// Switch`, shown as `"IEC958"` in the simple-mixer view — the
     /// standard generic ALSA S/PDIF enable switch, not RME-specific).
+    /// Vestigial — see [`DeviceSettings::spdif_emphasis`].
     /// `#[serde(default)]` so scenes saved before this field existed
     /// still deserialize (same pattern as `Scene::model`).
     #[serde(default)]
@@ -683,14 +695,17 @@ pub trait RmeDevice {
     /// type has no sensitivity switch (only Instrument inputs do).
     fn set_sensitivity(&mut self, idx: usize, sensitivity: Sensitivity) -> Result<(), Error>;
 
-    /// Enable/disable the SPDIF output (`IEC958 Switch`).
-    fn set_spdif_enabled(&mut self, enabled: bool) -> Result<(), Error>;
-
-    /// Set SPDIF emphasis (`IEC958 Emphasis`).
-    fn set_spdif_emphasis(&mut self, enabled: bool) -> Result<(), Error>;
-
-    /// Set the SPDIF professional/consumer format flag (`IEC958 Pro Mask`).
-    fn set_spdif_professional(&mut self, enabled: bool) -> Result<(), Error>;
+    // NOTE: `set_spdif_enabled`/`_emphasis`/`_professional` lived here
+    // until 2026-09-12. They mapped to `IEC958 Switch`/`Emphasis`/`Pro
+    // Mask` — generic controls `snd-usb-audio` synthesizes for any
+    // class-compliant device with an S/PDIF endpoint, *not* Babyface
+    // Pro features: RME's own Fireface USB Settings dialog for this
+    // card exposes no such options (see `PROTOCOL.md`'s captured UI
+    // reference), and the strings never appear in any Windows capture.
+    // The card's real optical/SPDIF control is `set_optical_out_format`
+    // below. If a future device profile genuinely needs AES channel
+    // status (the bigger Fireface units do), add it back deliberately
+    // rather than resurrecting these.
 
     /// Set the sample clock source. `source` must be one of
     /// `DeviceSettings::clock_sources`; errors otherwise.

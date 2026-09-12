@@ -139,15 +139,6 @@ impl RmeDevice for DeviceHandle {
     ) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_sensitivity(idx, sensitivity))
     }
-    fn set_spdif_enabled(&mut self, enabled: bool) -> Result<(), tuxmix_core::Error> {
-        delegate!(self, set_spdif_enabled(enabled))
-    }
-    fn set_spdif_emphasis(&mut self, enabled: bool) -> Result<(), tuxmix_core::Error> {
-        delegate!(self, set_spdif_emphasis(enabled))
-    }
-    fn set_spdif_professional(&mut self, enabled: bool) -> Result<(), tuxmix_core::Error> {
-        delegate!(self, set_spdif_professional(enabled))
-    }
     fn set_clock_source(&mut self, source: &str) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_clock_source(source))
     }
