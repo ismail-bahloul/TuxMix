@@ -17,6 +17,19 @@ pub enum Error {
     #[error("Mixer element not found: {0}")]
     MixerElementNotFound(String),
 
+    /// The card is there, but its mixer isn't the one this backend
+    /// speaks — in practice, a Babyface Pro running in Class Compliant
+    /// mode on stock `snd-usb-audio`, whose control grammar
+    /// (`Mic-AN1 Gain`, `Line-IN3-AN1`, …) this backend stopped
+    /// targeting when it was rewritten for `snd-usb-babyface-pro`.
+    /// Distinct from [`Error::DeviceNotFound`] so the UI can tell the
+    /// user what to actually do about it.
+    #[error("{card}: found, but its mixer is not the one TuxMix drives \
+             (missing: {missing}). A Babyface Pro in Class Compliant mode \
+             looks like this — TuxMix needs the snd-usb-babyface-pro driver \
+             (proprietary mode). See babyface-pro-linux's README.")]
+    UnsupportedDeviceMode { card: String, missing: String },
+
     #[error("Invalid channel: {0}")]
     InvalidChannel(String),
 

@@ -237,13 +237,20 @@ impl BabyfacePro {
 
     /// Match ALSA mixer elements to our channel model.
     ///
-    /// Global controls this driver doesn't yet expose over ALSA
-    /// (Sample Clock Source, IEC958/SPDIF, per-input Sensitivity — none
-    /// of these exist anywhere in `mixer.c`/`main.c`/`panel.c`/`eq.c` as
-    /// of 2026-08-28) are left scanned-for-but-unmatched here rather
-    /// than removed: harmless no-ops today, and a smaller diff than
-    /// ripping the fields out of the model in the same pass that fixes
-    /// the crosspoint/master/phantom/pad/gain grammar.
+    /// Every lookup here is a deliberate `if let Some(selem)` no-op when
+    /// the control is absent, because the driver grew its control set
+    /// over time and an older module should still give a working mixer
+    /// for whatever it *does* expose. (The 2026-08-28 version of this
+    /// comment listed Sample Clock Source and per-input Sensitivity as
+    /// permanently missing; both were added to `snd-usb-babyface-pro`
+    /// on 2026-09-06 — as "Sample Clock Source" and "Instrument Ref
+    /// Level" — and are matched below. IEC958/SPDIF is still driver-side
+    /// missing, and exists only in Class Compliant mode.)
+    ///
+    /// That tolerance is why [`RmeDevice::open`] has to check for a few
+    /// sentinel controls *before* getting here: absent the guard, a card
+    /// with an entirely foreign control grammar (a CC-mode Babyface on
+    /// `snd-usb-audio`) matches nothing at all and still looks healthy.
     fn attach_mixer_elements(&mut self) {
         let mono = SelemChannelId::mono();
 
@@ -632,6 +639,31 @@ impl RmeDevice for BabyfacePro {
         info!("Searching for RME Babyface Pro...");
         let profile = &PROFILE;
         let mixer = AlsaMixer::open_by_card_name(profile.card_substring)?;
+
+        // Matching the card *name* isn't enough to know this is a
+        // mixer we can drive. A Babyface Pro in Class Compliant mode
+        // on stock `snd-usb-audio` announces itself as "RME Babyface
+        // Pro (<serial>)", which contains `card_substring` just as
+        // ours does — but its control grammar is the CC one
+        // (`Mic-AN1 Gain`, `Line-IN3-AN1`, `Line-IN3 Sens.`), which
+        // this backend stopped targeting in 564986a when it was
+        // rewritten for `snd-usb-babyface-pro`. Every lookup below is
+        // a silent `if let Some(selem)` no-op, so without this guard
+        // the backend comes up reporting success: it shows invented
+        // state (48V read as off while the card really has it on) and
+        // every setter returns `Ok(())` without reaching the hardware.
+        // Verified against the real card in CC mode, 2026-09-12.
+        let missing: Vec<&str> = [BF_SOURCES[0], "Mic 1"]
+            .into_iter()
+            .filter(|name| mixer.find_selem(name, 0).is_none())
+            .collect();
+        if !missing.is_empty() {
+            return Err(Error::UnsupportedDeviceMode {
+                card: mixer.card_name().to_string(),
+                missing: missing.join(", "),
+            });
+        }
+
         // Requesting just 2 capture channels (not the full 12) lands
         // exactly on AN1/AN2: the kernel driver's own channel map
         // (`babyfacepro.c`'s `babyface_capture_copy`) walks `map[i]`
@@ -1863,11 +1895,43 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the real Babyface Pro FS attached AND running in \
-                Class Compliant mode (snd-usb-audio) — the from-scratch \
-                snd-usb-babyface-pro driver has no IEC958 control yet \
-                (see babyface-pro-linux/README.md's upstream plan); run \
+    #[ignore = "requires the real Babyface Pro FS attached AND switched to \
+                Class Compliant mode (snd-usb-audio, USB 2a39:3fb0); run \
                 manually with --ignored"]
+    fn live_hardware_class_compliant_mode_is_refused_not_silently_accepted() {
+        // Before this guard, `open()` matched the CC-mode card on its name
+        // alone — "RME Babyface Pro (<serial>)" contains `card_substring`
+        // just as our own driver's "Babyface Pro FS" does — and then came
+        // up looking healthy while driving nothing: it reported invented
+        // state (48V read as off while the card really had it on, gain
+        // read as None while the card read 33) and `set_gain` returned
+        // `Ok(())` leaving the hardware untouched. All of that observed on
+        // the real card in CC mode, 2026-09-12.
+        match BabyfacePro::open() {
+            Err(Error::UnsupportedDeviceMode { missing, .. }) => {
+                assert!(
+                    missing.contains("Mic 1"),
+                    "the error should name the controls that were missing, \
+                     so the log says *why* — got {missing:?}"
+                );
+            }
+            Err(e) => panic!("expected UnsupportedDeviceMode, got {e:?}"),
+            Ok(_) => panic!(
+                "open() accepted a Class-Compliant-mode card — the guard in \
+                 `open()` has regressed, and every setter is now silently \
+                 lying to the user again"
+            ),
+        }
+    }
+
+    #[test]
+    #[ignore = "SUPERSEDED 2026-09-12 and no longer runnable: needs Class \
+                Compliant mode (only there does IEC958 exist — the \
+                from-scratch snd-usb-babyface-pro driver still has no \
+                IEC958 control), but `open()` now refuses CC-mode cards \
+                outright (see its UnsupportedDeviceMode guard). Kept as the \
+                record that SPDIF is a CC-only control; it would come back \
+                with real CC support, or once the driver grows IEC958"]
     fn live_hardware_spdif_enabled_round_trip() {
         let mut dev = BabyfacePro::open().expect("real device attached");
         let orig = dev.settings().spdif_enabled;
@@ -1883,10 +1947,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the real Babyface Pro FS attached AND running in \
-                Class Compliant mode (snd-usb-audio) — the from-scratch \
-                snd-usb-babyface-pro driver has no IEC958 Emphasis/Pro \
-                Mask controls yet; run manually with --ignored"]
+    #[ignore = "SUPERSEDED 2026-09-12, same reason as \
+                live_hardware_spdif_enabled_round_trip above: IEC958 \
+                Emphasis/Pro Mask exist only in Class Compliant mode, which \
+                `open()` now refuses outright"]
     fn live_hardware_spdif_emphasis_and_professional_round_trip() {
         let mut dev = BabyfacePro::open().expect("real device attached");
         let orig_emph = dev.settings().spdif_emphasis;

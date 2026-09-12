@@ -328,6 +328,13 @@ impl DeviceHandle {
                     log::warn!("--backend alsa requested but ALSA open failed: {e:?}");
                     return None;
                 }
+                // The card was found, it's just in a mode this backend
+                // can't drive — user-actionable, so say it on stderr
+                // instead of falling through to the generic (and here
+                // simply wrong) "No device found".
+                Err(e @ tuxmix_core::Error::UnsupportedDeviceMode { .. }) => {
+                    eprintln!("{e}");
+                }
                 Err(_) => {}
             }
         }

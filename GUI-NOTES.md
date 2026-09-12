@@ -2435,3 +2435,80 @@ discoverable action the user wants deferred until the single
 prep work. The corrected PKGBUILD is committed so it's a `git tag` +
 `makepkg --printsrcinfo > .SRCINFO` + `git push aur` away whenever
 that call is made.
+
+## 2026-09-12 — `open()` refuse une carte en Class Compliant mode au lieu de faire semblant
+
+Parti d'une question sur quatre projets RME tiers ("on devrait s'en
+inspirer ?"). Le plus petit des quatre, `stistrup/rme-control-cli`,
+pilote la sensibilité via `Line-IN3 Sens.` — précisément le nom que
+j'avais qualifié de "fictif" en réécrivant `set_sensitivity` plus tôt
+dans la session. Il ne l'était pas : il est réel **en mode Class
+Compliant**, et absent de notre propre driver. Vérifié : la carte
+basculée en CC mode expose bien `Line-IN3 Sens.`, `Mic-AN1 Gain`,
+`Mic-AN1 48V`, et des crosspoints `Line-IN3-AN1` — la grammaire
+`<Type>-<Name>-<Output>` que `CONTRIBUTING.md:47` documente toujours et
+que ce backend visait avant `564986a` (28 août), commit qui l'a
+réécrite pour `snd-usb-babyface-pro`.
+
+**Ce n'était donc pas une régression de cette session** — le support CC
+a été abandonné en août, délibérément et avec un message de commit
+explicite. Ma première lecture (annoncée au départ comme "une vraie
+régression de ma part") était fausse et a été corrigée avant de toucher
+au code : ajouter un repli `Sens.` seul n'aurait rien réparé, puisque
+le gain, le 48V, le PAD, les masters et les 84 crosspoints échouent
+déjà tous en CC.
+
+**Le vrai bug, lui, était confirmé sur le matériel.** `card_substring`
+vaut `"Babyface Pro"` et est comparé au *nom* de carte ; or en CC la
+carte s'annonce `RME Babyface Pro (<serial>)`, qui contient cette
+sous-chaîne aussi bien que notre `Babyface Pro FS`. Donc `open()`
+acceptait la carte CC, et comme chaque lookup de `attach_mixer_elements`
+est un `if let Some(selem)` tolérant, tout remontait "sain". Mesuré sur
+la vraie carte en CC mode :
+
+| | TuxMix annonçait | matériel réel |
+|---|---|---|
+| `open()` | `Ok` | carte CC |
+| 48V AN1 | `phantom=false` | **ON** |
+| gain AN1 | `None` | 33 |
+| `set_gain(0, 40)` | **`Ok(())`** | inchangé à **33** |
+
+Donc pas seulement des écritures silencieusement perdues : un **état
+affiché faux**, le 48V montré éteint alors qu'il était allumé.
+
+Correctif au bon niveau — une garde dans `open()`, pas 45 `Err` dans
+les setters : après l'ouverture du mixer, on vérifie deux sentinelles
+(`BF_SOURCES[0]` pour la grammaire crosspoint, `"Mic 1"` pour les
+préamplis) et on renvoie une nouvelle `Error::UnsupportedDeviceMode`
+nommant les contrôles manquants. La plomberie existait déjà : `open_real`
+enchaînait sur le backend USB puis affichait "No device found" — faux
+ici, l'appareil *est* trouvé. Les deux UI ayant chacune leur copie
+d'`open_real`, la branche a été ajoutée des deux côtés (même bug, même
+correctif, comme pour le 48V/PAD/Gain plus tôt).
+
+Vérifié dans les deux sens sur le vrai matériel, ce qui a demandé de
+basculer physiquement la carte :
+- **en CC mode** : `open()` renvoie `UnsupportedDeviceMode { missing:
+  "AN1, Mic 1" }`, le message arrive sur stderr, et le nouveau test
+  `live_hardware_class_compliant_mode_is_refused_not_silently_accepted`
+  passe ;
+- **de retour en propriétaire** : `open()` accepte, et les round-trips
+  live sensitivity / phase / stereo-split / trim passent tous ; le test
+  CC échoue alors — ce qui prouve qu'il teste bien le mode et n'est pas
+  une tautologie.
+
+**Conséquences assumées, pas cachées :** les deux tests SPDIF existants
+exigeaient le CC mode (IEC958 n'existe que là) et deviennent injouables
+— marqués `SUPERSEDED` avec la raison plutôt que supprimés, pour garder
+la trace que SPDIF est un contrôle CC-only. Et le TUI affiche encore
+"No device found" juste après le nouveau message, ce qui se contredit
+légèrement ; pas touché, parce que corriger ça dégraderait le cas où il
+n'y a réellement aucun appareil.
+
+Les 314 contrôles CC sont sauvegardés dans
+`docs/reference/class-compliant-controls.md` (numéro de série masqué) :
+les capturer demande de sortir la carte du mode propriétaire, donc
+autant ne pas avoir à le refaire. C'est la référence qui permettrait de
+chiffrer un vrai support CC — question stratégique laissée ouverte
+(ça vaudrait "TuxMix marche sans installer de module kernel"), pas
+tranchée ici.
