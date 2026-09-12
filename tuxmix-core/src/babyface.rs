@@ -45,6 +45,85 @@ const BF_SOURCES: [&str; 14] = [
 /// not to need reordering).
 const PAIR_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "ADAT3/4", "ADAT5/6", "ADAT7/8"];
 
+/// Which ALSA control grammar the attached card speaks.
+///
+/// The Babyface Pro FS presents two USB personalities and they expose
+/// *structurally different* mixers, not just differently-named ones:
+///
+/// |                    | [`Proprietary`](ControlGrammar::Proprietary) | [`ClassCompliant`](ControlGrammar::ClassCompliant) |
+/// |---|---|---|
+/// | crosspoints        | 84 = 14 sources × 6 output **pairs**         | 288 = 24 sources × 12 destination **channels** |
+/// | disambiguated by   | selem `.index` (`output * 14 + src`)         | the name itself; `.index` is always 0 |
+/// | a mono source's pan| two channels of one stereo selem             | two separate mono controls |
+///
+/// Verified by dumping both surfaces from the same physical card
+/// (`docs/reference/class-compliant-controls.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlGrammar {
+    /// The from-scratch `snd-usb-babyface-pro` driver (USB `2a39:3fc0`).
+    /// The full feature set: EQ, front panel, phase, trim, loopback…
+    Proprietary,
+    /// Stock `snd-usb-audio` on the class-compliant personality (USB
+    /// `2a39:3fb0`). Routing, preamps and clock work; the DSP features
+    /// that live in RME's own protocol do not exist here.
+    ClassCompliant,
+}
+
+/// A crosspoint source's name in the class-compliant grammar, for
+/// `BF_SOURCES[src]` and — for the ten paired sources — which side.
+///
+/// The pairing is the same one [`input_crosspoint_slot`] already
+/// encodes for the proprietary grammar; only the spelling differs.
+fn cc_source_name(src: usize, right: bool) -> Option<&'static str> {
+    Some(match (src, right) {
+        (0, _) => "Mic-AN1",
+        (1, _) => "Mic-AN2",
+        (2, _) => "Line-IN3",
+        (3, _) => "Line-IN4",
+        (4, false) => "Line-AS1",
+        (4, true) => "Line-AS2",
+        (5, false) => "Line-ADAT3",
+        (5, true) => "Line-ADAT4",
+        (6, false) => "Line-ADAT5",
+        (6, true) => "Line-ADAT6",
+        (7, false) => "Line-ADAT7",
+        (7, true) => "Line-ADAT8",
+        (8, false) => "PCM-AN1",
+        (8, true) => "PCM-AN2",
+        (9, false) => "PCM-PH3",
+        (9, true) => "PCM-PH4",
+        (10, false) => "PCM-AS1",
+        (10, true) => "PCM-AS2",
+        (11, false) => "PCM-ADAT3",
+        (11, true) => "PCM-ADAT4",
+        (12, false) => "PCM-ADAT5",
+        (12, true) => "PCM-ADAT6",
+        (13, false) => "PCM-ADAT7",
+        (13, true) => "PCM-ADAT8",
+        _ => return None,
+    })
+}
+
+/// A destination channel's name in the class-compliant grammar, for
+/// output pair `out` (same order as [`PAIR_LABELS`]) and side.
+fn cc_dest_name(out: usize, right: bool) -> Option<&'static str> {
+    Some(match (out, right) {
+        (0, false) => "AN1",
+        (0, true) => "AN2",
+        (1, false) => "PH3",
+        (1, true) => "PH4",
+        (2, false) => "AS1",
+        (2, true) => "AS2",
+        (3, false) => "ADAT3",
+        (3, true) => "ADAT4",
+        (4, false) => "ADAT5",
+        (4, true) => "ADAT6",
+        (5, false) => "ADAT7",
+        (5, true) => "ADAT8",
+        _ => return None,
+    })
+}
+
 /// Maps a `PROFILE.inputs` index to its crosspoint source: which of
 /// `BF_SOURCES` it is, and — for the non-mono (linked-pair) sources —
 /// which single ALSA channel (front-left/front-right) is *this*
@@ -175,6 +254,11 @@ fn encode_volume_pan(volume: f32, pan: i8, max: f32) -> (i64, i64) {
 /// Babyface Pro (FS) device controller.
 pub struct BabyfacePro {
     mixer: AlsaMixer,
+    /// Which control grammar this card speaks — decided once at
+    /// [`RmeDevice::open`] and never re-checked, since a card cannot
+    /// change personality without re-enumerating (the PC/CC toggle is
+    /// a power-on button combo, see `PROTOCOL.md`).
+    grammar: ControlGrammar,
     profile: &'static DeviceProfile,
     inputs: Vec<InputChannel>,
     playbacks: Vec<PlaybackChannel>,
@@ -221,6 +305,45 @@ impl BabyfacePro {
         volume: f32,
         pan: i8,
     ) -> Result<(), Error> {
+        if self.grammar == ControlGrammar::ClassCompliant {
+            // Same arithmetic, different addressing: each destination
+            // channel is its own mono control, so a mono source's pan
+            // is two writes rather than two channels of one selem.
+            let right = ch == SelemChannelId::FrontRight;
+            let Some(src_name) = cc_source_name(src, right) else {
+                return Ok(());
+            };
+            let mono = SelemChannelId::mono();
+            if is_mono {
+                let (Some(dl), Some(dr)) = (cc_dest_name(output, false), cc_dest_name(output, true))
+                else {
+                    return Ok(());
+                };
+                let (Some(sl), Some(sr)) = (
+                    self.mixer.find_selem(&format!("{src_name}-{dl}"), 0),
+                    self.mixer.find_selem(&format!("{src_name}-{dr}"), 0),
+                ) else {
+                    return Ok(());
+                };
+                let max = sl.get_playback_volume_range().1 as f32;
+                let (l, r) = encode_volume_pan(volume.clamp(0.0, 1.0), pan, max);
+                sl.set_playback_volume(mono, l)?;
+                sr.set_playback_volume(mono, r)?;
+            } else {
+                // A paired source feeds only its own side of the pair,
+                // exactly as the proprietary path writes only `ch`.
+                let Some(dest) = cc_dest_name(output, right) else {
+                    return Ok(());
+                };
+                let Some(selem) = self.mixer.find_selem(&format!("{src_name}-{dest}"), 0) else {
+                    return Ok(());
+                };
+                let max = selem.get_playback_volume_range().1 as f32;
+                selem.set_playback_volume(mono, (volume.clamp(0.0, 1.0) * max) as i64)?;
+            }
+            return Ok(());
+        }
+
         let Some(selem) = self.crosspoint_selem(src, output) else {
             return Ok(());
         };
@@ -233,6 +356,129 @@ impl BabyfacePro {
             selem.set_playback_volume(ch, (volume.clamp(0.0, 1.0) * max) as i64)?;
         }
         Ok(())
+    }
+
+    /// Which control grammar this card speaks. Lets a UI gate the
+    /// DSP-only features (EQ, phase, trim, split, loopback, the front
+    /// panel) instead of offering them and letting
+    /// [`Self::require_proprietary`] reject the click.
+    pub fn grammar(&self) -> ControlGrammar {
+        self.grammar
+    }
+
+    /// Refuses a feature that exists only in RME's own protocol.
+    ///
+    /// The class-compliant surface is routing + preamps + clock and
+    /// nothing else — no EQ, no phase/trim/split, no loopback, no
+    /// front panel. Those setters all look them up with a tolerant
+    /// `if let Some(selem)`, which would return `Ok(())` having done
+    /// nothing: the exact "silently lying to the user" failure this
+    /// backend spent 2026-09-12 removing. Fail loudly instead.
+    fn require_proprietary(&self, feature: &str) -> Result<(), Error> {
+        if self.grammar == ControlGrammar::ClassCompliant {
+            return Err(Error::InvalidChannel(format!(
+                "{feature} needs the snd-usb-babyface-pro driver — this card is \
+                 in Class Compliant mode, which does not expose it"
+            )));
+        }
+        Ok(())
+    }
+
+    /// The preamp base name for input `idx` in the class-compliant
+    /// grammar: `Mic-AN1`/`Mic-AN2` for the two mics, `Line-IN3`/
+    /// `Line-IN4` for the two instrument inputs.
+    fn cc_preamp_base(idx: usize) -> Option<&'static str> {
+        Some(match idx {
+            0 => "Mic-AN1",
+            1 => "Mic-AN2",
+            2 => "Line-IN3",
+            3 => "Line-IN4",
+            _ => return None,
+        })
+    }
+
+    /// The preamp gain element for input `idx`, in either grammar.
+    ///
+    /// The two differ in more than spelling: the proprietary driver
+    /// exposes one `Mic 1` element per `.index`, as a *capture* volume;
+    /// the class-compliant surface has a distinctly-named element per
+    /// input carrying both playback and capture volume, so the callers
+    /// also have to pick the right accessor.
+    fn preamp_gain_selem(&self, idx: usize) -> Option<Selem<'_>> {
+        if self.grammar == ControlGrammar::ClassCompliant {
+            self.mixer
+                .find_selem(&format!("{} Gain", Self::cc_preamp_base(idx)?), 0)
+        } else {
+            self.mixer.find_selem("Mic 1", idx as u32)
+        }
+    }
+
+    /// The 48V element for mic `idx` (0/1), in either grammar.
+    fn phantom_selem(&self, idx: usize) -> Option<Selem<'_>> {
+        if self.grammar == ControlGrammar::ClassCompliant {
+            self.mixer
+                .find_selem(&format!("{} 48V", Self::cc_preamp_base(idx)?), 0)
+        } else {
+            self.mixer.find_selem("Phantom Power Mic 1", idx as u32)
+        }
+    }
+
+    /// The PAD element for mic `idx` (0/1), in either grammar.
+    fn pad_selem(&self, idx: usize) -> Option<Selem<'_>> {
+        if self.grammar == ControlGrammar::ClassCompliant {
+            self.mixer
+                .find_selem(&format!("{} PAD", Self::cc_preamp_base(idx)?), 0)
+        } else {
+            self.mixer.find_selem("Pad Mic 1", idx as u32)
+        }
+    }
+
+    /// Reads a crosspoint back as `(volume, pan)`, in whichever
+    /// grammar this card speaks. `pan` is meaningful only for the four
+    /// true-mono sources; paired sources report 0.
+    ///
+    /// The mirror of [`Self::write_crosspoint`] — kept next to it so
+    /// the two addressing models stay visibly in step.
+    fn read_crosspoint(
+        &self,
+        src: usize,
+        ch: SelemChannelId,
+        is_mono: bool,
+        output: usize,
+    ) -> Option<(f32, i8)> {
+        if self.grammar == ControlGrammar::ClassCompliant {
+            let right = ch == SelemChannelId::FrontRight;
+            let src_name = cc_source_name(src, right)?;
+            let mono = SelemChannelId::mono();
+            if is_mono {
+                let sl = self
+                    .mixer
+                    .find_selem(&format!("{src_name}-{}", cc_dest_name(output, false)?), 0)?;
+                let sr = self
+                    .mixer
+                    .find_selem(&format!("{src_name}-{}", cc_dest_name(output, true)?), 0)?;
+                let max = sl.get_playback_volume_range().1 as f32;
+                let l = sl.get_playback_volume(mono).ok()?;
+                let r = sr.get_playback_volume(mono).ok()?;
+                Some(decode_volume_pan(l, r, max))
+            } else {
+                let selem = self
+                    .mixer
+                    .find_selem(&format!("{src_name}-{}", cc_dest_name(output, right)?), 0)?;
+                let max = selem.get_playback_volume_range().1 as f32;
+                Some((selem.get_playback_volume(mono).ok()? as f32 / max, 0))
+            }
+        } else {
+            let selem = self.crosspoint_selem(src, output)?;
+            let max = selem.get_playback_volume_range().1 as f32;
+            if is_mono {
+                let l = selem.get_playback_volume(SelemChannelId::FrontLeft).ok()?;
+                let r = selem.get_playback_volume(SelemChannelId::FrontRight).ok()?;
+                Some(decode_volume_pan(l, r, max))
+            } else {
+                Some((selem.get_playback_volume(ch).ok()? as f32 / max, 0))
+            }
+        }
     }
 
     /// Match ALSA mixer elements to our channel model.
@@ -311,21 +557,52 @@ impl BabyfacePro {
             }
         }
 
-        // ── Phantom 48V & PAD — Mic 1/Mic 2 = inputs[0]/inputs[1],
-        // sharing one ALSA name per switch, disambiguated by `.index`
-        // (not by name — `mixer.c:1279-1311`).
+        // ── Phantom 48V & PAD — the two mics. Read both first, then
+        // apply: the grammar-aware lookups borrow `self`, so they can't
+        // run while `self.inputs` is mutably borrowed.
         for i in 0..2 {
+            let phantom = self
+                .phantom_selem(i)
+                .and_then(|s| s.get_playback_switch(mono).ok())
+                .map(|v| v != 0);
+            let pad = self
+                .pad_selem(i)
+                .and_then(|s| s.get_playback_switch(mono).ok())
+                .map(|v| v != 0);
             let Some(inp) = self.inputs.get_mut(i) else {
                 continue;
             };
-            if let Some(selem) = self.mixer.find_selem("Phantom Power Mic 1", i as u32) {
-                if let Ok(v) = selem.get_playback_switch(mono) {
-                    inp.phantom = v != 0;
-                }
+            if let Some(v) = phantom {
+                inp.phantom = v;
             }
-            if let Some(selem) = self.mixer.find_selem("Pad Mic 1", i as u32) {
-                if let Ok(v) = selem.get_playback_switch(mono) {
-                    inp.pad = v != 0;
+            if let Some(v) = pad {
+                inp.pad = v;
+            }
+        }
+
+        // ── Sensitivity, class-compliant grammar: a separate
+        // `<base> Sens.` enum per instrument input (the proprietary
+        // "Instrument Ref Level" is read in the loop above instead, and
+        // is a single shared switch). Resolved by item NAME, because the
+        // two controls enumerate their items in opposite orders —
+        // ["-10dBV","+4dBu"] here vs ["+4dBu","-10dBV","Boost"] there.
+        // Without this, sensitivity silently reported the model default
+        // rather than the card: observed 2026-09-12 showing "+4dBu"
+        // while the card was really on -10dBV.
+        if self.grammar == ControlGrammar::ClassCompliant {
+            for i in 0..4.min(self.inputs.len()) {
+                let read = Self::cc_preamp_base(i)
+                    .and_then(|base| self.mixer.find_selem(&format!("{base} Sens."), 0))
+                    .and_then(|selem| {
+                        let item = selem.get_enum_item(mono).ok()?;
+                        match selem.get_enum_item_name(item).ok()?.as_str() {
+                            "+4dBu" => Some(Sensitivity::Plus4dBu),
+                            "-10dBV" => Some(Sensitivity::Minus10dBV),
+                            _ => None,
+                        }
+                    });
+                if let Some(sens) = read {
+                    self.inputs[i].sensitivity = Some(sens);
                 }
             }
         }
@@ -378,15 +655,16 @@ impl BabyfacePro {
         // 1:1 to ALSA index 0..4 of "Mic 1" (a *capture* volume, not
         // playback — `mixer.c:1313-1326`).
         for i in 0..4 {
+            let read = self.preamp_gain_selem(i).and_then(|s| {
+                let v = s.get_capture_volume(mono).ok()?;
+                Some((v as u32, s.get_capture_volume_range().1 as u32))
+            });
             let Some(inp) = self.inputs.get_mut(i) else {
                 continue;
             };
-            if let Some(selem) = self.mixer.find_selem("Mic 1", i as u32) {
-                if let Ok(v) = selem.get_capture_volume(mono) {
-                    let (_, max) = selem.get_capture_volume_range();
-                    inp.gain = Some(v as u32);
-                    inp.gain_max = Some(max as u32);
-                }
+            if let Some((v, max)) = read {
+                inp.gain = Some(v);
+                inp.gain_max = Some(max);
             }
         }
 
@@ -396,20 +674,11 @@ impl BabyfacePro {
                 continue;
             };
             for out in 0..self.profile.output_pair_count() {
-                let Some(selem) = self.crosspoint_selem(src, out) else {
-                    continue;
-                };
-                let max = selem.get_playback_volume_range().1 as f32;
-                if is_mono {
-                    let l = selem.get_playback_volume(SelemChannelId::FrontLeft).ok();
-                    let r = selem.get_playback_volume(SelemChannelId::FrontRight).ok();
-                    if let (Some(l), Some(r)) = (l, r) {
-                        let (volume, pan) = decode_volume_pan(l, r, max);
-                        self.inputs[i].volumes[out] = volume;
+                if let Some((volume, pan)) = self.read_crosspoint(src, ch, is_mono, out) {
+                    self.inputs[i].volumes[out] = volume;
+                    if is_mono {
                         self.inputs[i].pans[out] = pan;
                     }
-                } else if let Ok(v) = selem.get_playback_volume(ch) {
-                    self.inputs[i].volumes[out] = v as f32 / max;
                 }
             }
         }
@@ -419,12 +688,8 @@ impl BabyfacePro {
                 continue;
             };
             for out in 0..self.profile.output_pair_count() {
-                let Some(selem) = self.crosspoint_selem(src, out) else {
-                    continue;
-                };
-                let max = selem.get_playback_volume_range().1 as f32;
-                if let Ok(v) = selem.get_playback_volume(ch) {
-                    self.playbacks[i].volumes[out] = v as f32 / max;
+                if let Some((volume, _)) = self.read_crosspoint(src, ch, false, out) {
+                    self.playbacks[i].volumes[out] = volume;
                 }
             }
         }
@@ -435,27 +700,52 @@ impl BabyfacePro {
         // the mute switch is shared by both (`mixer.c`'s `bf_mute_get`
         // mirrors the same value into both ALSA channels), so both
         // `self.outputs` entries for the pair get the same mute state.
-        for (pair_idx, label) in PAIR_LABELS.iter().enumerate() {
-            let Some(selem) = self.mixer.find_selem(label, pair_idx as u32) else {
-                continue;
-            };
-            let max = selem.get_playback_volume_range().1 as f32;
-            let l = selem.get_playback_volume(SelemChannelId::FrontLeft).ok();
-            let r = selem.get_playback_volume(SelemChannelId::FrontRight).ok();
-            let muted = selem
-                .get_playback_switch(SelemChannelId::FrontLeft)
-                .map(|v| v == 0)
-                .unwrap_or(false);
-            if let Some(l) = l {
-                if let Some(out) = self.outputs.get_mut(pair_idx * 2) {
-                    out.volume = l as f32 / max;
-                    out.mute = muted;
-                }
-            }
-            if let Some(r) = r {
-                if let Some(out) = self.outputs.get_mut(pair_idx * 2 + 1) {
-                    out.volume = r as f32 / max;
-                    out.mute = muted;
+        // In the class-compliant grammar each physical output is its
+        // own `Main-Out <ch>` control and there is NO mute switch
+        // anywhere on the card (the dump has exactly seven switches:
+        // 2x48V, 2xPAD, 3xIEC958), so mute stays model-level there —
+        // the same conclusion the 2026-08-13 CC probe reached.
+        for pair_idx in 0..PAIR_LABELS.len() {
+            for (side, right) in [(0usize, false), (1usize, true)] {
+                let (volume, muted) = if self.grammar == ControlGrammar::ClassCompliant {
+                    let Some(dest) = cc_dest_name(pair_idx, right) else {
+                        continue;
+                    };
+                    let Some(selem) = self.mixer.find_selem(&format!("Main-Out {dest}"), 0) else {
+                        continue;
+                    };
+                    let max = selem.get_playback_volume_range().1 as f32;
+                    let Ok(v) = selem.get_playback_volume(mono) else {
+                        continue;
+                    };
+                    (v as f32 / max, None)
+                } else {
+                    let Some(selem) = self.mixer.find_selem(PAIR_LABELS[pair_idx], pair_idx as u32)
+                    else {
+                        continue;
+                    };
+                    let max = selem.get_playback_volume_range().1 as f32;
+                    let ch = if right {
+                        SelemChannelId::FrontRight
+                    } else {
+                        SelemChannelId::FrontLeft
+                    };
+                    let Ok(v) = selem.get_playback_volume(ch) else {
+                        continue;
+                    };
+                    // The mute switch is shared by both channels
+                    // (`mixer.c`'s `bf_mute_get` mirrors one value).
+                    let muted = selem
+                        .get_playback_switch(SelemChannelId::FrontLeft)
+                        .map(|v| v == 0)
+                        .unwrap_or(false);
+                    (v as f32 / max, Some(muted))
+                };
+                if let Some(out) = self.outputs.get_mut(pair_idx * 2 + side) {
+                    out.volume = volume;
+                    if let Some(m) = muted {
+                        out.mute = m;
+                    }
                 }
             }
         }
@@ -640,29 +930,29 @@ impl RmeDevice for BabyfacePro {
         let profile = &PROFILE;
         let mixer = AlsaMixer::open_by_card_name(profile.card_substring)?;
 
-        // Matching the card *name* isn't enough to know this is a
-        // mixer we can drive. A Babyface Pro in Class Compliant mode
-        // on stock `snd-usb-audio` announces itself as "RME Babyface
-        // Pro (<serial>)", which contains `card_substring` just as
-        // ours does — but its control grammar is the CC one
-        // (`Mic-AN1 Gain`, `Line-IN3-AN1`, `Line-IN3 Sens.`), which
-        // this backend stopped targeting in 564986a when it was
-        // rewritten for `snd-usb-babyface-pro`. Every lookup below is
-        // a silent `if let Some(selem)` no-op, so without this guard
-        // the backend comes up reporting success: it shows invented
-        // state (48V read as off while the card really has it on) and
-        // every setter returns `Ok(())` without reaching the hardware.
-        // Verified against the real card in CC mode, 2026-09-12.
-        let missing: Vec<&str> = [BF_SOURCES[0], "Mic 1"]
-            .into_iter()
-            .filter(|name| mixer.find_selem(name, 0).is_none())
-            .collect();
-        if !missing.is_empty() {
+        // Matching the card *name* isn't enough to know which mixer
+        // this is. A Babyface Pro in Class Compliant mode on stock
+        // `snd-usb-audio` announces itself as "RME Babyface Pro
+        // (<serial>)", which contains `card_substring` just as ours
+        // does, yet speaks a completely different control grammar.
+        // Every lookup below is a tolerant `if let Some(selem)`, so
+        // guessing wrong doesn't fail loudly — it comes up "working"
+        // while driving nothing (observed 2026-09-12: 48V read as off
+        // while the card had it on, and setters returning `Ok(())`
+        // without reaching the hardware). So pick the grammar from a
+        // sentinel control unique to each, and refuse only if neither
+        // is there.
+        let grammar = if mixer.find_selem("Mic 1", 0).is_some() {
+            ControlGrammar::Proprietary
+        } else if mixer.find_selem("Mic-AN1 Gain", 0).is_some() {
+            ControlGrammar::ClassCompliant
+        } else {
             return Err(Error::UnsupportedDeviceMode {
                 card: mixer.card_name().to_string(),
-                missing: missing.join(", "),
+                missing: "Mic 1 (proprietary), Mic-AN1 Gain (class-compliant)".into(),
             });
-        }
+        };
+        info!("ALSA control grammar: {grammar:?}");
 
         // Requesting just 2 capture channels (not the full 12) lands
         // exactly on AN1/AN2: the kernel driver's own channel map
@@ -680,6 +970,7 @@ impl RmeDevice for BabyfacePro {
         }
         let mut device = Self {
             mixer,
+            grammar,
             capture_meter,
             profile,
             inputs: profile.build_inputs(),
@@ -763,7 +1054,15 @@ impl RmeDevice for BabyfacePro {
             } else {
                 SelemChannelId::FrontRight
             };
-            if let Some(selem) = self.mixer.find_selem(label, (idx / 2) as u32) {
+            if self.grammar == ControlGrammar::ClassCompliant {
+                if let Some(dest) = cc_dest_name(idx / 2, idx % 2 == 1) {
+                    if let Some(selem) = self.mixer.find_selem(&format!("Main-Out {dest}"), 0) {
+                        let max = selem.get_playback_volume_range().1 as f32;
+                        selem
+                            .set_playback_volume(SelemChannelId::mono(), (vol_clamped * max) as i64)?;
+                    }
+                }
+            } else if let Some(selem) = self.mixer.find_selem(label, (idx / 2) as u32) {
                 let max = selem.get_playback_volume_range().1 as f32;
                 selem.set_playback_volume(ch, (vol_clamped * max) as i64)?;
             }
@@ -867,12 +1166,7 @@ impl RmeDevice for BabyfacePro {
             )));
         }
 
-        if let Some(selem) = self.crosspoint_selem(src, output) {
-            let max = selem.get_playback_volume_range().1 as f32;
-            let (l, r) = encode_volume_pan(volume, pan, max);
-            selem.set_playback_volume(SelemChannelId::FrontLeft, l)?;
-            selem.set_playback_volume(SelemChannelId::FrontRight, r)?;
-        }
+        self.write_crosspoint(src, SelemChannelId::FrontLeft, true, output, volume, pan)?;
 
         self.inputs[idx].pans[output] = pan;
         Ok(())
@@ -905,7 +1199,32 @@ impl RmeDevice for BabyfacePro {
             let label = PAIR_LABELS
                 .get(pair_idx)
                 .ok_or_else(|| Error::InvalidChannel(format!("Output {}", idx)))?;
-            if let Some(selem) = self.mixer.find_selem(label, pair_idx as u32) {
+            if self.grammar == ControlGrammar::ClassCompliant {
+                // No mute switch exists anywhere on the CC surface, so
+                // mute is "drive the master to zero and put the stored
+                // volume back on unmute" — the same trick `usb.rs` uses
+                // for strip mute. The real level stays in the model, so
+                // nothing is lost; the cost is that mute state doesn't
+                // survive a re-open (there's no hardware bit to read).
+                for side in 0..2 {
+                    let Some(dest) = cc_dest_name(pair_idx, side == 1) else {
+                        continue;
+                    };
+                    let Some(selem) = self.mixer.find_selem(&format!("Main-Out {dest}"), 0) else {
+                        continue;
+                    };
+                    let max = selem.get_playback_volume_range().1 as f32;
+                    let level = if mute {
+                        0.0
+                    } else {
+                        self.outputs
+                            .get(pair_idx * 2 + side)
+                            .map(|o| o.volume)
+                            .unwrap_or(0.0)
+                    };
+                    selem.set_playback_volume(SelemChannelId::mono(), (level * max) as i64)?;
+                }
+            } else if let Some(selem) = self.mixer.find_selem(label, pair_idx as u32) {
                 let unmuted = (!mute) as i32;
                 selem.set_playback_switch(SelemChannelId::FrontLeft, unmuted)?;
                 selem.set_playback_switch(SelemChannelId::FrontRight, unmuted)?;
@@ -1040,10 +1359,10 @@ impl RmeDevice for BabyfacePro {
         }
         // Mic 1/Mic 2 = inputs[0]/inputs[1], mapping 1:1 to ALSA `.index`
         // (both mics share the literal name "Phantom Power Mic 1").
-        if let Some(selem) = self.mixer.find_selem("Phantom Power Mic 1", idx as u32) {
+        if let Some(selem) = self.phantom_selem(idx) {
             selem.set_playback_switch(SelemChannelId::mono(), on as i32)?;
         }
-        inp.phantom = on;
+        self.inputs[idx].phantom = on;
         Ok(())
     }
 
@@ -1058,17 +1377,17 @@ impl RmeDevice for BabyfacePro {
                 idx
             )));
         }
-        if let Some(selem) = self.mixer.find_selem("Pad Mic 1", idx as u32) {
+        if let Some(selem) = self.pad_selem(idx) {
             selem.set_playback_switch(SelemChannelId::mono(), on as i32)?;
         }
-        inp.pad = on;
+        self.inputs[idx].pad = on;
         Ok(())
     }
 
     fn set_gain(&mut self, idx: usize, gain: u32) -> Result<(), Error> {
         let inp = self
             .inputs
-            .get_mut(idx)
+            .get(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
         if !matches!(inp.channel_type, ChannelType::Mic | ChannelType::Instrument) {
             return Err(Error::InvalidChannel(format!(
@@ -1077,16 +1396,19 @@ impl RmeDevice for BabyfacePro {
             )));
         }
         let clamped = inp.gain_max.map_or(gain, |max| gain.min(max));
-        // inputs[0..4] (Mic1, Mic2, Instr3, Instr4) map 1:1 to ALSA
-        // index 0..4 of "Mic 1" — a *capture* volume, not playback.
-        if let Some(selem) = self.mixer.find_selem("Mic 1", idx as u32) {
+        // A *capture* volume in both grammars (the class-compliant
+        // `<base> Gain` carries playback and capture volume both, and
+        // the capture side is the one that matches the proprietary
+        // driver's law and range).
+        if let Some(selem) = self.preamp_gain_selem(idx) {
             selem.set_capture_volume(SelemChannelId::mono(), clamped as i64)?;
         }
-        inp.gain = Some(clamped);
+        self.inputs[idx].gain = Some(clamped);
         Ok(())
     }
 
     fn set_eq_enabled(&mut self, idx: usize, on: bool) -> Result<(), Error> {
+        self.require_proprietary("EQ")?;
         let strip = eq_strip_name(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {} has no EQ", idx)))?;
         let inp = self
@@ -1106,6 +1428,7 @@ impl RmeDevice for BabyfacePro {
         band: usize,
         band_type: EqBandType,
     ) -> Result<(), Error> {
+        self.require_proprietary("EQ")?;
         let strip = eq_strip_name(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {} has no EQ", idx)))?;
         if band >= 3 {
@@ -1126,6 +1449,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_eq_band_freq(&mut self, idx: usize, band: usize, freq_hz: u16) -> Result<(), Error> {
+        self.require_proprietary("EQ")?;
         let strip = eq_strip_name(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {} has no EQ", idx)))?;
         if band >= 3 {
@@ -1147,6 +1471,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_eq_band_q(&mut self, idx: usize, band: usize, q: f32) -> Result<(), Error> {
+        self.require_proprietary("EQ")?;
         let strip = eq_strip_name(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {} has no EQ", idx)))?;
         if band >= 3 {
@@ -1168,6 +1493,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_eq_band_gain(&mut self, idx: usize, band: usize, gain_db: f32) -> Result<(), Error> {
+        self.require_proprietary("EQ")?;
         let strip = eq_strip_name(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {} has no EQ", idx)))?;
         if band >= 3 {
@@ -1189,6 +1515,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_eq_low_cut_freq(&mut self, idx: usize, freq_hz: u16) -> Result<(), Error> {
+        self.require_proprietary("EQ")?;
         let strip = eq_strip_name(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {} has no EQ", idx)))?;
         let clamped = freq_hz.min(20_000);
@@ -1204,6 +1531,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_eq_low_cut_slope(&mut self, idx: usize, slope_db_oct: u8) -> Result<(), Error> {
+        self.require_proprietary("EQ")?;
         let strip = eq_strip_name(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {} has no EQ", idx)))?;
         let inp = self
@@ -1243,6 +1571,36 @@ impl RmeDevice for BabyfacePro {
         // this trait's 2-state `Sensitivity` enum; "Boost" isn't
         // reachable here (see `RmeDevice::set_ref_level`'s own 3-state
         // `REF_*` codes for that, used by the USB backend).
+        if self.grammar == ControlGrammar::ClassCompliant {
+            // Two differences from the proprietary control, both of
+            // which would silently invert or over-apply the setting if
+            // assumed away: it is PER-CHANNEL here (`Line-IN3 Sens.` /
+            // `Line-IN4 Sens.`, so no mirroring), and its item order is
+            // REVERSED — the card enumerates ["-10dBV", "+4dBu"], while
+            // "Instrument Ref Level" enumerates ["+4dBu", "-10dBV",
+            // "Boost"]. Resolve the item by *name* rather than by index
+            // so the order can never bite us again.
+            let base = Self::cc_preamp_base(idx)
+                .ok_or_else(|| Error::InvalidChannel(format!("Input {idx} has no Sens. control")))?;
+            let selem = self
+                .mixer
+                .find_selem(&format!("{base} Sens."), 0)
+                .ok_or_else(|| Error::InvalidChannel(format!("No {base} Sens. control")))?;
+            let wanted = match sensitivity {
+                Sensitivity::Plus4dBu => "+4dBu",
+                Sensitivity::Minus10dBV => "-10dBV",
+            };
+            let count = selem.get_enum_items()?;
+            let item = (0..count)
+                .find(|i| selem.get_enum_item_name(*i).is_ok_and(|n| n == wanted))
+                .ok_or_else(|| {
+                    Error::InvalidChannel(format!("{base} Sens. has no {wanted} setting"))
+                })?;
+            selem.set_enum_item(SelemChannelId::mono(), item)?;
+            self.inputs[idx].sensitivity = Some(sensitivity);
+            return Ok(());
+        }
+
         let item = match sensitivity {
             Sensitivity::Plus4dBu => 0,
             Sensitivity::Minus10dBV => 1,
@@ -1265,6 +1623,7 @@ impl RmeDevice for BabyfacePro {
 
 
     fn set_pitch(&mut self, pitch_percent: f32) -> Result<(), Error> {
+        self.require_proprietary("Varispeed pitch")?;
         // "Varispeed Pitch" exists over ALSA too (mixer.c:1021-1030),
         // range -50..50 in 0.1%-steps (raw = percent * 10) — despite
         // this method's old comment claiming otherwise, this is not
@@ -1279,6 +1638,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_loopback(&mut self, out: usize, on: bool) -> Result<(), Error> {
+        self.require_proprietary("Loopback")?;
         if out >= PAIR_LABELS.len() {
             return Err(Error::InvalidChannel(format!("Output pair {}", out)));
         }
@@ -1295,6 +1655,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_ms_proc(&mut self, on: bool) -> Result<(), Error> {
+        self.require_proprietary("MS processing")?;
         if let Some(selem) = self.mixer.find_selem("MS Processor", 0) {
             selem.set_playback_switch(SelemChannelId::mono(), on as i32)?;
         }
@@ -1303,6 +1664,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_an12(&mut self, on: bool) -> Result<(), Error> {
+        self.require_proprietary("AN 1>2")?;
         if let Some(selem) = self.mixer.find_selem("AN 1>2", 0) {
             selem.set_playback_switch(SelemChannelId::mono(), on as i32)?;
         }
@@ -1311,6 +1673,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_input_link(&mut self, linked: bool) -> Result<(), Error> {
+        self.require_proprietary("Input link")?;
         if let Some(selem) = self.mixer.find_selem("AN1/2 Link", 0) {
             selem.set_playback_switch(SelemChannelId::mono(), linked as i32)?;
         }
@@ -1326,6 +1689,7 @@ impl RmeDevice for BabyfacePro {
     /// missing (e.g. an older module without this control), since this
     /// is a real toggle a user would notice not taking effect.
     fn set_phase(&mut self, idx: usize, invert: bool) -> Result<(), Error> {
+        self.require_proprietary("Phase invert")?;
         if idx >= 4 {
             return Err(Error::InvalidChannel(format!(
                 "Input {idx} has no phase switch"
@@ -1347,6 +1711,7 @@ impl RmeDevice for BabyfacePro {
     /// matching `RmeDevice::set_stereo_split`'s own convention); the
     /// pair index (0-5) is `pb / 2`.
     fn set_stereo_split(&mut self, pb: usize, split: bool) -> Result<(), Error> {
+        self.require_proprietary("Stereo split")?;
         if pb >= self.playbacks.len() {
             return Err(Error::InvalidChannel(format!("Playback {pb}")));
         }
@@ -1375,6 +1740,7 @@ impl RmeDevice for BabyfacePro {
     /// crosspoint if called on e.g. AS1/2 (flagged, not fixed here —
     /// out of scope for this backend's own wiring).
     fn set_trim(&mut self, idx: usize, db: f32) -> Result<(), Error> {
+        self.require_proprietary("Trim")?;
         if idx >= 4 {
             return Err(Error::InvalidChannel(format!(
                 "Input {idx} has no trim control"
@@ -1391,6 +1757,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_dim(&mut self, on: bool) -> Result<(), Error> {
+        self.require_proprietary("Dim")?;
         if let Some(selem) = self.mixer.find_selem("Dim", 0) {
             selem.set_playback_switch(SelemChannelId::mono(), on as i32)?;
         }
@@ -1399,6 +1766,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_width(&mut self, width: f32) -> Result<(), Error> {
+        self.require_proprietary("Width")?;
         let clamped = width.clamp(-1.0, 1.0);
         if let Some(selem) = self.mixer.find_selem("Width", 0) {
             let raw = (clamped * 100.0).round() as i64;
@@ -1409,6 +1777,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn set_fx_send(&mut self, db: f32) -> Result<(), Error> {
+        self.require_proprietary("FX send")?;
         let db = db.clamp(-65.0, 0.0);
         if let Some(selem) = self.mixer.find_selem("FX Send", 0) {
             let max = selem.get_playback_volume_range().1 as u16;
@@ -1877,30 +2246,87 @@ mod tests {
     #[ignore = "requires the real Babyface Pro FS attached AND switched to \
                 Class Compliant mode (snd-usb-audio, USB 2a39:3fb0); run \
                 manually with --ignored"]
-    fn live_hardware_class_compliant_mode_is_refused_not_silently_accepted() {
-        // Before this guard, `open()` matched the CC-mode card on its name
-        // alone — "RME Babyface Pro (<serial>)" contains `card_substring`
-        // just as our own driver's "Babyface Pro FS" does — and then came
-        // up looking healthy while driving nothing: it reported invented
-        // state (48V read as off while the card really had it on, gain
-        // read as None while the card read 33) and `set_gain` returned
-        // `Ok(())` leaving the hardware untouched. All of that observed on
-        // the real card in CC mode, 2026-09-12.
-        match BabyfacePro::open() {
-            Err(Error::UnsupportedDeviceMode { missing, .. }) => {
-                assert!(
-                    missing.contains("Mic 1"),
-                    "the error should name the controls that were missing, \
-                     so the log says *why* — got {missing:?}"
-                );
-            }
-            Err(e) => panic!("expected UnsupportedDeviceMode, got {e:?}"),
-            Ok(_) => panic!(
-                "open() accepted a Class-Compliant-mode card — the guard in \
-                 `open()` has regressed, and every setter is now silently \
-                 lying to the user again"
-            ),
+    fn live_hardware_cc_grammar_is_detected_and_read_faithfully() {
+        // This replaces an earlier test that asserted `open()` *refused*
+        // a CC card. That was right for the few hours between adding the
+        // guard and teaching the backend the CC grammar; now the card is
+        // supported, and what matters is that the state it reports is the
+        // card's own rather than model defaults — the failure mode that
+        // started all of this (48V read off while the card had it on).
+        let dev = BabyfacePro::open().expect("CC-mode card should now open");
+        assert_eq!(dev.grammar, ControlGrammar::ClassCompliant);
+
+        // Ranges come from the hardware and differ per preamp law, so
+        // they prove these are real reads: mics 0..65, instruments 0..18.
+        assert_eq!(dev.inputs()[0].gain_max, Some(65), "mic gain law");
+        assert_eq!(dev.inputs()[2].gain_max, Some(18), "instrument gain law");
+        for i in 2..4 {
+            assert!(
+                dev.inputs()[i].sensitivity.is_some(),
+                "input {i} sensitivity must be read from the card, not defaulted"
+            );
         }
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached AND switched to \
+                Class Compliant mode (snd-usb-audio, USB 2a39:3fb0); run \
+                manually with --ignored"]
+    fn live_hardware_cc_grammar_round_trips_through_a_fresh_handle() {
+        // Every check re-opens the device, so a value that only ever
+        // reached the in-memory model would fail here.
+        let mut dev = BabyfacePro::open().expect("CC-mode card");
+
+        // A paired source writes only its own side of the output pair.
+        let orig = dev.volume(ChannelId::Input(4), 1).unwrap();
+        dev.set_volume(ChannelId::Input(4), 1, 0.42).unwrap();
+        assert!((BabyfacePro::open().unwrap().volume(ChannelId::Input(4), 1).unwrap() - 0.42).abs() < 0.01);
+        dev.set_volume(ChannelId::Input(4), 1, orig).unwrap();
+
+        // A mono source's pan is two separate controls in this grammar.
+        let (ov, op) = (
+            dev.volume(ChannelId::Input(0), 0).unwrap(),
+            dev.pan(ChannelId::Input(0), 0).unwrap(),
+        );
+        dev.set_volume(ChannelId::Input(0), 0, 0.8).unwrap();
+        dev.set_pan(ChannelId::Input(0), 0, -50).unwrap();
+        assert!((BabyfacePro::open().unwrap().pan(ChannelId::Input(0), 0).unwrap() + 50).abs() <= 2);
+        dev.set_volume(ChannelId::Input(0), 0, ov).unwrap();
+        dev.set_pan(ChannelId::Input(0), 0, op).unwrap();
+
+        // Sensitivity is per-channel here (the proprietary control is a
+        // single shared switch) and its enum items are in the opposite
+        // order, so this also guards the resolve-by-name fix.
+        let orig_s = dev.inputs()[2].sensitivity.unwrap();
+        let other = match orig_s {
+            Sensitivity::Plus4dBu => Sensitivity::Minus10dBV,
+            Sensitivity::Minus10dBV => Sensitivity::Plus4dBu,
+        };
+        dev.set_sensitivity(2, other).unwrap();
+        let f = BabyfacePro::open().unwrap();
+        assert_eq!(f.inputs()[2].sensitivity, Some(other), "IN3 must change");
+        assert_eq!(f.inputs()[3].sensitivity, Some(orig_s), "IN4 must NOT mirror");
+        drop(f);
+        dev.set_sensitivity(2, orig_s).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached AND switched to \
+                Class Compliant mode (snd-usb-audio, USB 2a39:3fb0); run \
+                manually with --ignored"]
+    fn live_hardware_cc_grammar_refuses_proprietary_only_features() {
+        // These all look their controls up with a tolerant `if let
+        // Some(selem)`, so without the guard they would return Ok(())
+        // having done nothing — the failure this whole day was about.
+        let mut dev = BabyfacePro::open().expect("CC-mode card");
+        assert!(dev.set_phase(0, true).is_err(), "phase");
+        assert!(dev.set_trim(0, 3.0).is_err(), "trim");
+        assert!(dev.set_loopback(0, true).is_err(), "loopback");
+        assert!(dev.set_width(0.5).is_err(), "width");
+        assert!(dev.set_dim(true).is_err(), "dim");
+        assert!(dev.set_pitch(1.0).is_err(), "pitch");
+        assert!(dev.set_eq_enabled(0, true).is_err(), "eq");
+        assert!(dev.set_ms_proc(true).is_err(), "ms proc");
     }
 
     #[test]

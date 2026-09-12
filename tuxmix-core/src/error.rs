@@ -17,17 +17,18 @@ pub enum Error {
     #[error("Mixer element not found: {0}")]
     MixerElementNotFound(String),
 
-    /// The card is there, but its mixer isn't the one this backend
-    /// speaks — in practice, a Babyface Pro running in Class Compliant
-    /// mode on stock `snd-usb-audio`, whose control grammar
-    /// (`Mic-AN1 Gain`, `Line-IN3-AN1`, …) this backend stopped
-    /// targeting when it was rewritten for `snd-usb-babyface-pro`.
-    /// Distinct from [`Error::DeviceNotFound`] so the UI can tell the
-    /// user what to actually do about it.
-    #[error("{card}: found, but its mixer is not the one TuxMix drives \
-             (missing: {missing}). A Babyface Pro in Class Compliant mode \
-             looks like this — TuxMix needs the snd-usb-babyface-pro driver \
-             (proprietary mode). See babyface-pro-linux's README.")]
+    /// A card was found whose name matched, but whose mixer is neither
+    /// grammar the ALSA backend knows — neither `snd-usb-babyface-pro`
+    /// (proprietary) nor stock `snd-usb-audio` on the class-compliant
+    /// personality. Both are supported, so in practice this means some
+    /// *other* card whose name happens to contain the profile's
+    /// `card_substring`, or a driver too old to expose the sentinel
+    /// controls. Distinct from [`Error::DeviceNotFound`] so the UI can
+    /// say what to actually do about it.
+    #[error("{card}: found, but its mixer matches neither grammar TuxMix \
+             knows (missing: {missing}). If this really is a Babyface Pro, \
+             try switching personality — hold SELECT + DIM while plugging \
+             power toggles between proprietary and Class Compliant mode.")]
     UnsupportedDeviceMode { card: String, missing: String },
 
     #[error("Invalid channel: {0}")]

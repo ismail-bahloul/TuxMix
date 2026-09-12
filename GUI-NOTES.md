@@ -2579,3 +2579,76 @@ driver RME ne semble rien envoyer quand on coche la case.
 
 167 tests verts, build sans warning, 2 warnings `cargo doc`
 préexistants inchangés.
+
+## 2026-09-12 (suite) — vrai support Class Compliant : `babyface.rs` parle les deux grammaires
+
+Décidé à froid après la garde du matin : plutôt que de refuser une carte
+CC, la piloter. L'enjeu était le lancement — « lance l'appli » contre
+« compile un module kernel », probablement un ordre de grandeur sur le
+nombre de gens qui essaient vraiment.
+
+**Ce n'était pas qu'une affaire de noms.** Le dump complet de la carte
+basculée en CC (315 lignes, index et flags playback/capture inclus — ce
+que `docs/reference/class-compliant-controls.md` n'avait pas) a montré
+deux modèles d'adressage différents :
+
+| | propriétaire | Class Compliant |
+|---|---|---|
+| crosspoints | 84 = 14 sources × 6 **paires** | 288 = 24 sources × 12 **canaux** |
+| désambiguïsation | `index` = `output*14 + src` | le nom ; `index` toujours 0 |
+| pan d'une source mono | 2 canaux d'**un** selem | **2 contrôles séparés** |
+| mute de sortie | switch dédié | **aucun switch sur toute la carte** |
+
+Nouveau `ControlGrammar`, choisi une fois à `open()` sur un contrôle
+sentinelle (`Mic 1` contre `Mic-AN1 Gain`), et deux helpers de
+nommage. `write_crosspoint`/`read_crosspoint` encapsulent les deux
+modèles, `set_pan` délègue au writer au lieu de dupliquer, et les
+préamplis passent par `preamp_gain_selem`/`phantom_selem`/`pad_selem`.
+Le mute de sortie en CC met le master à zéro et restaure le volume
+stocké — la même astuce que `usb.rs` pour le mute de tranche.
+
+**Trois pièges que seul le matériel pouvait révéler :**
+- `Line-IN3 Sens.` énumère `[-10dBV, +4dBu]`, l'**inverse** de
+  `Instrument Ref Level` (`[+4dBu, -10dBV, Boost]`). Un mapping par
+  index aurait donné l'exact contraire de ce que l'utilisateur demande.
+  Résolu **par nom** des deux côtés, pour que l'ordre ne puisse plus
+  jamais piéger.
+- La sensibilité est **par canal** en CC, alors qu'elle est un
+  interrupteur unique partagé en propriétaire : le miroir existant
+  aurait écrasé IN4 à chaque changement sur IN3.
+- La sensibilité n'était tout simplement **jamais relue** en CC —
+  elle affichait le défaut du modèle (`+4dBu`) pendant que la carte
+  était réellement sur `-10dBV`. Exactement l'« état inventé » que la
+  garde du matin était censée éliminer, survivant dans un autre coin.
+
+**La leçon du jour appliquée aux 18 fonctions absentes en CC** (EQ ×7,
+phase, trim, split, loopback, width, dim, AN 1>2, input link, pitch, MS
+proc, FX send) : elles cherchaient toutes leur contrôle avec un
+`if let Some(selem)` tolérant, donc renvoyaient `Ok(())` sans rien
+faire. Nouveau `require_proprietary(feature)` : elles échouent
+maintenant avec un message qui nomme la fonction et dit quoi faire.
+
+**Vérifié dans les deux sens, en basculant physiquement la carte :**
+- en CC, round-trips à travers une **réouverture** (donc la valeur a
+  atteint le matériel, pas seulement le modèle) sur crosspoint appairé,
+  crosspoint playback, pan mono, master, gain, 48V, PAD, sensibilité —
+  tous OK ; et les 8 fonctions propriétaires échouent franchement ;
+- de retour en propriétaire, les **9** tests live existants passent
+  (pan, mute, solo, apply_scene, clock, sensibilité, phase, split,
+  trim, miroir 48V) — aucune régression — et les 3 nouveaux tests CC
+  échouent, ce qui prouve qu'ils testent le mode et ne sont pas des
+  tautologies.
+
+**Lacune signalée, pas bricolée :** l'UI propose toujours EQ/Phase/Trim
+en CC. Ils échouent proprement au lieu de mentir, mais l'idéal serait
+de les masquer. `BabyfacePro::grammar()` est exposé exprès pour rendre
+ce filtrage possible — c'est une passe UI à part entière, pas un bout à
+glisser dans ce commit.
+
+**Aussi :** le message d'`UnsupportedDeviceMode` ne dit plus « installe
+le driver » (les deux modes marchent désormais) mais donne le combo de
+bascule, `SELECT + DIM` à la mise sous tension — la seule façon de
+changer de personnalité, le firmware lisant les boutons avant toute
+énumération USB, hors de portée de l'émulation de façade.
+
+167 tests hors-matériel verts, build sans warning.
