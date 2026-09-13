@@ -59,15 +59,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("PAD Mic{} -> {}", mic + 1, if on { "ON" } else { "OFF" });
         }
         "gain" => {
-            // Convert dB -> raw with the calibrated linear fit
-            // (CALIBRATION.md: dB = raw * 3.25, raw 0-20 = 0-65 dB).
+            // dB -> packed byte: bits 0-4 coarse (3 dB/step, capped
+            // at 20), bits 5-7 the 0-2 dB remainder.
             let db = args
                 .get(2)
                 .map(|s| s.parse::<f32>().unwrap_or(0.0))
                 .unwrap_or(0.0);
-            let raw = (db / 3.25).round().clamp(0.0, 20.0) as u8;
-            let mut cycle = 0u8;
-            let reqs = tuxmix_usb::protocol::set_gain(0, raw, &mut cycle);
+            let db_i = db.round().clamp(0.0, 65.0) as u8;
+            let coarse = (db_i / 3).min(20);
+            let raw = ((db_i - 3 * coarse) << 5) | coarse;
+            let reqs = tuxmix_usb::protocol::set_gain(0, raw);
             dev.send_all(&reqs)?;
             println!("gain Mic1 <- {db:.0} dB (raw {raw})");
         }

@@ -255,21 +255,25 @@ pub fn set_output_master_mute_channel(
 
 /// Mic preamp gain (8-bit register, `bReq = 0x1A`).
 ///
-/// `value` is the raw gain code (5 bits, 0-31 ≈ 0-62 dB in 2-dB steps);
-/// the high bits (5-6) carry a 3-state transaction counter (0x20 → 0x00
-/// → 0x40) observed in TotalMix's writes. `cycle` must be `&mut 0` to
-/// start. (Verified on hardware: the IN-stream level rises with the raw
-/// value; the raw→dB anchor is pending a Windows calibration capture
-/// (see WINDOWS-CAPTURE-PLAN.md; sweep shows saturation at raw 23).)
-pub fn set_gain(mic: usize, value: u8, cycle: &mut u8) -> Vec<VendorRequest> {
-    let counter = match *cycle % 3 {
-        0 => 0x20,
-        1 => 0x00,
-        _ => 0x40,
-    };
-    *cycle = (*cycle + 1) % 3;
-    let v = ((value & 0x1F) as u16) | counter;
-    vec![VendorRequest::new(0x1A, v, map::gain_register(mic) as u16)]
+/// `value` is the packed gain byte produced by
+/// `tuxmix_core::usb::gain_db_to_raw`: bits 0-4 a coarse field of
+/// 3 dB steps, bits 5-7 the 0-2 dB remainder. Written verbatim.
+///
+/// Corrected 2026-09-13. Bits 5-7 were previously read as a 3-state
+/// transaction counter and OR'd in as a rotating 0x20/0x00/0x40, which
+/// both discarded the fine part of every setting and made the gain
+/// actually applied depend on where the rotation stood — the same
+/// requested value did not give a repeatable gain. Reported by David
+/// Fredman; the capture that settles it was already in the tree, and
+/// the five gain writes previously quoted as proof of the "counter"
+/// (0x2A, 0x0A, 0x49, 0x29, 0x09) decode under the real encoding to a
+/// plain 31, 30, 29, 28, 27 dB knob drag.
+pub fn set_gain(mic: usize, value: u8) -> Vec<VendorRequest> {
+    vec![VendorRequest::new(
+        0x1A,
+        value as u16,
+        map::gain_register(mic) as u16,
+    )]
 }
 
 /// Preamp STATE write only: the full 48V/PAD state byte + the 0x21
@@ -811,9 +815,8 @@ pub fn set_preamp(mic: usize, phantom: bool, pad: bool, gain: [u8; 4]) -> Vec<Ve
     }
     let mut reqs = vec![VendorRequest::new(0x17, state, PREAMP_REGISTER)];
     reqs.push(VendorRequest::new(0x21, 0x0000, 0x0000));
-    let mut cycle = 0u8;
     for (m, g) in gain.iter().enumerate() {
-        reqs.extend(set_gain(m, *g, &mut cycle));
+        reqs.extend(set_gain(m, *g));
     }
     reqs
 }
@@ -963,14 +966,15 @@ mod tests {
     }
 
     #[test]
-    fn gain_counter_cycles_20_00_40() {
-        let mut cycle = 0u8;
-        let r1 = set_gain(0, 0x0A, &mut cycle);
-        assert_eq!(r1[0].w_value, 0x002A); // value 0x0A + counter 0x20
-        let r2 = set_gain(0, 0x0A, &mut cycle);
-        assert_eq!(r2[0].w_value, 0x000A); // counter 0x00
-        let r3 = set_gain(0, 0x0A, &mut cycle);
-        assert_eq!(r3[0].w_value, 0x004A); // counter 0x40
+    fn gain_write_is_verbatim_and_repeatable() {
+        // The byte handed in is already the packed coarse/fine value;
+        // set_gain must not touch it, and the same request must always
+        // produce the same write.  This used to mask it with 0x1F and
+        // OR in a rotating 0x20/0x00/0x40 "counter", which silently
+        // changed the gain applied.
+        assert_eq!(set_gain(0, 0x2A)[0].w_value, 0x002A);
+        assert_eq!(set_gain(0, 0x2A)[0].w_value, 0x002A);
+        assert_eq!(set_gain(0, 0xB4)[0].w_value, 0x00B4); // 65 dB
     }
 
     #[test]

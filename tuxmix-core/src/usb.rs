@@ -13,8 +13,9 @@
 //!   -20 dB = 0x0243, 0 dB = 0x16A0); the output master uses the
 //!   exponential fit (0 dB = 0x2000, +6 dB = 0x4000). See
 //!   `tools/usbdump/CALIBRATION.md`.
-//! - Gain is calibrated: raw 0-20 ≈ 0-65 dB (3.25 dB per raw step); the
-//!   UI model tracks gain in **dB** (0-65), converted to raw on write.
+//! - Gain is 0-65 dB in 1 dB steps, packed coarse/fine (bits 0-4 a
+//!   3 dB coarse field, bits 5-7 the remainder). The UI model tracks
+//!   gain in **dB** (0-65), converted to the packed byte on write.
 //! - Sensitivity, SPDIF and clock-source controls are not mapped in the
 //!   protocol yet and return errors.
 //! - Solo is written to the global solo registers (the per-channel solo
@@ -42,7 +43,7 @@ const GAIN_DB_MAX: u32 = 65;
 /// raw = dB×2 = 0-18 — cap_gain34.pcap, 2026-08-26).
 const GAIN_DB_MAX_INSTR: u32 = 9;
 /// Calibrated preamp-gain step: 65 dB over 20 raw steps.
-const GAIN_DB_PER_STEP: f32 = 3.25;
+const GAIN_DB_MAX_F: f32 = 65.0;
 
 /// Ref-level codes (Instr 3/4) stored in [`InputChannel::ref_level`]
 /// and passed to [`RmeDevice::set_ref_level`]. 0 = unset (a scene
@@ -200,16 +201,29 @@ pub fn raw_to_volume(raw: u16) -> f32 {
     10f32.powf(db / 20.0)
 }
 
-/// dB of preamp gain → raw protocol value (calibrated: raw 0-20 ≈
-/// 0-65 dB, 3.25 dB per raw step, rounded).  MIC inputs only — see
+/// dB of preamp gain → packed protocol byte.  The hardware resolves
+/// 1 dB steps over 0-65 dB, carried in two fields rather than a plain
+/// count:
+///
+/// ```text
+/// coarse = min(dB / 3, 20)      bits 0-4, 3 dB per step
+/// fine   = dB - 3 * coarse      bits 5-7, the 0-2 dB remainder
+/// value  = (fine << 5) | coarse
+/// ```
+///
+/// Above 60 dB `coarse` saturates at 20 and `fine` carries on 3, 4, 5,
+/// so 65 dB is `0xB4`.  MIC inputs only — see
 /// [`BabyfaceProUsb::gain_to_raw`] for the per-input dispatch.
 pub fn gain_db_to_raw(db: f32) -> u8 {
-    (db / GAIN_DB_PER_STEP).round().clamp(0.0, 20.0) as u8
+    let db = db.round().clamp(0.0, GAIN_DB_MAX_F) as u8;
+    let coarse = (db / 3).min(20);
+    let fine = db - 3 * coarse;
+    (fine << 5) | coarse
 }
 
-/// raw protocol value → dB of preamp gain (calibrated inverse).
+/// Packed protocol byte → dB of preamp gain (exact inverse).
 pub fn raw_to_gain_db(raw: u8) -> f32 {
-    (raw as f32 * GAIN_DB_PER_STEP).min(65.0)
+    (3 * (raw & 0x1F) + (raw >> 5)) as f32
 }
 
 /// Decode the `0x17` status readback into the preamp state: byte 0
@@ -462,17 +476,15 @@ impl BabyfaceProUsb {
             self.inputs[idx].channel_type,
             self.inputs[idx].gain.unwrap_or(0),
         );
-        let mut cycle = 0u8;
-        let reqs = tuxmix_usb::protocol::set_gain(idx, raw, &mut cycle);
+        let reqs = tuxmix_usb::protocol::set_gain(idx, raw);
         self.dev.send_all(&reqs)?;
         Ok(())
     }
 
-    /// Per-input gain (dB) → raw protocol code.  TWO calibrated laws
-    /// (cap_calib.pcap + cap_gain34.pcap, 2026-08-26): Mic AN1/2 =
-    /// raw 0-20 = 0-65 dB (3.25 dB/step); Instrument AN3/4 = raw 0-18
-    /// = 0-9 dB (0.5 dB/step — matches the kernel control 0-9 dB,
-    /// raw = dB×2).
+    /// Per-input gain (dB) → raw protocol code.  TWO laws: Mic AN1/2
+    /// is 0-65 dB in 1 dB steps, packed coarse/fine (see
+    /// [`gain_db_to_raw`]); Instrument AN3/4 is raw 0-18 = 0-9 dB
+    /// (0.5 dB/step — matches the kernel control 0-9 dB, raw = dB×2).
     fn gain_to_raw(ct: ChannelType, gain: u32) -> u8 {
         let g = gain as f32;
         match ct {
@@ -506,9 +518,8 @@ impl BabyfaceProUsb {
             ),
         ];
         let mut reqs = tuxmix_usb::protocol::set_ref_level(state, self.ref_level_commit());
-        let mut cycle = 0u8;
         for (m, g) in gain.iter().enumerate() {
-            reqs.extend(tuxmix_usb::protocol::set_gain(m, *g, &mut cycle));
+            reqs.extend(tuxmix_usb::protocol::set_gain(m, *g));
         }
         self.dev.send_all(&reqs)?;
         Ok(())
@@ -1652,13 +1663,29 @@ mod tests {
     }
 
     #[test]
-    fn gain_scale_calibrated() {
-        // Calibrated: raw 0-20 ≈ 0-65 dB (3.25 dB/step).
-        assert_eq!(gain_db_to_raw(0.0), 0);
-        assert_eq!(gain_db_to_raw(65.0), 20);
-        assert_eq!(gain_db_to_raw(35.0), 11); // 35/3.25 ≈ 10.8
-        assert!((raw_to_gain_db(20) - 65.0).abs() < 1e-3);
-        assert!((raw_to_gain_db(17) - 55.25).abs() < 1e-3);
+    fn gain_scale_packed_coarse_fine() {
+        // Anchored on bytes TotalMix actually wrote, captured in
+        // ctlout_gain_solo.txt: a knob dragged down one dB at a time
+        // produced 0x2A, 0x0A, 0x49, 0x29, 0x09, which is 31, 30, 29,
+        // 28, 27 dB under this encoding.  Those same five bytes were
+        // once quoted as evidence for a "transaction counter" in the
+        // top bits, which is what this test exists to prevent coming
+        // back.
+        assert_eq!(gain_db_to_raw(31.0), 0x2A);
+        assert_eq!(gain_db_to_raw(30.0), 0x0A);
+        assert_eq!(gain_db_to_raw(29.0), 0x49);
+        assert_eq!(gain_db_to_raw(28.0), 0x29);
+        assert_eq!(gain_db_to_raw(27.0), 0x09);
+
+        assert_eq!(gain_db_to_raw(0.0), 0x00);
+        assert_eq!(gain_db_to_raw(65.0), 0xB4); // coarse saturates at 20, fine 5
+        assert_eq!(gain_db_to_raw(35.0), 0x4B);
+        assert_eq!(gain_db_to_raw(99.0), 0xB4); // clamped
+
+        // Exact round trip over the whole range: every dB is distinct.
+        for db in 0..=65u8 {
+            assert_eq!(raw_to_gain_db(gain_db_to_raw(db as f32)), db as f32);
+        }
     }
 
     #[test]
@@ -1670,11 +1697,11 @@ mod tests {
         assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Instrument, 4), 8);
         assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Instrument, 9), 18);
         assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Instrument, 99), 18); // clamped
-                                                                                  // The mic law is untouched: 0-65 dB, raw 0-20.
-        assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Mic, 0), 0);
-        assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Mic, 65), 20);
-        assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Mic, 35), 11); // 35/3.25 ≈ 10.8
-                                                                           // Line/SPDIF/ADAT inputs have no preamp gain.
+        // The mic law is the packed one, not this.
+        assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Mic, 0), 0x00);
+        assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Mic, 65), 0xB4);
+        assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Mic, 35), 0x4B);
+        // Line/SPDIF/ADAT inputs have no preamp gain.
         assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Line, 40), 0);
     }
 
