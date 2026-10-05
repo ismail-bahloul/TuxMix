@@ -228,8 +228,23 @@ fn eq_slope_from_enum(v: u32) -> u8 {
 /// `encode_volume_pan` is the exact inverse, so round-tripping through
 /// both is lossless (mod integer rounding).
 fn decode_volume_pan(l_raw: i64, r_raw: i64, max: f32) -> (f32, i8) {
-    let l = l_raw as f32 / max;
-    let r = r_raw as f32 / max;
+    pan_join(l_raw as f32 / max, r_raw as f32 / max)
+}
+
+/// The linear left and right levels of a mono source at `volume` and
+/// `pan` (-100 = left only, +100 = right only): the louder side carries the
+/// volume and the other is attenuated by the pan.
+fn pan_split(volume: f32, pan: i8) -> (f32, f32) {
+    let p = (pan.clamp(-100, 100) as f32) / 100.0;
+    if p <= 0.0 {
+        (volume, volume * (1.0 + p))
+    } else {
+        (volume * (1.0 - p), volume)
+    }
+}
+
+/// The inverse of [`pan_split`].
+fn pan_join(l: f32, r: f32) -> (f32, i8) {
     let volume = l.max(r);
     let pan = if volume > 0.0 {
         (((r - l) / volume) * 100.0).round().clamp(-100.0, 100.0) as i8
@@ -280,13 +295,7 @@ fn tlv_matches(selem: &Selem, ch: SelemChannelId, volume: f32) -> bool {
 }
 
 fn encode_volume_pan(volume: f32, pan: i8, max: f32) -> (i64, i64) {
-    let v = volume.clamp(0.0, 1.0);
-    let p = (pan.clamp(-100, 100) as f32) / 100.0;
-    let (l, r) = if p <= 0.0 {
-        (v, v * (1.0 + p))
-    } else {
-        (v * (1.0 - p), v)
-    };
+    let (l, r) = pan_split(volume.clamp(0.0, 1.0), pan);
     ((l * max) as i64, (r * max) as i64)
 }
 
@@ -445,16 +454,18 @@ impl BabyfacePro {
             return Ok(());
         }
 
+        // The driver's crosspoints are in dB (TLV), with +6 dB at the top:
+        // convert through that, as for the output masters.
         let Some(selem) = self.crosspoint_selem(src, output) else {
             return Ok(());
         };
-        let max = selem.get_playback_volume_range().1 as f32;
+        let volume = volume.clamp(0.0, 2.0);
         if is_mono {
-            let (l, r) = encode_volume_pan(volume.clamp(0.0, 1.0), pan, max);
-            selem.set_playback_volume(SelemChannelId::FrontLeft, l)?;
-            selem.set_playback_volume(SelemChannelId::FrontRight, r)?;
+            let (l, r) = pan_split(volume, pan);
+            set_tlv_volume(&selem, SelemChannelId::FrontLeft, l)?;
+            set_tlv_volume(&selem, SelemChannelId::FrontRight, r)?;
         } else {
-            selem.set_playback_volume(ch, (volume.clamp(0.0, 1.0) * max) as i64)?;
+            set_tlv_volume(&selem, ch, volume)?;
         }
         Ok(())
     }
@@ -534,6 +545,38 @@ impl BabyfacePro {
         }
     }
 
+    /// Whether the model's crosspoint value is what the card holds - the
+    /// re-read test.  The driver's crosspoints are converted through dB, so
+    /// compare raw values: a write rounds to the control's grid, and a
+    /// re-read must not move a fader the user is holding.  The
+    /// class-compliant card keeps the share-of-range comparison.
+    #[allow(clippy::too_many_arguments)]
+    fn crosspoint_matches(
+        &self,
+        src: usize,
+        ch: SelemChannelId,
+        is_mono: bool,
+        output: usize,
+        model_volume: f32,
+        model_pan: i8,
+        card_volume: f32,
+    ) -> bool {
+        if self.grammar == ControlGrammar::ClassCompliant {
+            return !resync_differs(model_volume, card_volume);
+        }
+        let Some(selem) = self.crosspoint_selem(src, output) else {
+            return false;
+        };
+        let volume = model_volume.clamp(0.0, 2.0);
+        if is_mono {
+            let (l, r) = pan_split(volume, model_pan);
+            tlv_matches(&selem, SelemChannelId::FrontLeft, l)
+                && tlv_matches(&selem, SelemChannelId::FrontRight, r)
+        } else {
+            tlv_matches(&selem, ch, volume)
+        }
+    }
+
     /// Reads a crosspoint back as `(volume, pan)`, in whichever
     /// grammar this card speaks. `pan` is meaningful only for the four
     /// true-mono sources; paired sources report 0.
@@ -571,13 +614,12 @@ impl BabyfacePro {
             }
         } else {
             let selem = self.crosspoint_selem(src, output)?;
-            let max = selem.get_playback_volume_range().1 as f32;
             if is_mono {
-                let l = selem.get_playback_volume(SelemChannelId::FrontLeft).ok()?;
-                let r = selem.get_playback_volume(SelemChannelId::FrontRight).ok()?;
-                Some(decode_volume_pan(l, r, max))
+                let l = tlv_volume(&selem, SelemChannelId::FrontLeft)?;
+                let r = tlv_volume(&selem, SelemChannelId::FrontRight)?;
+                Some(pan_join(l, r))
             } else {
-                Some((selem.get_playback_volume(ch).ok()? as f32 / max, 0))
+                Some((tlv_volume(&selem, ch)?, 0))
             }
         }
     }
@@ -788,7 +830,17 @@ impl BabyfacePro {
             }
             for out in 0..self.profile.output_pair_count() {
                 if let Some((volume, pan)) = self.read_crosspoint(src, ch, is_mono, out) {
-                    if resync && !resync_differs(self.inputs[i].volumes[out], volume) {
+                    if resync
+                        && self.crosspoint_matches(
+                            src,
+                            ch,
+                            is_mono,
+                            out,
+                            self.inputs[i].volumes[out],
+                            self.inputs[i].pans[out],
+                            volume,
+                        )
+                    {
                         continue;
                     }
                     self.inputs[i].volumes[out] = volume;
@@ -811,7 +863,17 @@ impl BabyfacePro {
             }
             for out in 0..self.profile.output_pair_count() {
                 if let Some((volume, _)) = self.read_crosspoint(src, ch, false, out) {
-                    if resync && !resync_differs(self.playbacks[i].volumes[out], volume) {
+                    if resync
+                        && self.crosspoint_matches(
+                            src,
+                            ch,
+                            false,
+                            out,
+                            self.playbacks[i].volumes[out],
+                            0,
+                            volume,
+                        )
+                    {
                         continue;
                     }
                     self.playbacks[i].volumes[out] = volume;
@@ -1285,11 +1347,17 @@ impl RmeDevice for BabyfacePro {
         // alone must re-encode with the cached pan rather than
         // flattening it to center.
         let pan = if let ChannelId::Input(idx) = channel { self.inputs[idx].pans[output] } else { 0 };
-        self.write_crosspoint(src, ch, is_mono, output, vol_clamped, pan)?;
+        // The driver's crosspoints reach +6 dB, the model's 2.0.
+        let vol = if self.grammar == ControlGrammar::ClassCompliant {
+            vol_clamped
+        } else {
+            volume.clamp(0.0, 2.0)
+        };
+        self.write_crosspoint(src, ch, is_mono, output, vol, pan)?;
 
         match channel {
-            ChannelId::Input(idx) => self.inputs[idx].volumes[output] = vol_clamped,
-            ChannelId::Playback(idx) => self.playbacks[idx].volumes[output] = vol_clamped,
+            ChannelId::Input(idx) => self.inputs[idx].volumes[output] = vol,
+            ChannelId::Playback(idx) => self.playbacks[idx].volumes[output] = vol,
             ChannelId::Output(_) => unreachable!("Output handled above"),
         }
         Ok(())
@@ -2117,6 +2185,22 @@ impl RmeDevice for BabyfacePro {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn pan_split_and_join_round_trip_in_linear_levels() {
+        // The dB-converted crosspoints pan on linear levels, louder side
+        // at the volume: centre, both extremes and between, up to +6 dB.
+        for &volume in &[0.25f32, 1.0, 1.5, 2.0] {
+            for &pan in &[-100i8, -37, 0, 1, 64, 100] {
+                let (l, r) = pan_split(volume, pan);
+                assert!((l.max(r) - volume).abs() < 1e-6);
+                let (v, p) = pan_join(l, r);
+                assert!((v - volume).abs() < 1e-6);
+                assert_eq!(p, pan, "volume {volume} pan {pan}");
+            }
+        }
+        assert_eq!(pan_join(0.0, 0.0), (0.0, 0));
+    }
     use super::*;
 
     const TEST_MAX: f32 = 65536.0;
