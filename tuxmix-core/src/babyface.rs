@@ -1,6 +1,7 @@
 //! Babyface Pro (FS) implementation of the [`RmeDevice`] trait.
 
-use alsa::mixer::{Selem, SelemChannelId};
+use alsa::mixer::{MilliBel, Selem, SelemChannelId};
+use alsa::Round;
 use log::info;
 
 use crate::channel::OutputChannel;
@@ -236,6 +237,46 @@ fn decode_volume_pan(l_raw: i64, r_raw: i64, max: f32) -> (f32, i8) {
         0
     };
     (volume, pan)
+}
+
+/// A level control's value as the model's linear volume (1.0 = 0 dB,
+/// 2.0 = +6 dB), read through the control's own dB scale (its TLV) rather
+/// than as a share of its raw range.  The driver's raw ranges are not all
+/// amplitude scales: the output masters count the hardware's 0.5 dB steps.
+/// The bottom of the range is silence.
+fn tlv_volume(selem: &Selem, ch: SelemChannelId) -> Option<f32> {
+    let raw = selem.get_playback_volume(ch).ok()?;
+    if raw <= selem.get_playback_volume_range().0 {
+        return Some(0.0);
+    }
+    let db = selem.ask_playback_vol_db(raw).ok()?.to_db();
+    Some(10f32.powf(db / 20.0))
+}
+
+/// The raw value that holds the linear `volume`, through the control's dB
+/// scale, rounded down so a level never lands louder than asked.
+fn tlv_raw(selem: &Selem, volume: f32) -> alsa::Result<i64> {
+    if volume <= 0.0 {
+        return Ok(selem.get_playback_volume_range().0);
+    }
+    let mb = (2000.0 * volume.min(2.0).log10()).floor() as i64;
+    selem.ask_playback_db_vol(MilliBel(mb), Round::Floor)
+}
+
+/// Sets one channel of a level control to the linear `volume`.
+fn set_tlv_volume(selem: &Selem, ch: SelemChannelId, volume: f32) -> alsa::Result<()> {
+    selem.set_playback_volume(ch, tlv_raw(selem, volume)?)
+}
+
+/// Whether writing the model's `volume` would leave the raw value the card
+/// holds - the re-read test for a dB-converted control.  A write rounds to
+/// the control's grid, so the card's level can sit up to one step below the
+/// model's, and a re-read must not move a fader the user is holding there.
+fn tlv_matches(selem: &Selem, ch: SelemChannelId, volume: f32) -> bool {
+    match (tlv_raw(selem, volume), selem.get_playback_volume(ch)) {
+        (Ok(want), Ok(have)) => want == have,
+        _ => false,
+    }
 }
 
 fn encode_volume_pan(volume: f32, pan: i8, max: f32) -> (i64, i64) {
@@ -808,22 +849,26 @@ impl BabyfacePro {
                     else {
                         continue;
                     };
-                    let max = selem.get_playback_volume_range().1 as f32;
                     let ch = if right {
                         SelemChannelId::FrontRight
                     } else {
                         SelemChannelId::FrontLeft
                     };
-                    let Ok(v) = selem.get_playback_volume(ch) else {
+                    let Some(v) = tlv_volume(&selem, ch) else {
                         continue;
                     };
+                    // When the model's value is what the card holds after
+                    // rounding, keep the model's: the check below then
+                    // leaves the fader alone, and the mute still syncs.
+                    let model = self.outputs.get(pair_idx * 2 + side).map_or(0.0, |o| o.volume);
+                    let v = if resync && tlv_matches(&selem, ch, model) { model } else { v };
                     // The mute switch is shared by both channels
                     // (`mixer.c`'s `bf_mute_get` mirrors one value).
                     let muted = selem
                         .get_playback_switch(SelemChannelId::FrontLeft)
                         .map(|v| v == 0)
                         .unwrap_or(false);
-                    (v as f32 / max, Some(muted))
+                    (v, Some(muted))
                 };
                 if let Some(out) = self.outputs.get_mut(pair_idx * 2 + side) {
                     // Class-compliant mute is the master driven to 0.
@@ -1208,11 +1253,15 @@ impl RmeDevice for BabyfacePro {
                             .set_playback_volume(SelemChannelId::mono(), (vol_clamped * max) as i64)?;
                     }
                 }
-            } else if let Some(selem) = self.mixer.find_selem(label, (idx / 2) as u32) {
-                let max = selem.get_playback_volume_range().1 as f32;
-                selem.set_playback_volume(ch, (vol_clamped * max) as i64)?;
+                out.volume = vol_clamped;
+            } else {
+                // The model's +6 dB headroom is real on this driver.
+                let vol = volume.clamp(0.0, 2.0);
+                if let Some(selem) = self.mixer.find_selem(label, (idx / 2) as u32) {
+                    set_tlv_volume(&selem, ch, vol)?;
+                }
+                out.volume = vol;
             }
-            out.volume = vol_clamped;
             return Ok(());
         }
 
