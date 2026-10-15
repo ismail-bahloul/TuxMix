@@ -9,7 +9,6 @@
 
 mod about;
 mod app;
-mod icon;
 mod layouts;
 mod matrix;
 mod osc;
@@ -33,14 +32,6 @@ const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf")
 /// desktop environment associates the window with the app entry (icon
 /// included) in the taskbar and the window list.
 const APP_ID: &str = "tuxmix";
-
-/// The window icon, from the same decoded PNG the About drawer draws (see
-/// `icon`). `None` on a decode error: a missing icon is cosmetic, not a
-/// reason to fail the launch.
-fn window_icon() -> Option<window::Icon> {
-    let (width, height, pixels) = icon::rgba()?;
-    window::icon::from_rgba(pixels, width, height).ok()
-}
 
 /// Value following a `--flag <value>` pair, if present.
 fn arg_value(args: &[String], flag: &str) -> Option<String> {
@@ -92,7 +83,6 @@ fn main() -> iced::Result {
     .default_font(Font::with_name("Inter"))
     .window(window::Settings {
         size: Size::new(1280.0, 800.0),
-        icon: window_icon(),
         platform_specific: window::settings::PlatformSpecific {
             application_id: APP_ID.to_owned(),
             ..Default::default()
