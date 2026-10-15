@@ -1,7 +1,8 @@
 use iced::futures::channel::mpsc;
 use iced::keyboard::{self, Key};
 use iced::widget::{
-    button, column, container, mouse_area, opaque, pick_list, row, scrollable, stack, text,
+    button, column, container, mouse_area, opaque, pick_list, responsive, row, scrollable, stack,
+    text,
 };
 use iced::{window, Color, Element, Length, Subscription, Task};
 
@@ -3397,10 +3398,27 @@ fn quick_channel_options(state: &TuxMix) -> Vec<(ChannelId, String)> {
     opts
 }
 
-/// How much bigger than a normal strip the two Quick Control blocks are —
+/// How much bigger than a normal strip the two Quick Control blocks are:
 /// the point of this view is that the one source and one destination that
-/// matter are large, easy targets, not a dense grid.
-const QUICK_SCALE_MULT: f32 = 2.0;
+/// matter are large, easy targets, not a dense grid. A plain multiple of
+/// `scale`, like every other dimension, so Ctrl+wheel zoom grows the strips
+/// too, and the view scrolls once they no longer fit. Sizing them to the
+/// window instead would cancel the zoom out: the fit would hand back exactly
+/// the room the zoom had just taken away.
+///
+/// 1.8 rather than 2 so the whole group still fits, centered, in the default
+/// 1280x800 window at 100%.
+const QUICK_SCALE_MULT: f32 = 1.8;
+
+/// The Quick content's height at `scale` 1, split between the part that does
+/// not grow with the strips (the header, the picker, the captions) and the
+/// part the two strips take per unit of strip scale. Only used to choose
+/// between the centered form and the scrolling one, never to size anything,
+/// and deliberately a little high: erring high means scrolling a touch
+/// early, while erring low would pick the centered form for a group that
+/// does not fit and clip it off at both ends.
+const QUICK_CHROME: f32 = 110.0;
+const QUICK_STRIP_UNIT: f32 = 330.0;
 
 fn quick_view(state: &TuxMix) -> Element<'_, Message> {
     let scale = state.ui_scale;
@@ -3412,54 +3430,121 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
         .find(|(cid, _)| *cid == state.quick_channel)
         .map(|(_, l)| l.clone());
 
-    let labels_for_pick = labels.clone();
-    let source_picker = row![
-        text("Source")
-            .color(theme::TEXT_SEC)
-            .size(theme::TEXT_XS * scale),
-        pick_list(labels, current, move |label| {
-            let idx = labels_for_pick
-                .iter()
-                .position(|l| *l == label)
-                .unwrap_or(0);
-            Message::QuickChannelSelected(cids[idx])
-        })
-        .placeholder("select...")
-        .style(theme::pick_list)
-        .menu_style(theme::menu)
-        .text_size(theme::TEXT_MD * scale),
-    ]
-    .spacing(theme::SPACE_MD)
-    .align_y(iced::Alignment::Center);
-
+    let quick_channel = state.quick_channel;
+    let sel_out = state.sel_out;
+    let dest_cid = ChannelId::Output(sel_out * 2);
     let big_scale = scale * QUICK_SCALE_MULT;
-    let mut source_params = strip_params(state, state.quick_channel, state.sel_out);
-    source_params.scale = big_scale;
-    // `state.sel_out` indexes the 6 *submix pairs* (`OUT_LABELS`), but
-    // `device.outputs()` is a flat list of individual physical channels,
-    // two per pair (`build_outputs`: index `2*i`/`2*i+1` = left/right of
-    // pair `i`) — so the pair's representative channel is `sel_out * 2`,
-    // not `sel_out` itself.
-    let dest_cid = ChannelId::Output(state.sel_out * 2);
-    let mut dest_params = strip_params(state, dest_cid, state.sel_out);
-    dest_params.scale = big_scale;
 
-    let blocks = row![strip::strip(source_params), strip::strip(dest_params)]
-        .spacing(theme::SPACE_XL * scale * QUICK_SCALE_MULT)
-        .align_y(iced::Alignment::Start);
+    // Rebuilt on every layout pass: the content sits behind a `responsive`
+    // (the centered form needs the available size, which a `Length::Fill`
+    // cannot provide inside the page's scrollable), so it only captures
+    // owned or copyable data and clones what it needs per call.
+    let build_content = move || -> Element<'_, Message> {
+        let labels_for_pick = labels.clone();
+        let cids = cids.clone();
+        let source_picker = row![
+            text("Source")
+                .color(theme::TEXT_SEC)
+                .size(theme::TEXT_XS * scale),
+            pick_list(labels.clone(), current.clone(), move |label| {
+                let idx = labels_for_pick
+                    .iter()
+                    .position(|l| *l == label)
+                    .unwrap_or(0);
+                Message::QuickChannelSelected(cids[idx])
+            })
+            .placeholder("select...")
+            .style(theme::pick_list)
+            .menu_style(theme::menu)
+            .text_size(theme::TEXT_MD * scale),
+        ]
+        .spacing(theme::SPACE_MD)
+        .align_y(iced::Alignment::Center);
 
-    let body = column![
-        section_header("QUICK CONTROL", scale),
-        text("Pick a source, adjust it, adjust the destination - no routing, no matrix. Tab for Mixer")
+        // `sel_out` indexes the 6 *submix pairs* (`OUT_LABELS`), but
+        // `device.outputs()` is a flat list of individual physical
+        // channels, two per pair (`build_outputs`: index `2*i`/`2*i+1` =
+        // left/right of pair `i`) — so the pair's representative channel
+        // is `sel_out * 2`, not `sel_out` itself.
+        let mut source_params = strip_params(state, quick_channel, sel_out);
+        source_params.scale = big_scale;
+        let mut dest_params = strip_params(state, dest_cid, sel_out);
+        dest_params.scale = big_scale;
+
+        // Captions and a connector turn the two blocks into one readable
+        // sentence: this source, into this destination. Both columns carry
+        // the same structure (caption, then strip), so the strips line up.
+        let caption = |label: String| {
+            text(label)
+                .color(theme::TEXT_SEC)
+                .size(theme::TEXT_XS * scale)
+        };
+
+        let source_block = column![caption("SOURCE".to_owned()), strip::strip(source_params)]
+            .spacing(theme::SPACE_MD * scale)
+            .align_x(iced::Alignment::Center);
+
+        let dest_block = column![
+            caption(format!("DESTINATION · {}", OUT_LABELS[sel_out])),
+            strip::strip(dest_params),
+        ]
+        .spacing(theme::SPACE_MD * scale)
+        .align_x(iced::Alignment::Center);
+
+        let connector = text("→")
             .color(theme::TEXT_SEC)
-            .size(theme::TEXT_XS * scale),
-        source_picker,
-        blocks,
-    ]
-    .spacing(theme::SPACE_LG)
-    .width(Length::Fill);
+            .size(theme::TEXT_XL * scale);
 
-    page(body)
+        let blocks = row![source_block, connector, dest_block]
+            .spacing(theme::SPACE_XL * big_scale)
+            .align_y(iced::Alignment::Center);
+
+        column![
+            section_header("QUICK CONTROL", scale),
+            text("Pick a source, adjust how loud it is in the destination - no routing, no matrix. Tab for Mixer")
+                .color(theme::TEXT_SEC)
+                .size(theme::TEXT_XS * scale),
+            source_picker,
+            blocks,
+        ]
+        .spacing(theme::SPACE_LG)
+        .align_x(iced::Alignment::Center)
+        .width(Length::Fill)
+        .into()
+    };
+
+    // One centered group when it fits, as the view is meant to be read as a
+    // single sentence instead of a page of controls; the scrolling page the
+    // other views use is the fallback for small windows and a zoomed-in UI.
+    // The height is per unit of `scale`, so it grows with the zoom the same
+    // way the content it measures does.
+    let content = responsive(move |size| {
+        let needed = (QUICK_CHROME + QUICK_STRIP_UNIT * QUICK_SCALE_MULT) * scale;
+        if size.height >= needed {
+            container(build_content())
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else {
+            scrollable(build_content())
+                .direction(scrollable::Direction::Vertical(theme::thin_scrollbar()))
+                .width(Length::Fill)
+                .style(theme::scrollable)
+                .into()
+        }
+    });
+
+    mouse_area(
+        container(content)
+            .style(theme::root)
+            .padding([theme::SPACE_LG, theme::SPACE_XL])
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .on_press(Message::ClearSelection)
+    .into()
 }
 
 #[cfg(test)]
