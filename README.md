@@ -72,4 +72,9 @@ cargo test          # unit tests (protocol laws, panel state machine, …)
 
 ## License
 
-MIT (userspace application).
+MIT for the application: `tuxmix-core`, `tuxmix-gui`, `tuxmix-tui` and the
+rest of the tree, see `LICENSE`.
+
+Two crates are copyleft: `tuxmix-usb` is GPL-3.0-or-later and `tuxmix-sys` is
+GPL-3.0. The built binaries link both, so as a whole they are GPL-3.0, which
+is the license the AUR package declares.

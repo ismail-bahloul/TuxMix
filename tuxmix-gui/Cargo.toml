@@ -3,6 +3,7 @@ name = "tuxmix-gui"
 version = "0.1.0"
 edition = "2021"
 description = "GUI for TuxMix — direct control of RME hardware DSP mixers on Linux"
+license = "MIT"
 
 [features]
 default = ["alsa"]

@@ -3,6 +3,7 @@ name = "tuxmix-tui"
 version = "0.1.0"
 edition = "2021"
 description = "TUI for TuxMix — control your RME interface from the terminal"
+license = "MIT"
 
 [dependencies]
 tuxmix-core = { path = "../tuxmix-core", default-features = false, features = ["usb"] }

@@ -19,3 +19,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+Two crates in this repository are licensed differently, and the MIT text above
+does not cover them: `tuxmix-usb` is GPL-3.0-or-later, `tuxmix-sys` is
+GPL-3.0. See the License section of README.md.
