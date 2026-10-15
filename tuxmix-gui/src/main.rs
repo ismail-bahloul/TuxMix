@@ -27,6 +27,27 @@ use iced::{Font, Size};
 /// little effort.
 const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
 
+/// The application id, matching the basename of `tuxmix.desktop`, so the
+/// desktop environment associates the window with the app entry (icon
+/// included) in the taskbar and the window list.
+const APP_ID: &str = "tuxmix";
+
+/// The window icon, decoded from the same PNG the packaging installs into
+/// the icon theme. `None` on any decode error: a missing icon is cosmetic,
+/// not a reason to fail the launch.
+fn window_icon() -> Option<window::Icon> {
+    let bytes: &[u8] = include_bytes!("../assets/tuxmix-256.png");
+    let decoder = png::Decoder::new(bytes);
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    if info.color_type != png::ColorType::Rgba {
+        return None;
+    }
+    buf.truncate(info.buffer_size());
+    window::icon::from_rgba(buf, info.width, info.height).ok()
+}
+
 /// Value following a `--flag <value>` pair, if present.
 fn arg_value(args: &[String], flag: &str) -> Option<String> {
     args.iter()
@@ -77,6 +98,11 @@ fn main() -> iced::Result {
     .default_font(Font::with_name("Inter"))
     .window(window::Settings {
         size: Size::new(1280.0, 800.0),
+        icon: window_icon(),
+        platform_specific: window::settings::PlatformSpecific {
+            application_id: APP_ID.to_owned(),
+            ..Default::default()
+        },
         // No enforced minimum — the adaptive scale (down to `SCALE_MIN`)
         // plus per-row horizontal scroll and the page's vertical scroll
         // handle small windows fine now, so a fixed 960×600 floor is just
