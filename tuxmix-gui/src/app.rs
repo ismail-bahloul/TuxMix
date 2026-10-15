@@ -16,6 +16,7 @@ use tuxmix_core::{
     BabyfaceProUsb, ChannelId, ChannelType, MockBabyfacePro, RmeDevice, Scene, Sensitivity,
 };
 
+use crate::about;
 use crate::matrix;
 use crate::osc::{self, OscCommand, OscConfig, OscOutbound};
 use crate::scenes::{load_scene_file, save_scene_file};
@@ -685,6 +686,11 @@ pub enum Message {
     /// Toggles the global device settings drawer (clock source, SPDIF,
     /// sample rate).
     ToggleDevicePanel,
+    /// Toggles the About drawer (version, icon, links; see `about`).
+    ToggleAbout,
+    /// Opens the repository in the desktop's browser, from the About
+    /// drawer's own link.
+    OpenRepoUrl,
     ClockSourceSelected(String),
     SampleRateSelected(u32),
 
@@ -836,6 +842,9 @@ pub struct TuxMix {
     /// Docked drawer for global device settings (clock source, SPDIF
     /// flags) — same pattern as `show_osc_log`, see `device_panel`.
     pub show_device_panel: bool,
+    /// Docked drawer with the version, the icon and the links, the same
+    /// pattern again: see `about::about_panel`.
+    pub show_about: bool,
     /// Debounce timer for the auto-saved mixer state (see
     /// `Message::Tick` — the device has no readback, so this is how the
     /// UI restores the gains/volumes/48V on the next open).
@@ -1008,6 +1017,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         osc_log: VecDeque::new(),
         show_osc_log: false,
         show_device_panel: false,
+        show_about: false,
         // State persistence (the device has no gain/volume readback —
         // TotalMix re-applies its saved state; this is our equivalent).
         last_auto_save: Instant::now(),
@@ -1363,6 +1373,8 @@ fn is_undoable(message: &Message) -> bool {
             | Message::ToggleOscLog
             | Message::ClearOscLog
             | Message::ToggleDevicePanel
+            | Message::ToggleAbout
+            | Message::OpenRepoUrl
             | Message::Undo
             | Message::Redo
             | Message::ToggleSidebarPanel(_)
@@ -1858,6 +1870,20 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::ToggleOscLog => state.show_osc_log = !state.show_osc_log,
         Message::ClearOscLog => state.osc_log.clear(),
         Message::ToggleDevicePanel => state.show_device_panel = !state.show_device_panel,
+        Message::ToggleAbout => state.show_about = !state.show_about,
+        Message::OpenRepoUrl => {
+            // Fire and forget: the browser is not our child process, and a
+            // minimal session may have no `xdg-open` to hand it to at all.
+            if let Err(e) = std::process::Command::new("xdg-open")
+                .arg(about::REPO_URL)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                log::warn!("Could not open {}: {e}", about::REPO_URL);
+            }
+        }
         Message::ClockSourceSelected(source) => {
             let _ = state.device.set_clock_source(&source);
         }
@@ -2053,6 +2079,9 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
     }
     if state.show_device_panel {
         col = col.push(device_panel(state));
+    }
+    if state.show_about {
+        col = col.push(about::about_panel(state));
     }
     col.into()
 }
@@ -2442,6 +2471,12 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
             .direction(scrollable::Direction::Horizontal(theme::thin_scrollbar()))
             .style(theme::scrollable)
             .width(Length::FillPortion(20)),
+    );
+    bar = bar.push(
+        iced::widget::button(text("About").size(theme::TEXT_MD * scale))
+            .padding([theme::SPACE_SM * scale, theme::SPACE_XL * scale])
+            .style(theme::tab_toggle(state.show_about))
+            .on_press(Message::ToggleAbout),
     );
 
     container(bar)
@@ -3551,8 +3586,8 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
 mod tests {
     use super::{
         all_channel_ids, all_channels_muted, any_channel_soloed, apply_pending_resize,
-        channel_is_muted, channel_is_soloed, new, power_sum_output_meters, update, zoom,
-        ChannelId, MeterAnim, Message, ZOOM_STEP,
+        channel_is_muted, channel_is_soloed, is_undoable, new, power_sum_output_meters,
+        update, zoom, ChannelId, MeterAnim, Message, ZOOM_STEP,
     };
     use crate::sidebar;
     use crate::widgets::strip;
@@ -4088,6 +4123,20 @@ mod tests {
         assert!(!state.undo_stack.is_empty());
         let _ = update(&mut state, Message::Undo);
         assert!(!all_channels_muted(&state));
+    }
+
+    #[test]
+    fn about_drawer_messages_are_not_undoable() {
+        // Both are pure UI, so neither may push an undo step. Checked through
+        // the predicate rather than by dispatching, because dispatching
+        // `OpenRepoUrl` would launch the machine's browser.
+        assert!(!is_undoable(&Message::ToggleAbout));
+        assert!(!is_undoable(&Message::OpenRepoUrl));
+
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::ToggleAbout);
+        assert!(state.show_about);
+        assert!(state.undo_stack.is_empty());
     }
 
     #[test]

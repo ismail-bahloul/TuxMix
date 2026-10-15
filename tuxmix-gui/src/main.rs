@@ -7,7 +7,9 @@
 //! cargo run -p tuxmix-gui -- --backend usb  # force libusb over the kernel driver
 //! ```
 
+mod about;
 mod app;
+mod icon;
 mod layouts;
 mod matrix;
 mod osc;
@@ -32,20 +34,12 @@ const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf")
 /// included) in the taskbar and the window list.
 const APP_ID: &str = "tuxmix";
 
-/// The window icon, decoded from the same PNG the packaging installs into
-/// the icon theme. `None` on any decode error: a missing icon is cosmetic,
-/// not a reason to fail the launch.
+/// The window icon, from the same decoded PNG the About drawer draws (see
+/// `icon`). `None` on a decode error: a missing icon is cosmetic, not a
+/// reason to fail the launch.
 fn window_icon() -> Option<window::Icon> {
-    let bytes: &[u8] = include_bytes!("../assets/tuxmix-256.png");
-    let decoder = png::Decoder::new(bytes);
-    let mut reader = decoder.read_info().ok()?;
-    let mut buf = vec![0; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).ok()?;
-    if info.color_type != png::ColorType::Rgba {
-        return None;
-    }
-    buf.truncate(info.buffer_size());
-    window::icon::from_rgba(buf, info.width, info.height).ok()
+    let (width, height, pixels) = icon::rgba()?;
+    window::icon::from_rgba(pixels, width, height).ok()
 }
 
 /// Value following a `--flag <value>` pair, if present.
