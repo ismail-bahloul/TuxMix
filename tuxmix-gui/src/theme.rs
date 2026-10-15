@@ -350,6 +350,58 @@ pub fn tab_toggle(active: bool) -> impl Fn(&iced::Theme, button::Status) -> butt
     }
 }
 
+/// One cell of a 2-way segmented switch (`sidebar::segmented_row`).
+///
+/// The option the switch currently points at gets `ACCENT_DIM`, the same
+/// "selected" fill `tab_toggle` uses, instead of `toggle_button`'s
+/// full-strength `ACCENT` plus glow. Those two were indistinguishable in
+/// the sidebar: a switch resting on one of its sides looked exactly as
+/// "engaged" as a channel that really is muted, so neither state carried
+/// meaning. Filling only what is actually *on* with the brand orange
+/// (M/S, a group link) and leaving switch positions dim is what makes the
+/// two readable apart.
+///
+/// A fixed pair (`routing: submix`) renders as `segment_button(true)` with
+/// no `on_press` on either side and is still drawn lit, unlike
+/// `toggle_button`'s disabled look, which stays flat regardless of state.
+pub fn segment_button(active: bool) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let pressed = matches!(status, button::Status::Pressed);
+
+        let background = if active {
+            ACCENT_DIM
+        } else if hovered {
+            SURFACE
+        } else {
+            BG_DEEP
+        };
+        let border_color = if active {
+            ACCENT_DIM
+        } else if hovered {
+            FADER
+        } else {
+            BORDER
+        };
+
+        button::Style {
+            background: Some(Background::Color(if pressed {
+                blend(background, Color::BLACK, PRESS_DARKEN)
+            } else {
+                background
+            })),
+            text_color: if active { TEXT_PRIMARY } else { TEXT_SEC },
+            border: Border {
+                color: border_color,
+                width: 1.0,
+                radius: RADIUS_SM.into(),
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
 pub fn plain_button(_theme: &iced::Theme, status: button::Status) -> button::Style {
     let bg = match status {
         button::Status::Pressed => blend(ACCENT_DIM, Color::BLACK, PRESS_DARKEN),
@@ -361,6 +413,71 @@ pub fn plain_button(_theme: &iced::Theme, status: button::Status) -> button::Sty
         text_color: TEXT_PRIMARY,
         border: Border {
             color: BORDER,
+            width: 1.0,
+            radius: RADIUS_SM.into(),
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+/// A flat, textual button: no box at rest, brightening to `SURFACE` under
+/// the cursor.
+///
+/// For secondary actions and utilities (undo/redo, a panel's "store", its
+/// "−"/"+") that were previously the same bordered box as a real control.
+/// In a 210px column that added up to nothing but boxes, and a row of
+/// equally-sized boxes carries no information about which of them matters.
+///
+/// `Disabled` (a button with no `on_press`, e.g. undo with an empty stack)
+/// drops to a quarter-opacity label: the flat look has no border to gray
+/// out, so that is what keeps "nothing to undo" from reading as "click
+/// me".
+pub fn ghost_button(_theme: &iced::Theme, status: button::Status) -> button::Style {
+    let (background, text_color) = match status {
+        button::Status::Pressed => (
+            Background::Color(blend(SURFACE, Color::BLACK, PRESS_DARKEN)),
+            TEXT_PRIMARY,
+        ),
+        button::Status::Hovered => (Background::Color(SURFACE), TEXT_PRIMARY),
+        button::Status::Disabled => (
+            Background::Color(Color::TRANSPARENT),
+            Color { a: 0.4, ..TEXT_SEC },
+        ),
+        _ => (Background::Color(Color::TRANSPARENT), TEXT_SEC),
+    };
+    button::Style {
+        background: Some(background),
+        text_color,
+        border: Border {
+            radius: RADIUS_SM.into(),
+            ..Border::default()
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+/// The sidebar's fold tab (`sidebar.rs`): a small vertical grip centered
+/// on the edge it folds. Boxed at rest — unlike every other utility in
+/// that column it has to be findable without hovering, since it is the
+/// only way to get the sidebar back once it's gone — then brightening to
+/// the same `SURFACE`/`FADER` hover as everything else.
+pub fn tab_handle(_theme: &iced::Theme, status: button::Status) -> button::Style {
+    let (background, border_color, text_color) = match status {
+        button::Status::Pressed => (
+            Background::Color(blend(SURFACE, Color::BLACK, PRESS_DARKEN)),
+            FADER,
+            TEXT_PRIMARY,
+        ),
+        button::Status::Hovered => (Background::Color(SURFACE), FADER, TEXT_PRIMARY),
+        _ => (Background::Color(BG_DEEP), BORDER, TEXT_SEC),
+    };
+    button::Style {
+        background: Some(background),
+        text_color,
+        border: Border {
+            color: border_color,
             width: 1.0,
             radius: RADIUS_SM.into(),
         },

@@ -2652,3 +2652,128 @@ changer de personnalité, le firmware lisant les boutons avant toute
 énumération USB, hors de portée de l'émulation de façade.
 
 167 tests hors-matériel verts, build sans warning.
+
+## 2026-10-15 — passe de hiérarchie sur la sidebar
+
+Tout avait le même poids : le chip device, undo/redo, la rangée M/S/F,
+« FX show 0% » et les quatre panneaux étaient la même boîte bordée de
+210px, et chaque `toggle_button(active)` se remplissait d'`ACCENT` plein
+avec un halo. Résultat : « c'est allumé » (un canal réellement muté) et
+« le sélecteur pointe ici » (un switch posé sur `submix`, le slot Mix
+sélectionné) se dessinaient pareil. Demande utilisateur : une passe de
+poids visuel. Rien n'a été déplacé, réordonné ni renommé.
+
+Les règles vivent maintenant dans le doc de module de `sidebar.rs`
+(c'est le contrat de design du fichier, donc à côté du code et pas
+seulement ici) :
+
+* le chip device reste l'ancre : le seul élément encadré en `TEXT_MD` ;
+* les en-têtes de panneau portent la structure : tick accent + label en
+  majuscules + filet, le vocabulaire déjà utilisé par
+  `app.rs::section_header`, en `TEXT_SM`, avec le contenu du panneau
+  indenté de `SPACE_LG` dessous ;
+* l'`ACCENT` plein est réservé à ce qui est allumé : la paire M/S (leurs
+  propres cyan/orange) et les cellules d'un groupe lié. La position d'un
+  switch et le slot sélectionné passent au pill `ACCENT_DIM` sans halo
+  (nouveau `theme::segment_button`, et `theme::tab_toggle` existant) ;
+* les actions secondaires sont à plat : nouveau `theme::ghost_button`
+  pour undo/redo, les deux « store », les « − »/« + » de panneau et
+  « clear ». Il rend `Disabled` (bouton sans `on_press`, undo sur pile
+  vide) à 40% d'alpha, ce que le `plain_button` bordé ne distinguait
+  pas ;
+* le `F` de M/S/F (squelette, pas de `on_press`) prend le même texte
+  atténué à 40% que les autres contrôles inertes, au lieu de ressembler
+  à un toggle vivant qui ne s'allume jamais.
+
+Deux changements de mise en page, pas plus : les légendes de l'Options
+(« routing », « meters », « show », « solo/pfl mode ») passent dans une
+colonne de gauche de 76px pour que les quatre contrôles s'alignent entre
+eux (avant, chaque légende mangeait une ligne entière des 210px au-dessus
+de son contrôle), et le scrollable de la sidebar utilise
+`theme::thin_scrollbar()` comme `app.rs::page`.
+
+**Suivi le même jour : le contrôle de repli devient une languette, puis
+un overlay.** Il vivait en haut de la colonne, puis en haut à droite ;
+les deux fois il finissait soit sans rapport avec ce qu'il plie, soit
+juste au-dessus du « ▾ » du chip device, donc lu comme un second caret
+de menu. Il est maintenant une **languette** (`theme::tab_handle`,
+18x40) sur le bord interne de la sidebar, centrée verticalement. Premier
+jet : une bande de 22px lui était réservée dans la sidebar, ce qui
+laissait une colonne vide sur toute la hauteur à côté du mixer.
+L'utilisateur l'a relevé, la version finale est un **overlay** :
+`sidebar::fold_tab(state)` est empilé par `app.rs::view` dans un `stack`
+au-dessus de la rangée `row![content, sidebar]`, donc la languette peut
+chevaucher la frontière au lieu d'occuper sa propre colonne. Le partage
+est choisi pour ne rien couvrir : 12px côté mixer (exactement le padding
+droit de `page()`) et 6px côté sidebar (exactement son padding gauche).
+Repliée, le rail de 22px *est* la languette (`fold_tab` ne rend rien, la
+sidebar la dessine elle-même), donc le contrôle ne bouge qu'en suivant le
+bord qu'il plie.
+
+Le point risqué d'un overlay, ce n'est pas le rendu mais l'input, donc
+lu plutôt que supposé : dans `iced_widget-0.14.2/src/stack.rs`,
+`Stack::update` offre l'événement aux enfants du dernier au premier et ne
+s'arrête que sur un événement *capturé*. L'overlay n'étant qu'un
+`row![Space, bouton, Space]` (ni `opaque`, ni `mouse_area`), les clics et
+la molette continuent d'atteindre la rangée du dessous partout sauf sur
+la languette. Vérifié en direct dans les deux états (replié capturé via
+une inversion temporaire de la condition, comme pour la passe de repli
+initiale), et au pixel sur 1920 : la languette occupe x 1378..1395, la
+frontière mixer/sidebar est en x=1390, le fond `top_bar` (`#282E33`)
+reprend en 1396.
+
+Vérifié en direct sur la carte, pas seulement compilé, en 1920x1080 :
+en-têtes lisibles comme structure, « solo/pfl mode » tient dans sa
+colonne sans retour à la ligne, la grille Options est alignée sur les
+quatre rangées, et le scrollbar est bien un scroller de 4px en `BORDER`
+au bord droit de la sidebar (relevé au pixel : x 1596-1599, `#4A545C`,
+contre `#282E33` pour le fond `top_bar`). `cargo test --workspace` : 175
+passés, 0 échec (les 174 d'avant plus le test de resize, plus bas).
+`rustfmt --check` propre sur `theme.rs`, `sidebar.rs` et
+`widgets/splitter.rs` ; `app.rs` est injecté par script, jamais par
+l'éditeur, parce que son format-on-save reformate tout le fichier
+(152/54 lignes de churn sans rapport sur un simple edit).
+
+**Suivi le même jour : largeur ajustable.** Il a demandé une sidebar
+redimensionnable (et les quatre panneaux ouverts par défaut, donc rien à
+changer de ce côté). Côté état : `TuxMix::sidebar_width` (défaut
+`sidebar::DEFAULT_WIDTH`, bornes `MIN_WIDTH` 170 / `MAX_WIDTH` 420) et
+`Message::SidebarResize(f32)`, un pas de drag en pixels logiques. Le
+message est dans la blacklist `is_undoable` comme les autres messages de
+chrome : sans ça chaque pas de souris aurait poussé un `Scene` complet sur
+la pile d'undo. La largeur est de l'état de session, rien ne la persiste,
+comme `sidebar_open`.
+
+Côté geste, un widget plutôt qu'un `mouse_area` : `mouse_area` ne
+rapporte aucune position de curseur (il aurait fallu une souscription
+`CursorMoved` à l'échelle de la fenêtre) et demande toujours le curseur
+`Pointer`. Nouveau `widgets/splitter.rs`, un `canvas::Program` comme le
+fader, qui reçoit les événements souris avec leurs coordonnées, émet des
+**deltas** (pas des positions absolues : pas besoin de connaître la
+largeur de la fenêtre, et ça reste juste alors que la bande se déplace
+sous le curseur, puisque c'est elle qu'on déplace) et demande le curseur
+`ResizingHorizontally`. Il ne dessine rien au repos, une ligne de 2px au
+survol, la même en accent pendant le drag. Il est placé dans la sidebar
+elle-même, pas en overlay : ses 6px occupent exactement le padding gauche
+de la colonne, padding qui est donc retiré au `scrollable`, donc les
+rangées commencent toujours à 6px du bord et la largeur utile est
+inchangée (vérifié : les rangées Options tiennent toujours sur une ligne
+à 210px).
+
+`MIN_WIDTH` 170 est un choix documenté, pas un accident : sous ~200 les
+deux segments d'une rangée Options ne tiennent plus leurs libellés et
+iced passe le texte sur deux lignes (une rangée plus haute, pas cassée).
+
+Vérifié : test unitaire `sidebar_resize_clamps_and_is_not_undoable` (drag
+vers la gauche = élargit, clamp aux deux bornes, rien sur la pile
+d'undo), et un rendu capturé à 300px de large via un défaut temporaire
+(les rangées se répartissent la largeur, la languette reste collée à la
+frontière parce qu'elle lit `state.sidebar_width`). `cargo test
+--workspace` : 175 passés, 0 échec. Le geste de drag lui-même n'est pas
+testable ici (pas d'`ydotool`/`wtype` sur la machine, et `xdotool` est
+X11 alors que la session est Wayland) : à valider à la souris.
+
+Décisions prises le même jour sur les deux questions qui restaient
+ouvertes : les quatre panneaux restent ouverts par défaut (comme la
+référence) et la sidebar est redimensionnable (ci-dessus) au lieu d'être
+fixe à 210px.

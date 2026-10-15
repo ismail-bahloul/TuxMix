@@ -706,6 +706,12 @@ pub enum Message {
     /// Expands/collapses the *whole* right sidebar — distinct from
     /// `ToggleSidebarPanel`, see `TuxMix::sidebar_open`'s own doc comment.
     ToggleSidebar,
+    /// One horizontal drag step on the sidebar's own resize strip, in
+    /// logical pixels (negative = the pointer moved left, which *widens*
+    /// the sidebar) — see `sidebar::resize_strip`. Clamped to
+    /// `sidebar::MIN_WIDTH`/`MAX_WIDTH` in `update`. UI-only: never
+    /// pushed on `undo_stack`, never persisted.
+    SidebarResize(f32),
     /// Skeleton toggles — visually real 2-way switches (see
     /// `sidebar::SkeletonPair`'s own doc comment), no behavior behind
     /// them. Distinct from the M/S/F row, which isn't wired to
@@ -886,6 +892,11 @@ pub struct TuxMix {
     /// an expanded sidebar. `false` reclaims its width for the mixer,
     /// leaving only a thin rail with the button to bring it back.
     pub sidebar_open: bool,
+    /// Draggable width of the whole sidebar, in logical pixels — set by
+    /// `Message::SidebarResize`, starting at `sidebar::DEFAULT_WIDTH` and
+    /// clamped to `sidebar::MIN_WIDTH`/`MAX_WIDTH`. Like `sidebar_open`
+    /// and `sidebar_panels_open`, session state: nothing persists it.
+    pub sidebar_width: f32,
 }
 
 /// Matches the "Max lines" default in oscmix's own OSC debug log — enough
@@ -1034,6 +1045,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         sidebar_panels_open: sidebar::PanelsOpen::default(),
         skeleton_pairs: sidebar::SkeletonPairs::default(),
         sidebar_open: true,
+        sidebar_width: sidebar::DEFAULT_WIDTH,
     }
 }
 
@@ -1379,6 +1391,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::Redo
             | Message::ToggleSidebarPanel(_)
             | Message::ToggleSidebar
+            | Message::SidebarResize(_)
             | Message::ToggleSkeletonPair(_)
             | Message::SnapshotStore
             | Message::GroupEditToggle
@@ -1910,6 +1923,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         }
         Message::ToggleSidebarPanel(panel) => state.sidebar_panels_open.toggle(panel),
         Message::ToggleSidebar => state.sidebar_open = !state.sidebar_open,
+        Message::SidebarResize(dx) => {
+            state.sidebar_width =
+                (state.sidebar_width - dx).clamp(sidebar::MIN_WIDTH, sidebar::MAX_WIDTH);
+        }
         Message::ToggleSkeletonPair(pair) => state.skeleton_pairs.toggle(pair),
         Message::SnapshotClicked(n) => {
             state.active_snapshot = Some(n as usize);
@@ -2068,9 +2085,19 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
     // indistinguishable on screen from a genuinely non-interactive one.
     // That's what made `page()`'s click-to-clear-selection silently miss
     // every click below the shortest section's natural content height.
-    let body = row![content, sidebar::sidebar(state)]
-        .width(Length::Fill)
-        .height(Length::Fill);
+    // The sidebar's fold tab rides in a `stack` *above* that row rather
+    // than inside it, so it can straddle the mixer/sidebar boundary
+    // instead of needing a column of its own (see `sidebar::fold_tab`,
+    // including why it stays a bare row of spaces plus one button).
+    let body = stack(vec![
+        row![content, sidebar::sidebar(state)]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        sidebar::fold_tab(state),
+    ])
+    .width(Length::Fill)
+    .height(Length::Fill);
     let mut col = column![top, body]
         .width(Length::Fill)
         .height(Length::Fill);
@@ -3868,6 +3895,30 @@ mod tests {
         assert!(
             state.undo_stack.is_empty(),
             "collapsing/expanding the sidebar is UI chrome, not a device change"
+        );
+    }
+
+    #[test]
+    fn sidebar_resize_clamps_and_is_not_undoable() {
+        let mut state = new(true, None, None);
+        assert_eq!(state.sidebar_width, sidebar::DEFAULT_WIDTH);
+
+        // Dragging the strip left (negative dx) widens the column.
+        let _ = update(&mut state, Message::SidebarResize(-40.0));
+        assert_eq!(state.sidebar_width, sidebar::DEFAULT_WIDTH + 40.0);
+
+        // Clamped both ends, so a fast drag past the window edge can't
+        // produce a zero or negative width to lay the mixer out against.
+        let _ = update(&mut state, Message::SidebarResize(-10_000.0));
+        assert_eq!(state.sidebar_width, sidebar::MAX_WIDTH);
+        let _ = update(&mut state, Message::SidebarResize(10_000.0));
+        assert_eq!(state.sidebar_width, sidebar::MIN_WIDTH);
+
+        // One message per drag step, so this is the assertion that
+        // matters: a resize must not push a `Scene` per mouse move.
+        assert!(
+            state.undo_stack.is_empty(),
+            "resizing the sidebar is UI chrome, not a device change"
         );
     }
 

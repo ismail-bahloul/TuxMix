@@ -7,6 +7,25 @@
 //! the M/S/F row, "FX show %", and several Options rows are deliberate
 //! visual skeleton (per the user's own framing: build the shape, don't
 //! guess at behavior a static reference screenshot can't confirm).
+//!
+//! Visual weight is deliberate, not incidental. Every control in this
+//! column is the same 210px wide, so the only things telling the eye what
+//! is structure, what is content and what is merely available are
+//! contrast and spacing. The rules this file follows, in one place:
+//!
+//! * The device chip is the anchor: the only boxed, `TEXT_MD` element.
+//! * Panel headers carry the structure — accent tick + uppercase label +
+//!   trailing rule, the vocabulary `app.rs::section_header` already uses
+//!   in the mixer — and each panel's content is indented under them.
+//! * Full-strength `ACCENT` is reserved for things that are actually on
+//!   (`theme::toggle_button`: the M/S pair, a group link). "Which side a
+//!   switch points at" and "which slot is selected" use the dim
+//!   `ACCENT_DIM` pill instead (`theme::segment_button`,
+//!   `theme::tab_toggle`), so a position no longer reads as a state.
+//! * Secondary actions (undo/redo, "store", the collapse toggle) are flat
+//!   text (`theme::ghost_button`) instead of more boxes.
+//! * Rows inside a panel are `SPACE_TIGHT` apart, panels are twice that
+//!   (see `panel`), and the whole column is one scrollable strip.
 
 use iced::widget::{button, column, container, row, text};
 use iced::{Color, Element, Length};
@@ -16,14 +35,58 @@ use tuxmix_core::{ChannelId, RmeDevice};
 use crate::app::{Message, TuxMix};
 use crate::theme;
 
-/// Fixed sidebar width (at `scale == 1.0`) — wide enough for the longest
-/// label in the Options panel ("excl. solo") without wrapping.
-pub const WIDTH: f32 = 210.0;
+/// Default sidebar width (at `scale == 1.0`), used until the user drags
+/// the resize strip — wide enough for the longest label in the Options
+/// panel ("solo/pfl mode") without wrapping. Its rows act as a
+/// self-contained readout, so this is a starting point rather than
+/// something the layout negotiates with the mixer.
+pub const DEFAULT_WIDTH: f32 = 210.0;
+/// Bounds on `TuxMix::sidebar_width`. The floor is set by the same
+/// measurement as `DEFAULT_WIDTH`: below roughly 200 the Options rows'
+/// two segments stop fitting their labels, and iced wraps the text onto a
+/// second line (a taller row, not a broken one) — allowed down to this
+/// because reclaiming mixer space is the point of a resize, and the drag
+/// is trivially reversible. The ceiling is where the mixer's own strips
+/// stop having room to spare on a 1920px window.
+pub const MIN_WIDTH: f32 = 170.0;
+pub const MAX_WIDTH: f32 = 420.0;
 /// Width of the collapsed rail — just enough for the expand button, so
 /// collapsing the sidebar reclaims most of its width for the mixer
 /// without losing the one control needed to bring it back (an
 /// entirely-gone sidebar would have nowhere left to click).
 pub const COLLAPSED_WIDTH: f32 = 22.0;
+
+/// Left indent of a panel's *content*, so it sits under the panel header's
+/// label rather than under its accent tick — the one bit of inset the
+/// column has, and what makes a panel read as one block.
+const CONTENT_INDENT: f32 = theme::SPACE_LG;
+
+/// A left-only padding of `left` (iced 0.14's `Padding` has no
+/// four-element array conversion, only `[vertical, horizontal]`).
+const fn indent(left: f32) -> iced::Padding {
+    iced::Padding {
+        top: 0.0,
+        right: 0.0,
+        bottom: 0.0,
+        left,
+    }
+}
+
+/// Width of the Options panel's caption column. Sized for the longest
+/// caption the reference uses there ("solo/pfl mode") at `TEXT_XS`.
+const OPTIONS_LABEL_W: f32 = 76.0;
+
+/// Width of the fold tab that straddles the sidebar's inner edge.
+const TAB_W: f32 = 18.0;
+/// Height of that tab — tall enough to read as a grip, short enough that
+/// it doesn't read as a scrollbar segment.
+const TAB_H: f32 = 40.0;
+/// How much of the tab overlaps the sidebar itself — exactly the column's
+/// own left padding (`SPACE_MD`), so the tab hangs over the mixer's side
+/// of the boundary without ever covering a row. The rest of it
+/// (`TAB_W - TAB_INSIDE` = 12px) lands in the mixer page's own right
+/// padding (`SPACE_XL`), which is empty by construction.
+const TAB_INSIDE: f32 = theme::SPACE_MD;
 
 /// Which sidebar panel a `Message::ToggleSidebarPanel` collapses/expands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -94,7 +157,12 @@ pub struct PanelsOpen {
 
 impl Default for PanelsOpen {
     fn default() -> Self {
-        Self { options: true, snapshots: true, groups: true, layout: true }
+        Self {
+            options: true,
+            snapshots: true,
+            groups: true,
+            layout: true,
+        }
     }
 }
 
@@ -142,53 +210,146 @@ impl SkeletonPairs {
     }
 }
 
-/// Top-level entry point — one scrollable column, fixed width, filling
-/// the window's full height alongside the main content (see
-/// `app.rs::view`). Collapsible: `state.sidebar_open == false` renders
-/// just `COLLAPSED_WIDTH` of rail with an expand button, reclaiming the
-/// rest of the width for the mixer — the whole point being asked for
-/// ("rabattable"), not just a visual nicety.
+/// Width of the drag strip that resizes this column, on its inner edge.
+/// Sized to the column's own left padding (`SPACE_MD`), and the column's
+/// left padding is in turn dropped in its favour (`sidebar`'s own
+/// `scrollable`): the strip occupies exactly the space nothing was drawn
+/// in, so resizing costs the layout no width and every row still starts
+/// `SPACE_MD` from the column's left edge.
+const RESIZE_W: f32 = theme::SPACE_MD;
+
+/// The fold control itself: a small grip whose glyph points the way the
+/// column is about to move (`›` folds it away to the right, `‹` brings
+/// it back).
+fn tab_button(glyph: &'static str, scale: f32) -> Element<'static, Message> {
+    button(text(glyph).size(theme::TEXT_SM * scale))
+        .width(Length::Fixed(TAB_W * scale))
+        .height(Length::Fixed(TAB_H * scale))
+        .style(theme::tab_handle)
+        .on_press(Message::ToggleSidebar)
+        .into()
+}
+
+/// Top-level entry point — one scrollable column, filling the window's
+/// full height alongside the main content (see `app.rs::view`). Its width
+/// is the user's (`TuxMix::sidebar_width`, dragged via `resize_strip`, so
+/// a narrow one trades the Options labels' one-line fit for mixer space
+/// and a wide one gives the Groups/Layout lists room). Collapsible:
+/// `state.sidebar_open == false` renders just `COLLAPSED_WIDTH` of rail
+/// with an expand button, reclaiming the rest of the width for the mixer —
+/// the whole point being asked for ("rabattable"), not just a visual
+/// nicety.
 pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
     let scale = state.ui_scale;
 
+    // Collapsed, the rail is exactly the tab plus its own padding — the
+    // one control that brings the column back *is* the whole rail, and
+    // the tab is centered so it doesn't move height between states.
     if !state.sidebar_open {
-        return container(
-            button(text("‹").size(theme::TEXT_SM * scale))
-                .padding(theme::SPACE_TIGHT * scale)
-                .style(theme::plain_button)
-                .on_press(Message::ToggleSidebar),
-        )
-        .padding(theme::SPACE_SM * scale)
-        .width(Length::Fixed(COLLAPSED_WIDTH * scale))
-        .height(Length::Fill)
-        .style(theme::top_bar)
-        .into();
+        return container(tab_button("‹", scale))
+            .padding(theme::SPACE_TIGHT * scale)
+            .align_y(iced::Alignment::Center)
+            .width(Length::Fixed(COLLAPSED_WIDTH * scale))
+            .height(Length::Fill)
+            .style(theme::top_bar)
+            .into();
     }
 
-    let collapse_btn = button(text("›").size(theme::TEXT_SM * scale))
-        .padding(theme::SPACE_TIGHT * scale)
-        .style(theme::plain_button)
-        .on_press(Message::ToggleSidebar);
-
     let col = column![
-        collapse_btn,
         device_chip(state, scale),
         undo_redo_row(state, scale),
         msf_row(state, scale),
-        fx_show_chip(scale),
-        options_panel(state, scale),
-        snapshots_panel(state, scale),
-        groups_panel(state, scale),
-        layout_panel(state, scale),
+        fx_show_row(scale),
+        panel(options_panel(state, scale), scale),
+        panel(snapshots_panel(state, scale), scale),
+        panel(groups_panel(state, scale), scale),
+        panel(layout_panel(state, scale), scale),
     ]
     .spacing(theme::SPACE_MD * scale)
-    .padding(theme::SPACE_MD * scale)
-    .width(Length::Fixed(WIDTH * scale));
+    // Left padding dropped in favour of the resize strip (`RESIZE_W`):
+    // rows still start `SPACE_MD` from the column's edge, with the strip
+    // sitting in what used to be that padding.
+    .padding(iced::Padding {
+        top: theme::SPACE_MD * scale,
+        right: theme::SPACE_MD * scale,
+        bottom: theme::SPACE_MD * scale,
+        left: 0.0,
+    })
+    .width(Length::Fill);
 
-    container(iced::widget::scrollable(col).style(theme::scrollable))
-        .width(Length::Fixed(WIDTH * scale))
+    // Thin scrollbar, like `app.rs::page` — the default 10px one eats 5%
+    // of a 210px column's width when (as with every panel open) the full
+    // stack overflows.
+    let content = iced::widget::scrollable(col)
+        .direction(iced::widget::scrollable::Direction::Vertical(
+            theme::thin_scrollbar(),
+        ))
+        .style(theme::scrollable)
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+    container(row![resize_strip(scale), content])
+        .width(Length::Fixed(state.sidebar_width * scale))
         .height(Length::Fill)
         .style(theme::top_bar)
+        .into()
+}
+
+/// The resize grip on the column's inner edge — a `splitter` that reports
+/// horizontal drag deltas as `Message::SidebarResize`. Only ever reached
+/// with the column open (the collapsed rail has a fixed width), and it
+/// needs no overlay of its own: it sits in the column's own left padding.
+fn resize_strip(scale: f32) -> Element<'static, Message> {
+    crate::widgets::splitter::splitter(Message::SidebarResize, scale, RESIZE_W * scale)
+}
+
+/// The fold tab as an *overlay*, for `app.rs::view`'s own `stack`.
+///
+/// It used to be a widget inside the row, with a strip of its own to sit
+/// in — which left a full-height column of empty width next to the mixer.
+/// A row's children never draw outside their box, so the only way for the
+/// tab to hang over the boundary it folds is to be layered above the
+/// whole body row (see `TAB_INSIDE` for the split).
+///
+/// Deliberately nothing but `Space`s and the one button: no `opaque`, no
+/// `mouse_area`, like the mixer's own `page`. Everything else in this
+/// overlay has to stay transparent to clicks and wheel events so they
+/// keep reaching the body row underneath (the page's own
+/// click-to-clear-selection, the sidebar's scrollable).
+///
+/// Collapsed, the rail (`COLLAPSED_WIDTH`) *is* the tab, so there is
+/// nothing to overlay and this contributes nothing.
+pub fn fold_tab(state: &TuxMix) -> Element<'_, Message> {
+    let scale = state.ui_scale;
+
+    if !state.sidebar_open {
+        return iced::widget::Space::new().into();
+    }
+
+    row![
+        iced::widget::Space::new().width(Length::Fill),
+        tab_button("›", scale),
+        iced::widget::Space::new().width(Length::Fixed((state.sidebar_width - TAB_INSIDE) * scale)),
+    ]
+    .align_y(iced::Alignment::Center)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+/// Gives one panel its own top margin on top of the outer column's
+/// spacing, so two panels sit further apart than two rows inside one of
+/// them (`SPACE_TIGHT`) — the sidebar's only structural cue that doesn't
+/// rely on color.
+fn panel<'a>(content: Element<'a, Message>, scale: f32) -> Element<'a, Message> {
+    container(content)
+        .padding(iced::Padding {
+            top: theme::SPACE_MD * scale,
+            right: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
+        .width(Length::Fill)
         .into()
 }
 
@@ -197,16 +358,27 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
 /// the sidebar's device chip and the top bar's copy was removed as a
 /// straight duplicate — the status info still needs to live *somewhere*.
 fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
-    let status_color = if state.device.is_mock() { theme::YSIM } else { theme::GCONN };
-    let status_label = if state.device.is_mock() { "Simulated" } else { "Connected" };
+    let status_color = if state.device.is_mock() {
+        theme::YSIM
+    } else {
+        theme::GCONN
+    };
+    let status_label = if state.device.is_mock() {
+        "Simulated"
+    } else {
+        "Connected"
+    };
     // `model_name()` grows a " (mock)" suffix in mock mode (see
     // `mock.rs`) — that's needed for scene-compatibility checks, but
     // redundant here since the status line right below already says
     // "Simulated", and the suffix alone was enough to push
     // "Babyface Pro FS (mock)" past this chip's ~150px text budget
     // in a 210px-wide sidebar. Strip it for display only.
-    let display_name =
-        state.device.model_name().strip_suffix(" (mock)").unwrap_or(state.device.model_name());
+    let display_name = state
+        .device
+        .model_name()
+        .strip_suffix(" (mock)")
+        .unwrap_or(state.device.model_name());
     container(
         column![
             row![
@@ -215,11 +387,15 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
                     .size(theme::TEXT_MD * scale)
                     .color(theme::TEXT_PRIMARY)
                     .width(Length::Fill),
-                text("▾").size(theme::TEXT_XS * scale).color(theme::TEXT_SEC),
+                text("▾")
+                    .size(theme::TEXT_XS * scale)
+                    .color(theme::TEXT_SEC),
             ]
             .spacing(theme::SPACE_SM * scale)
             .align_y(iced::Alignment::Center),
-            text(status_label).size(theme::TEXT_XS * scale).color(status_color),
+            text(status_label)
+                .size(theme::TEXT_XS * scale)
+                .color(status_color),
         ]
         .spacing(theme::SPACE_HAIRLINE * scale),
     )
@@ -232,20 +408,23 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
 /// Real: pops/pushes `undo_stack`/`redo_stack` (see `Message::Undo`'s
 /// own doc comment for the capture granularity). Disabled (no
 /// `on_press`) when the relevant stack is empty, via `on_press_maybe`.
+/// Flat, and the only two rows here with nothing else to say: an empty
+/// stack now reads as "nothing to do" instead of as two disabled boxes.
 fn undo_redo_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     row![
         button(text("‹ undo").size(theme::TEXT_XS * scale))
-            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .width(Length::Fill)
-            .style(theme::plain_button)
+            .style(theme::ghost_button)
             .on_press_maybe((!state.undo_stack.is_empty()).then_some(Message::Undo)),
         button(text("redo ›").size(theme::TEXT_XS * scale))
-            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .width(Length::Fill)
-            .style(theme::plain_button)
+            .style(theme::ghost_button)
             .on_press_maybe((!state.redo_stack.is_empty()).then_some(Message::Redo)),
     ]
     .spacing(theme::SPACE_TIGHT * scale)
+    .width(Length::Fill)
     .into()
 }
 
@@ -254,13 +433,23 @@ fn undo_redo_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
 /// `S` clears every active solo and remembers which channels those
 /// were, restoring them on the next press if nothing's been soloed
 /// again since (lit when at least one channel is currently soloed) —
-/// see `Message::GlobalMuteToggle`/`GlobalSoloToggle` in `app.rs`. `F`
-/// stays skeleton (no `on_press`) — nothing in this app corresponds to
-/// TotalMix's own third button here, and a static screenshot can't
-/// confirm what it should do.
+/// see `Message::GlobalMuteToggle`/`GlobalSoloToggle` in `app.rs`.
+///
+/// These two keep the full-strength fill (`theme::toggle_button`): they
+/// are the one pair in this sidebar that reports a real state, which is
+/// exactly what that look is now reserved for. `F` stays skeleton (no
+/// `on_press`) — nothing in this app corresponds to TotalMix's own third
+/// button here, and a static screenshot can't confirm what it should do —
+/// so it gets the same dimmed text as the other inert controls
+/// (`disabled_segmented_row`) rather than looking like a live toggle that
+/// simply never lights up.
 fn msf_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let muted_all = crate::app::all_channels_muted(state);
     let any_solo = crate::app::any_channel_soloed(state);
+    let inert = Color {
+        a: 0.4,
+        ..theme::TEXT_SEC
+    };
     row![
         button(text("M").size(theme::TEXT_SM * scale))
             .padding(theme::SPACE_SM * scale)
@@ -272,59 +461,97 @@ fn msf_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
             .width(Length::Fill)
             .style(theme::toggle_button(any_solo, theme::SOLO_COLOR))
             .on_press(Message::GlobalSoloToggle),
-        button(text("F").size(theme::TEXT_SM * scale))
+        button(text("F").size(theme::TEXT_SM * scale).color(inert))
             .padding(theme::SPACE_SM * scale)
             .width(Length::Fill)
             .style(theme::toggle_button(false, theme::ACCENT)),
     ]
     .spacing(theme::SPACE_TIGHT * scale)
+    .width(Length::Fill)
     .into()
 }
 
 /// Not applicable — no FX/reverb/echo processing exists in this app at
-/// all (unlike TotalMix FX, which this chip reports the send level of).
-/// Static, no interaction.
-fn fx_show_chip(scale: f32) -> Element<'static, Message> {
-    container(
-        row![
-            text("FX").size(theme::TEXT_XS * scale).color(theme::TEXT_SEC),
-            text("show").size(theme::TEXT_XS * scale).color(theme::TEXT_SEC),
-            iced::widget::Space::new().width(Length::Fill),
-            text("0%").size(theme::TEXT_XS * scale).color(theme::TEXT_SEC),
-        ]
-        .spacing(theme::SPACE_SM * scale)
-        .align_y(iced::Alignment::Center),
-    )
-    .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+/// all (unlike TotalMix FX, which this row reports the send level of).
+/// Static, no interaction, and flat: it's a readout, not a control, so it
+/// must not wear the same box as the switches below it.
+fn fx_show_row(scale: f32) -> Element<'static, Message> {
+    row![
+        text("FX show")
+            .size(theme::TEXT_XS * scale)
+            .color(theme::TEXT_SEC),
+        iced::widget::Space::new().width(Length::Fill),
+        text("0%")
+            .size(theme::TEXT_XS * scale)
+            .color(theme::TEXT_SEC),
+    ]
+    .align_y(iced::Alignment::Center)
     .width(Length::Fill)
-    .style(theme::chip)
     .into()
 }
 
-/// A panel header shared by all 4 collapsible panels — label + a
-/// "−"/"+" collapse toggle, matching the reference's own per-panel
-/// header bar (simplified to one shared color rather than the
-/// reference's 4 different per-panel background hues, consistent with
-/// this session's own restrained orange/cyan palette rather than
-/// introducing 4 new one-off colors for a single header row each).
+/// One panel's header — the sidebar's only structure. The same
+/// vocabulary as the mixer's `section_header` (accent tick, label, rule
+/// trailing right) at sidebar scale, with the reference's own "−"/"+"
+/// collapse toggle at the end. This replaced a boxed chip: four
+/// identical bordered headers stacked in one column gave the panels
+/// exactly the weight of the controls inside them, so neither read as
+/// either.
 fn panel_header(label: &str, open: bool, on_toggle: Message, scale: f32) -> Element<'_, Message> {
-    container(
-        row![
-            text(label.to_uppercase())
-                .size(theme::TEXT_XS * scale)
-                .color(theme::TEXT_PRIMARY),
-            iced::widget::Space::new().width(Length::Fill),
-            button(text(if open { "−" } else { "+" }).size(theme::TEXT_XS * scale))
-                .padding(0)
-                .style(theme::plain_button)
-                .on_press(on_toggle),
-        ]
-        .align_y(iced::Alignment::Center),
-    )
-    .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+    row![
+        container(
+            iced::widget::Space::new()
+                .width(3.0 * scale)
+                .height(12.0 * scale)
+        )
+        .style(theme::accent_bar),
+        text(label.to_uppercase())
+            .size(theme::TEXT_SM * scale)
+            .color(theme::TEXT_PRIMARY),
+        iced::widget::rule::horizontal(1),
+        button(text(if open { "−" } else { "+" }).size(theme::TEXT_XS * scale))
+            .padding(theme::SPACE_SM * scale)
+            .style(theme::ghost_button)
+            .on_press(on_toggle),
+    ]
+    .spacing(theme::SPACE_SM * scale)
+    .align_y(iced::Alignment::Center)
     .width(Length::Fill)
-    .style(theme::chip)
     .into()
+}
+
+/// The caption cell of an Options row — dimmer than the control labels it
+/// captions and fixed-width, so the four rows' controls line up in a
+/// column of their own instead of every caption eating a full line of the
+/// panel's width above its row.
+fn sub_label(label: &str, scale: f32) -> Element<'_, Message> {
+    text(label)
+        .size(theme::TEXT_XS * scale)
+        .color(theme::TEXT_SEC)
+        .width(Length::Fixed(OPTIONS_LABEL_W * scale))
+        .into()
+}
+
+/// One Options row: caption on the left, control filling the rest.
+/// `None` for the row that continues the caption above it (the `2 row` /
+/// `2 row in` half of the `show` pair): the empty cell keeps its control
+/// aligned with the row above rather than sliding left under the caption.
+fn options_row<'a>(
+    caption: Option<&'a str>,
+    control: Element<'a, Message>,
+    scale: f32,
+) -> Element<'a, Message> {
+    let caption: Element<'a, Message> = match caption {
+        Some(label) => sub_label(label, scale),
+        None => iced::widget::Space::new()
+            .width(Length::Fixed(OPTIONS_LABEL_W * scale))
+            .into(),
+    };
+    row![caption, control]
+        .spacing(theme::SPACE_SM * scale)
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill)
+        .into()
 }
 
 /// A 2-way segmented row for the *skeleton* toggle pairs (`show`/
@@ -348,36 +575,61 @@ fn segmented_row<'a>(
         button(text(left_label).size(theme::TEXT_XS * scale))
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .width(Length::Fill)
-            .style(theme::toggle_button(left_active, theme::ACCENT))
+            .style(theme::segment_button(left_active))
             .on_press_maybe(on_left),
         button(text(right_label).size(theme::TEXT_XS * scale))
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .width(Length::Fill)
-            .style(theme::toggle_button(!left_active, theme::ACCENT))
+            .style(theme::segment_button(!left_active))
             .on_press_maybe(on_right),
     ]
     .spacing(theme::SPACE_TIGHT * scale)
+    .width(Length::Fill)
     .into()
 }
 
 /// A 2-way segmented row where *neither* side is real — both rendered
 /// dimmed (40% text alpha, same treatment as the Output strip's inert
-/// balance knob, `Knob::interactive: false`) and unpressable, for
-/// Options rows that don't map to anything in this app's architecture
-/// (`meters: post fx / RMS` — no on-device meter register, no RMS
-/// ballistics, no post-FX tap point since no FX exists at all).
-fn disabled_segmented_row(left_label: &str, right_label: &str, scale: f32) -> Element<'static, Message> {
-    let dim = Color { a: 0.4, ..theme::TEXT_SEC };
+/// balance knob, `Knob::interactive: false`) on an unlit switch body, and
+/// unpressable, for Options rows that don't map to anything in this app's
+/// architecture (`meters: post fx / RMS` — no on-device meter register, no
+/// RMS ballistics, no post-FX tap point since no FX exists at all).
+fn disabled_segmented_row(
+    left_label: &str,
+    right_label: &str,
+    scale: f32,
+) -> Element<'static, Message> {
+    let dim = Color {
+        a: 0.4,
+        ..theme::TEXT_SEC
+    };
     let cell = |label: String| -> Element<'static, Message> {
         button(text(label).size(theme::TEXT_XS * scale).color(dim))
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .width(Length::Fill)
-            .style(theme::plain_button)
+            .style(theme::segment_button(false))
             .into()
     };
     row![cell(left_label.to_string()), cell(right_label.to_string())]
         .spacing(theme::SPACE_TIGHT * scale)
+        .width(Length::Fill)
         .into()
+}
+
+/// The trailing "store" action of the Snapshot and Mixer Layout panels —
+/// right-aligned, flat text, the same weight as the panel's own collapse
+/// toggle. It used to be a bordered box the size of a slot, which made
+/// "save into the selected one" look like an eighth snapshot.
+fn store_row(on_press: Message, scale: f32) -> Element<'static, Message> {
+    container(
+        button(text("store").size(theme::TEXT_XS * scale))
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+            .style(theme::ghost_button)
+            .on_press(on_press),
+    )
+    .width(Length::Fill)
+    .align_x(iced::Alignment::End)
+    .into()
 }
 
 /// Real where the app has something to report (`routing`/`meters` are
@@ -386,64 +638,81 @@ fn disabled_segmented_row(left_label: &str, right_label: &str, scale: f32) -> El
 /// confirmed (`show`/`2 row`/`solo mode`) — see `SkeletonPair`'s own
 /// doc comment.
 fn options_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
-    let mut col = column![panel_header(
+    let header = panel_header(
         "options",
         state.sidebar_panels_open.options,
         Message::ToggleSidebarPanel(Panel::Options),
-        scale
-    )]
-    .spacing(theme::SPACE_SM * scale);
+        scale,
+    );
 
     if !state.sidebar_panels_open.options {
-        return col.into();
+        return header;
     }
 
-    let label = |s: &'static str| -> Element<'_, Message> {
-        text(s).size(theme::TEXT_XS * scale).color(theme::TEXT_SEC).into()
-    };
+    let mut body = column![]
+        .spacing(theme::SPACE_TIGHT * scale)
+        .padding(indent(CONTENT_INDENT * scale))
+        .width(Length::Fill);
 
-    col = col.push(label("routing"));
     // Permanently fixed — this app only ever has one routing model
     // (see `RmeDevice`'s own "the device exposes a matrix/submix
     // mixer" framing), there's no "free" mode to switch into.
-    col = col.push(segmented_row("submix", "free", true, None, None, scale));
-
-    col = col.push(label("meters"));
-    // Permanently fixed, both disabled — no on-device meter register,
-    // no RMS ballistics, no post-FX tap point (no FX exists at all).
-    // See `GUI-NOTES.md`'s "VU meters: conclusion".
-    col = col.push(disabled_segmented_row("post fx", "RMS", scale));
-
-    col = col.push(label("show"));
-    col = col.push(segmented_row(
-        "names",
-        "trim",
-        state.skeleton_pairs.show_first,
-        Some(Message::ToggleSkeletonPair(SkeletonPair::Show)),
-        Some(Message::ToggleSkeletonPair(SkeletonPair::Show)),
+    body = body.push(options_row(
+        Some("routing"),
+        segmented_row("submix", "free", true, None, None, scale),
         scale,
     ));
 
-    col = col.push(segmented_row(
-        "2 row",
-        "2 row in",
-        state.skeleton_pairs.row_mode_first,
-        Some(Message::ToggleSkeletonPair(SkeletonPair::RowMode)),
-        Some(Message::ToggleSkeletonPair(SkeletonPair::RowMode)),
+    // Permanently fixed, both disabled. See `GUI-NOTES.md`'s
+    // "VU meters: conclusion".
+    body = body.push(options_row(
+        Some("meters"),
+        disabled_segmented_row("post fx", "RMS", scale),
         scale,
     ));
 
-    col = col.push(label("solo/pfl mode"));
-    col = col.push(segmented_row(
-        "excl. solo",
-        "live",
-        state.skeleton_pairs.solo_mode_first,
-        Some(Message::ToggleSkeletonPair(SkeletonPair::SoloMode)),
-        Some(Message::ToggleSkeletonPair(SkeletonPair::SoloMode)),
+    body = body.push(options_row(
+        Some("show"),
+        segmented_row(
+            "names",
+            "trim",
+            state.skeleton_pairs.show_first,
+            Some(Message::ToggleSkeletonPair(SkeletonPair::Show)),
+            Some(Message::ToggleSkeletonPair(SkeletonPair::Show)),
+            scale,
+        ),
+        scale,
+    ));
+    body = body.push(options_row(
+        None,
+        segmented_row(
+            "2 row",
+            "2 row in",
+            state.skeleton_pairs.row_mode_first,
+            Some(Message::ToggleSkeletonPair(SkeletonPair::RowMode)),
+            Some(Message::ToggleSkeletonPair(SkeletonPair::RowMode)),
+            scale,
+        ),
         scale,
     ));
 
-    col.into()
+    body = body.push(options_row(
+        Some("solo/pfl mode"),
+        segmented_row(
+            "excl. solo",
+            "live",
+            state.skeleton_pairs.solo_mode_first,
+            Some(Message::ToggleSkeletonPair(SkeletonPair::SoloMode)),
+            Some(Message::ToggleSkeletonPair(SkeletonPair::SoloMode)),
+            scale,
+        ),
+        scale,
+    ));
+
+    column![header, body]
+        .spacing(theme::SPACE_SM * scale)
+        .width(Length::Fill)
+        .into()
 }
 
 const SNAPSHOT_COUNT: u8 = 8;
@@ -452,41 +721,44 @@ const SNAPSHOT_COUNT: u8 = 8;
 /// machinery (`scenes.rs`, `RmeDevice::capture_scene`/`apply_scene`),
 /// mirroring `Message::SceneSave`/`SceneLoad` almost verbatim (see
 /// `app.rs`'s own handlers).
+///
+/// Slots use `theme::tab_toggle`'s selected pill — the same look as the
+/// top bar's current view tab — rather than a boxed switch: eight boxed
+/// rows were eight boxes to look at, and the selected one filled solid
+/// orange, which is now reserved for things that are actually on.
 fn snapshots_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
-    let mut col = column![panel_header(
+    let header = panel_header(
         "snapshots",
         state.sidebar_panels_open.snapshots,
         Message::ToggleSidebarPanel(Panel::Snapshots),
-        scale
-    )]
-    .spacing(theme::SPACE_HAIRLINE * scale);
+        scale,
+    );
 
     if !state.sidebar_panels_open.snapshots {
-        return col.into();
+        return header;
     }
+
+    let mut body = column![]
+        .spacing(theme::SPACE_TIGHT * scale)
+        .padding(indent(CONTENT_INDENT * scale))
+        .width(Length::Fill);
 
     for n in 1..=SNAPSHOT_COUNT {
         let active = state.active_snapshot == Some(n as usize);
-        col = col.push(
+        body = body.push(
             button(text(format!("Mix {n}")).size(theme::TEXT_XS * scale))
                 .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
                 .width(Length::Fill)
-                .style(theme::toggle_button(active, theme::ACCENT))
+                .style(theme::tab_toggle(active))
                 .on_press(Message::SnapshotClicked(n)),
         );
     }
-    col = col.push(
-        container(
-            button(text("store").size(theme::TEXT_XS * scale))
-                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
-                .style(theme::plain_button)
-                .on_press(Message::SnapshotStore),
-        )
-        .width(Length::Fill)
-        .align_x(iced::Alignment::End),
-    );
+    body = body.push(store_row(Message::SnapshotStore, scale));
 
-    col.into()
+    column![header, body]
+        .spacing(theme::SPACE_SM * scale)
+        .width(Length::Fill)
+        .into()
 }
 
 /// Real — 4 groups, membership from the existing multi-select
@@ -494,24 +766,44 @@ fn snapshots_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
 /// group. See `Group`'s own doc comment for the membership model and
 /// `app.rs`'s propagation logic for how a linked group actually
 /// affects Mute/Solo/Volume.
+///
+/// The three link cells keep the full-strength fill: a linked group is
+/// the one thing in this panel that changes what the mixer does, so it
+/// stays the loudest state the sidebar has.
 fn groups_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
-    let mut col = column![panel_header(
+    let header = panel_header(
         "groups",
         state.sidebar_panels_open.groups,
         Message::ToggleSidebarPanel(Panel::Groups),
-        scale
-    )]
-    .spacing(theme::SPACE_HAIRLINE * scale);
+        scale,
+    );
 
     if !state.sidebar_panels_open.groups {
-        return col.into();
+        return header;
     }
 
-    col = col.push(
+    let mut body = column![]
+        .spacing(theme::SPACE_TIGHT * scale)
+        .padding(indent(CONTENT_INDENT * scale))
+        .width(Length::Fill);
+
+    // Column captions at `TEXT_MICRO`, a tier below the `M1`/`S1`/`1`
+    // labels they sit over, so the cells read as the panel's content and
+    // these as their headers.
+    body = body.push(
         row![
-            text("mute").size(theme::TEXT_XS * scale).color(theme::TEXT_SEC).width(Length::Fill),
-            text("solo").size(theme::TEXT_XS * scale).color(theme::TEXT_SEC).width(Length::Fill),
-            text("fader").size(theme::TEXT_XS * scale).color(theme::TEXT_SEC).width(Length::Fill),
+            text("mute")
+                .size(theme::TEXT_MICRO * scale)
+                .color(theme::TEXT_SEC)
+                .width(Length::Fill),
+            text("solo")
+                .size(theme::TEXT_MICRO * scale)
+                .color(theme::TEXT_SEC)
+                .width(Length::Fill),
+            text("fader")
+                .size(theme::TEXT_MICRO * scale)
+                .color(theme::TEXT_SEC)
+                .width(Length::Fill),
         ]
         .spacing(theme::SPACE_TIGHT * scale),
     );
@@ -528,7 +820,7 @@ fn groups_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
                 .on_press(Message::GroupLinkToggle(i, link))
                 .into()
         };
-        col = col.push(
+        body = body.push(
             row![
                 cell(g.mute_linked, format!("M{}", i + 1), GroupLink::Mute),
                 cell(g.solo_linked, format!("S{}", i + 1), GroupLink::Solo),
@@ -538,23 +830,31 @@ fn groups_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         );
     }
 
-    col = col.push(
+    // Edit mode is a switch position, not a lit channel: it says where a
+    // click on the cells above will land, so it gets the dim pill. "clear"
+    // is the pair's destructive half and stays flat — as a `plain_button`
+    // it was the lightest-colored box in the whole column, which read as
+    // the most important thing in the panel.
+    body = body.push(
         row![
             button(text("edit").size(theme::TEXT_XS * scale))
                 .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
                 .width(Length::Fill)
-                .style(theme::toggle_button(state.group_editing, theme::ACCENT))
+                .style(theme::segment_button(state.group_editing))
                 .on_press(Message::GroupEditToggle),
             button(text("clear").size(theme::TEXT_XS * scale))
                 .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
                 .width(Length::Fill)
-                .style(theme::plain_button)
+                .style(theme::ghost_button)
                 .on_press(Message::GroupClear),
         ]
         .spacing(theme::SPACE_TIGHT * scale),
     );
 
-    col.into()
+    column![header, body]
+        .spacing(theme::SPACE_SM * scale)
+        .width(Length::Fill)
+        .into()
 }
 
 const LAYOUT_COUNT: u8 = 6;
@@ -565,19 +865,23 @@ const LAYOUT_COUNT: u8 = 6;
 /// own file-per-slot pattern). "all"/"submix" scope is skeleton — see
 /// `SkeletonPair::LayoutScope`'s own doc comment.
 fn layout_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
-    let mut col = column![panel_header(
+    let header = panel_header(
         "mixer layout",
         state.sidebar_panels_open.layout,
         Message::ToggleSidebarPanel(Panel::Layout),
-        scale
-    )]
-    .spacing(theme::SPACE_HAIRLINE * scale);
+        scale,
+    );
 
     if !state.sidebar_panels_open.layout {
-        return col.into();
+        return header;
     }
 
-    col = col.push(segmented_row(
+    let mut body = column![]
+        .spacing(theme::SPACE_TIGHT * scale)
+        .padding(indent(CONTENT_INDENT * scale))
+        .width(Length::Fill);
+
+    body = body.push(segmented_row(
         "all",
         "submix",
         state.skeleton_pairs.layout_scope_first,
@@ -588,23 +892,18 @@ fn layout_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
 
     for n in 1..=LAYOUT_COUNT {
         let active = state.active_layout == Some(n as usize);
-        col = col.push(
+        body = body.push(
             button(text(format!("Layout {n}")).size(theme::TEXT_XS * scale))
                 .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
                 .width(Length::Fill)
-                .style(theme::toggle_button(active, theme::ACCENT))
+                .style(theme::tab_toggle(active))
                 .on_press(Message::LayoutClicked(n)),
         );
     }
-    col = col.push(
-        container(
-            button(text("store").size(theme::TEXT_XS * scale))
-                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
-                .style(theme::plain_button)
-                .on_press(Message::LayoutStore),
-        )
+    body = body.push(store_row(Message::LayoutStore, scale));
+
+    column![header, body]
+        .spacing(theme::SPACE_SM * scale)
         .width(Length::Fill)
-        .align_x(iced::Alignment::End),
-    );
-    col.into()
+        .into()
 }
