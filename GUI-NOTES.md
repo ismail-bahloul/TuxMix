@@ -2783,9 +2783,9 @@ fixe à 210px.
 Il a dessiné une icône monochrome (tuile sombre arrondie, mark en dégradés
 métalliques) et veut qu'elle devienne l'icône principale ; le reste du GUI
 garde sa palette orange/cyan pour l'instant, le re-thème viendra après.
-C'est un choix d'icône, pas un changement d'identité : le mark
-orange/cyan (`tuxmix-logo.svg`) reste pour le README et tout ce qui a de la
-place.
+C'est un choix d'icône, pas un changement d'identité : le mark nus
+(`tuxmix-logo.svg`) reste pour tout ce qui a de la place, et il a été
+refait en monochrome juste après (voir le paragraphe suivant).
 
 Le fichier de travail est un export Inkscape de 30 Ko, dont deux tiers
 étaient un bloc `metadata` (manifeste C2PA de provenance, en base64), et
@@ -2864,3 +2864,17 @@ export, refuse de toucher un élément qu'il ne peut pas cerner, et rend le
 résultat **via Qt** (PyQt6) en échouant si l'encre dépasse la tuile : c'est
 le seul contrôle qui attrape ce bug, Inkscape ne le montre pas. AUR poussé
 en `0.1.0-3` avec les fichiers corrigés.
+
+**Le logo nu, refait en monochrome.** `tuxmix-logo.svg` était encore le
+mark orange/cyan de la veille, et plus rien ne le référençait depuis que le
+README affiche la tuile. Il est maintenant le **mark seul, en une encre**,
+dérivé des **mêmes courbes que l'icône** pour que les deux racontent la même
+chose : pas de tuile (le `viewBox` est celui du dessin, `106 240 815 525`,
+donc les marges sont à celui qui le place), `fill="currentColor"` (noir dans
+un `<img>`, et il suit la couleur du texte là où l'SVG est inliné), et **ni
+masque ni filtre**. Le fondu des extrémités du wave est un effet de tuile :
+sur un logo nu il rend les bouts gris, et sans masque le fichier ne dépend
+plus du moteur de rendu (Qt ignore les masques comme il ignorait les clips).
+Vérifié à l'œil sur fond clair et sur fond sombre, et le fichier placé rend
+identique (AE 0) à celui qui a été regardé. En encre noire, c'est la **tuile**
+qui reste l'asset à utiliser sur fond sombre.
