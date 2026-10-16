@@ -45,6 +45,7 @@ extends past the tile, which is the check that catches the clipping bug.
 import os
 import re
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 
 SVG = "http://www.w3.org/2000/svg"
@@ -157,7 +158,10 @@ def qt_ink_check(path, view, tile, scale=512):
     painter = QPainter(image)
     renderer.render(painter, QRectF(0, 0, scale, scale))
     painter.end()
-    image.save(f"{path.rsplit('.', 1)[0]}-qt-check.png")
+    # In the temp directory, not next to the file being written: a check
+    # render is not an artefact the repo should ever carry.
+    shot = os.path.join(tempfile.gettempdir(), "tuxmix-qt-check.png")
+    image.save(shot)
 
     # `pixel` returns 0xAARRGGBB for this format, so the top byte is alpha.
     lit = [(x, y) for y in range(scale) for x in range(scale) if image.pixel(x, y) >> 24]
@@ -182,9 +186,9 @@ def qt_ink_check(path, view, tile, scale=512):
     )
     expected = f"{tw:.0f}x{th:.0f}+{tx:.0f}+{ty:.0f}"
     if inside:
-        print(f"Qt ink at {scale}px: {box}, the tile ({expected}) and nothing else: OK")
+        print(f"Qt ink at {scale}px: {box}, the tile ({expected}) and nothing else: OK ({shot})")
     else:
-        print(f"Qt ink at {scale}px: {box}, expected the tile {expected}: Qt paints outside the icon")
+        print(f"Qt ink at {scale}px: {box}, expected the tile {expected}: Qt paints outside the icon ({shot})")
         raise SystemExit(1)
 
 
