@@ -174,7 +174,18 @@ def qt_ink_check(path, view, tile, scale=512):
 
     box = f"{max_x - min_x + 1}x{max_y - min_y + 1}+{min_x}+{min_y}"
     if tile is None:
-        print(f"Qt ink at {scale}px: {box} (no tile found, nothing to compare against)")
+        # Nothing was clipped, so there is no tile box to compare against.
+        # The design insets the tile in its viewBox (3% each side), so ink
+        # that reaches the canvas edge is ink that escaped something, which
+        # is what the clip bug looked like; ink merely near the edge is
+        # normal. Deliberately a weak check, and said out loud as one.
+        margin = scale / 100
+        if min_x < margin or min_y < margin or max_x > scale - margin or max_y > scale - margin:
+            print(f"Qt ink at {scale}px: {box} reaches the canvas edge: something paints "
+                  f"outside the icon ({shot})")
+            raise SystemExit(1)
+        print(f"Qt ink at {scale}px: {box}, inset from the edges (no clip in the file to compare "
+              f"against): OK ({shot})")
         return
     tx, ty, tw, th = (value * scale / view for value in tile)
     # A pixel of slack each way: the tile's own edge is antialiased.
