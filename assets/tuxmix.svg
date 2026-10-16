@@ -3,7 +3,7 @@
   <title>TuxMix icon: the bird and waveform mark on a dark tile</title>
   <defs>
     <linearGradient id="bg" x1="-6.9388939e-17" y1="0.99999964" x2="7.2858386e-17" y2="2.5197169e-09">
-      <stop offset="0" stop-color="#333333" stop-opacity="1" />
+      <stop offset="0" stop-color="#1d1d1d" stop-opacity="1" />
       <stop offset="0.30000001" stop-color="#030303" stop-opacity="1" />
     </linearGradient>
     <radialGradient id="vig" cx="512" cy="460.79999" r="634.88" fx="512" fy="460.79999" gradientUnits="userSpaceOnUse">
