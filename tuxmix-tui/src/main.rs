@@ -1134,6 +1134,20 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
     Ok(())
 }
 
+/// The top bar's key list. On the class-compliant personality the keys
+/// that drive RME's own protocol are dead (their setters refuse, see
+/// `RmeDevice::protocol_features`), so the bar stops advertising them,
+/// the same rule the bottom footer already follows. `w` (optical out
+/// format) and `c` (cue) leave with them: the ALSA backend implements
+/// neither, and a class-compliant card is only ever reached over ALSA.
+fn top_hints(protocol_features: bool) -> &'static str {
+    if protocol_features {
+        "  q:quit Tab:toggle e:EQ(AN1-4) o:submix y/h:pitch r:rate u/j:width x:ms a:an1>2 k:link f:eqrec w:spdifout c:cue(out) l:loop"
+    } else {
+        "  q:quit Tab:toggle o:submix r:rate"
+    }
+}
+
 fn ui(
     f: &mut Frame,
     dev: &DeviceHandle,
@@ -1193,9 +1207,7 @@ fn ui(
             Span::raw(format!(" - {}  ", dev.model_name())),
             mode,
             Span::raw(format!("{}", view_tag)),
-            Span::raw(
-                "  q:quit Tab:toggle e:EQ(AN1-4) o:submix y/h:pitch r:rate u/j:width x:ms a:an1>2 k:link f:eqrec w:spdifout c:cue(out) l:loop",
-            ),
+            Span::raw(top_hints(dev.protocol_features())),
         ]))
         .block(Block::default().borders(Borders::ALL)),
         top[0],
@@ -1845,6 +1857,44 @@ mod tests {
         assert_eq!(out[1], 1.0);
         for level in &out[2..] {
             assert_eq!(*level, 0.0);
+        }
+    }
+
+    #[test]
+    fn top_hints_drop_the_protocol_keys_on_a_class_compliant_card() {
+        let full = super::top_hints(true);
+        for key in [
+            "e:EQ",
+            "y/h:pitch",
+            "u/j:width",
+            "x:ms",
+            "a:an1>2",
+            "k:link",
+            "f:eqrec",
+            "l:loop",
+        ] {
+            assert!(full.contains(key), "full hint bar should list {key}");
+        }
+        let cc = super::top_hints(false);
+        for key in [
+            "e:EQ",
+            "y/h:pitch",
+            "u/j:width",
+            "x:ms",
+            "a:an1>2",
+            "k:link",
+            "f:eqrec",
+            "l:loop",
+            "w:spdifout",
+            "c:cue",
+        ] {
+            assert!(
+                !cc.contains(key),
+                "class-compliant hint bar must not advertise {key}"
+            );
+        }
+        for key in ["q:quit", "Tab:toggle", "o:submix", "r:rate"] {
+            assert!(cc.contains(key), "{key} still works on a class-compliant card");
         }
     }
 

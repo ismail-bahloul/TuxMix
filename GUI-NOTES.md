@@ -2932,3 +2932,35 @@ ajouté au mock pour ça) où la colonne ne garde que l'engrenage, le panneau
 DEVICE affiche la ligne et la puce dit Class Compliant. Pas encore vérifié sur
 une carte en CC *réel* : ça demande de basculer la carte (SELECT + DIM à
 l'allumage), et c'est la seule chose qui reste.
+
+## 2026-10-16 (suite 2) : carte basculée en CC réel, vérifié de bout en bout
+
+Carte basculée à la main (débrancher, maintenir SELECT + DIM, rebrancher :
+les VU affichent « CC » deux secondes au boot). Ensuite `lsusb` donne
+`2a39:3fb0`, `snd-usb-audio` tient les interfaces 1-2:1.0 à 1.3, et le module
+DKMS n'a plus rien de lié.
+
+- **4 tests live verts**, lancés en série (`--test-threads=1`) : les trois
+  `live_hardware_cc_grammar_*` (dont le pin `!dev.protocol_features()`) et
+  `live_hardware_clock_source_round_trip`.
+- **GUI en vrai** (sans `--mock`) : la carte s'ouvre, la puce device dit
+  **Class Compliant**, les strips n'ont ni T, ni Ø, ni SP, ni EQ, ni LOOP.
+  Seule la route « AN1/2 ▸ » reste, normal : le routing existe en CC.
+- **TUI en vrai** : le log dit `Device backend: ALSA (kernel driver)` et
+  `ALSA control grammar: ClassCompliant`, le footer du bas est bien gaté.
+
+Un trou quand même, trouvé à cette occasion : la **barre de hints du haut**
+du TUI était une chaîne codée en dur, qui annonçait même en CC `e:EQ(AN1-4)`,
+`y/h:pitch`, `u/j:width`, `x:ms`, `a:an1>2`, `k:link`, `f:eqrec`, `w:spdifout`,
+`c:cue(out)` et `l:loop`, toutes mortes. Corrigé par
+`top_hints(protocol_features)` (la barre ne garde que `q:quit Tab:toggle`
+`o:submix r:rate`), re-vérifié en live sur la carte, et épinglé par un test
+(`cargo test -p tuxmix-tui` : 18/18).
+
+Reste ouvert, hors de cette passe : `w` et `c` sont morts sur *toute*
+connexion ALSA, propriétaire compris, parce que `babyface.rs` n'implémente ni
+`set_optical_out_format` ni `set_cue` (défauts du trait = erreur avalée). Le
+bouton C du GUI est dans le même cas, visible sur la capture CC. Deux options
+plus tard : implémenter le cue côté ALSA (les crosspoints du driver noyau le
+permettent) ou masquer ce que le backend ne supporte pas, ce qui demanderait
+une sonde de capacité plutôt qu'un gating de grammaire.
