@@ -2839,3 +2839,28 @@ version. À faire au prochain release : retirer ces trois sources et
 remettre les chemins `tuxmix-gui/assets/` dans `package()`, l'archive les
 fournira. Le dossier `aur/tuxmix/` du repo principal garde la copie prête à
 pousser (PKGBUILD + `.SRCINFO` + les trois fichiers).
+
+**Suivi : « le svg bave autour » sur le bureau, et ce n'était pas le
+filtre.** Symptôme réel, diagnostic à côté : Gemini accusait la filter
+region de l'ombre portée et proposait de tout mettre dans le `clip-path`,
+ce qui était déjà le cas, et de réduire le flou, qui n'y était pour rien.
+Mesuré d'abord : Inkscape et librsvg s'arrêtent pile à la tuile
+(`480x480+16+16` en 512px), donc le fichier ne bave pas chez eux. Puis le
+même rendu avec **Qt 6**, le moteur avec lequel KDE rasterise ses icônes :
+l'encre couvre tout le canvas. Test minimal de dix lignes pour isoler : un
+groupe `clip-path` contenant un rect à dégradé, Inkscape découpe à
+`60x60+20+20`, Qt peint `100x98+0+1`. **Qt ignore `clip-path` sur un
+groupe.** La lumière de la tuile (le rect de vignette 1024² et l'ellipse de
+sheen, tous deux plus grands que la tuile, clipsés au squircle) était donc
+peinte sur tout le canvas par KDE : un voile gris autour de l'icône,
+invisible dans tous les éditeurs d'icônes.
+
+Correction : ces deux peintures prennent la **forme de la tuile** (mêmes
+dégradés `userSpaceOnUse`, donc même image à l'intérieur), et le clip
+disparaît. Vérifié : Qt ne peint plus que la tuile ; Inkscape bouge de 54
+pixels sur 65536 en 256px (le lavis résiduel du sheen dans les coins, à
+1/255). `tools/clean-icon-svg.py` applique cette normalisation à chaque
+export, refuse de toucher un élément qu'il ne peut pas cerner, et rend le
+résultat **via Qt** (PyQt6) en échouant si l'encre dépasse la tuile : c'est
+le seul contrôle qui attrape ce bug, Inkscape ne le montre pas. AUR poussé
+en `0.1.0-3` avec les fichiers corrigés.

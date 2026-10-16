@@ -12,6 +12,17 @@ points at, and any `defs` entry left unreferenced. The drawing itself is
 never touched -- verify that with the pixel comparison below, where a clean
 run must return exactly 0.
 
+It also re-shapes anything that only stays inside the tile *because* of a
+clip-path, and then drops the clip. That one is not cosmetic: Qt's SVG
+engine, the one KDE's icon loader rasterises with, ignores `clip-path` on a
+group -- reproduced with a ten-line file, where Inkscape clips a 100x100
+rect to 60x60+20+20 and Qt paints all 100x100. The tile's own light (a
+vignette rect and a sheen ellipse, both far larger than the tile) was the
+one thing relying on it, so Qt painted both across the whole canvas: a grey
+haze around the icon on the desktop, invisible in every icon editor. Their
+gradients are userSpaceOnUse, so the same paint on a tile-shaped rounded
+rect is the same picture inside the tile with nothing left to clip.
+
 The whole icon pipeline, for a new export from the maintainer:
 
     python3 tools/clean-icon-svg.py ~/Desktop/tuxmix-final.svg assets/tuxmix.svg
@@ -26,14 +37,155 @@ The whole icon pipeline, for a new export from the maintainer:
     cargo test --workspace          # the_packaged_icon_decodes_as_256_rgba pins the PNG
 
 `inkscape` and `magick` are only needed for the verification and the PNGs;
-the cleaning itself is the standard library.
+the cleaning itself is the standard library. If PyQt6 is installed, the
+script also renders the result through Qt and fails loudly if Qt's ink
+extends past the tile, which is the check that catches the clipping bug.
 """
 
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
 
 SVG = "http://www.w3.org/2000/svg"
+
+
+def local(tag):
+    return tag.split("}", 1)[-1]
+
+
+def fix_clip_reliance(root):
+    """Re-shape what a clip-path is holding in, then drop the clip.
+
+    See the module docstring: Qt ignores `clip-path` on a group, so anything
+    that stays on the tile only because it is clipped to it leaks across the
+    whole canvas on a KDE desktop. Only the leaking elements' *shape* changes
+    (a rect and an ellipse both become the clip's rounded rect, keeping their
+    paint), which is the same picture as long as the paint is a
+    userSpaceOnUse gradient. Anything the tool cannot account for is left
+    alone, clip and all, and said so out loud.
+
+    Returns the tile rect (x, y, width, height) if it found one.
+    """
+    tile = None
+
+    def rect_of(el):
+        if el is None or local(el.tag) != "rect":
+            return None
+        return tuple(float(el.get(name, 0)) for name in ("x", "y", "width", "height"))
+
+    def bbox_of(el):
+        kind = local(el.tag)
+        if kind == "rect":
+            x, y, w, h = rect_of(el)
+            return x, y, w, h
+        if kind == "ellipse":
+            cx, cy = float(el.get("cx", 0)), float(el.get("cy", 0))
+            rx, ry = float(el.get("rx", 0)), float(el.get("ry", 0))
+            return cx - rx, cy - ry, 2 * rx, 2 * ry
+        return None
+
+    def fits(box, frame):
+        x, y, w, h = box
+        fx, fy, fw, fh = frame
+        return x >= fx and y >= fy and x + w <= fx + fw and y + h <= fy + fh
+
+    defs = next(el for el in root if local(el.tag) == "defs")
+    by_id = {el.get("id"): el for el in defs.iter() if el.get("id")}
+    for group in list(root):
+        match = re.fullmatch(r"url\(#([^)]+)\)", group.get("clip-path") or "")
+        if not match:
+            continue
+        clip = by_id.get(match.group(1))
+        shapes = list(clip) if clip is not None and local(clip.tag) == "clipPath" else []
+        if len(shapes) != 1 or rect_of(shapes[0]) is None:
+            print(f"kept clip-path #{match.group(1)}: its shape is not a single rect")
+            continue
+        frame = tile = rect_of(shapes[0])
+
+        for child in list(group):
+            box = bbox_of(child)
+            if box is None or fits(box, frame):
+                continue
+            paint = {
+                name: value
+                for name, value in child.attrib.items()
+                if name not in ("x", "y", "width", "height", "rx", "cx", "cy", "ry")
+            }
+            shape = {n: v for n, v in shapes[0].attrib.items() if n != "id"}
+            group.insert(list(group).index(child), ET.Element(shapes[0].tag, {**paint, **shape}))
+            group.remove(child)
+            print(
+                f"re-shaped a <{local(child.tag)} fill={paint.get('fill')}> onto the tile: "
+                "it was only inside it because of the clip"
+            )
+
+        unknown = [child for child in group if bbox_of(child) is None]
+        outside = [child for child in group if (box := bbox_of(child)) and not fits(box, frame)]
+        if unknown or outside:
+            print(
+                f"kept clip-path #{match.group(1)}: {len(unknown)} child(ren) it cannot check, "
+                f"{len(outside)} still outside"
+            )
+            continue
+        del group.attrib["clip-path"]
+        print(f"dropped clip-path #{match.group(1)}: every child now fits the tile by shape")
+
+    return tile
+
+
+def qt_ink_check(path, view, tile, scale=512):
+    """Render through Qt and make sure its ink stops at the tile.
+
+    Qt's engine is what KDE rasterises with, and the only one that shows the
+    clip bug: with it, the icon's ink covered the whole canvas instead of the
+    tile. Skipped when PyQt6 is not installed.
+    """
+    try:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt6.QtCore import QRectF
+        from PyQt6.QtGui import QGuiApplication, QImage, QPainter
+        from PyQt6.QtSvg import QSvgRenderer
+    except ImportError:
+        print("PyQt6 is not installed: skipped the Qt ink check")
+        return
+
+    app = QGuiApplication.instance() or QGuiApplication([])
+    renderer = QSvgRenderer(path)
+    image = QImage(scale, scale, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    painter = QPainter(image)
+    renderer.render(painter, QRectF(0, 0, scale, scale))
+    painter.end()
+    image.save(f"{path.rsplit('.', 1)[0]}-qt-check.png")
+
+    # `pixel` returns 0xAARRGGBB for this format, so the top byte is alpha.
+    lit = [(x, y) for y in range(scale) for x in range(scale) if image.pixel(x, y) >> 24]
+    if not lit:
+        print("Qt drew nothing at all")
+        raise SystemExit(1)
+    xs = [x for x, _ in lit]
+    ys = [y for _, y in lit]
+    min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+
+    box = f"{max_x - min_x + 1}x{max_y - min_y + 1}+{min_x}+{min_y}"
+    if tile is None:
+        print(f"Qt ink at {scale}px: {box} (no tile found, nothing to compare against)")
+        return
+    tx, ty, tw, th = (value * scale / view for value in tile)
+    # A pixel of slack each way: the tile's own edge is antialiased.
+    inside = (
+        tx - 1 <= min_x
+        and ty - 1 <= min_y
+        and max_x <= tx + tw + 1
+        and max_y <= ty + th + 1
+    )
+    expected = f"{tw:.0f}x{th:.0f}+{tx:.0f}+{ty:.0f}"
+    if inside:
+        print(f"Qt ink at {scale}px: {box}, the tile ({expected}) and nothing else: OK")
+    else:
+        print(f"Qt ink at {scale}px: {box}, expected the tile {expected}: Qt paints outside the icon")
+        raise SystemExit(1)
 
 
 def main() -> int:
@@ -47,9 +199,7 @@ def main() -> int:
     # and writes it on every element.
     ET.register_namespace("", SVG)
     root = ET.fromstring(open(src, encoding="utf-8").read())
-
-    def local(tag):
-        return tag.split("}", 1)[-1]
+    view = float((root.get("viewBox") or "0 0 1024 1024").split()[2])
 
     def clean(el):
         for child in list(el):
@@ -62,6 +212,7 @@ def main() -> int:
             clean(child)
 
     clean(root)
+    tile = fix_clip_reliance(root)
 
     # Non-SVG-namespace attributes (inkscape:label and friends) would dangle
     # once their namespace declaration is gone.
@@ -140,6 +291,8 @@ def main() -> int:
     out = "<?xml version='1.0' encoding='utf-8'?>\n" + ET.tostring(root, encoding="unicode") + "\n"
     open(dst, "w", encoding="utf-8").write(out)
     print(f"wrote {dst}: {len(out)} bytes, {len(out.splitlines())} lines")
+
+    qt_ink_check(dst, view, tile)
     return 0
 
 
