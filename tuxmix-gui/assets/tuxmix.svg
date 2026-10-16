@@ -2,10 +2,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="TuxMix icon">
   <title>TuxMix icon: the bird and waveform mark on a dark tile</title>
   <defs>
-    <linearGradient id="bg" x1="-6.9388939e-17" y1="0.99999964" x2="7.2858386e-17" y2="2.5197169e-09">
-      <stop offset="0" stop-color="#1d1d1d" stop-opacity="1" />
-      <stop offset="0.30000001" stop-color="#030303" stop-opacity="1" />
-    </linearGradient>
     <radialGradient id="vig" cx="512" cy="460.79999" r="634.88" fx="512" fy="460.79999" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#ffffff" stop-opacity="0.08999999" />
       <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
@@ -44,7 +40,7 @@
       <rect x="32" y="32" width="960" height="960" rx="224" />
     </clipPath>
   </defs>
-  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#bg)" />
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="#000000" fill-opacity="1" />
   <g clip-path="url(#tile)">
     <rect width="1024" height="1024" fill="url(#vig)" x="0" y="0" />
     <ellipse cx="520" cy="172.56964" rx="520" ry="360" fill="url(#sheen)" />
