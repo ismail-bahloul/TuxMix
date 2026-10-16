@@ -296,7 +296,19 @@ pub fn toggle_button(
 
         button::Style {
             background: Some(Background::Color(background)),
-            text_color: if active { ON_ACTIVE } else { TEXT_SEC },
+            // A button with no `on_press` at all is `Disabled` in iced: same
+            // box, same place, dimmed label. Two things ride on that here —
+            // the skeleton `F` in the sidebar's M/S/F row, and every control
+            // the attached device cannot drive (the class-compliant
+            // personality has no RME-protocol features). Before this they
+            // rendered as live toggles that simply never lit.
+            text_color: if matches!(status, button::Status::Disabled) {
+                Color { a: 0.4, ..TEXT_SEC }
+            } else if active {
+                ON_ACTIVE
+            } else {
+                TEXT_SEC
+            },
             border: Border {
                 color: border_color,
                 width: 1.0,

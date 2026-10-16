@@ -1175,6 +1175,14 @@ impl RmeDevice for BabyfacePro {
         self.profile.output_pair_count()
     }
 
+    /// The class-compliant surface is routing, preamps and clock; every
+    /// feature in RME's own protocol is missing there (see
+    /// `ControlGrammar`). The UIs gate on this so they stop offering
+    /// controls that would fail.
+    fn protocol_features(&self) -> bool {
+        self.grammar != ControlGrammar::ClassCompliant
+    }
+
     fn open() -> Result<Self, Error> {
         info!("Searching for RME Babyface Pro...");
         let profile = &PROFILE;
@@ -2575,6 +2583,11 @@ mod tests {
         // started all of this (48V read off while the card had it on).
         let dev = BabyfacePro::open().expect("CC-mode card should now open");
         assert_eq!(dev.grammar, ControlGrammar::ClassCompliant);
+        assert!(
+            !dev.protocol_features(),
+            "the CC personality drives routing, preamps and clock only; every \
+             RME-protocol feature is missing, and this is what the UIs gate on"
+        );
 
         // Ranges come from the hardware and differ per preamp law, so
         // they prove these are real reads: mics 0..65, instruments 0..18.

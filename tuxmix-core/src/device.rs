@@ -152,6 +152,22 @@ pub trait RmeDevice {
         self.model_name()
     }
 
+    /// Whether the DSP features that live in RME's own protocol can be
+    /// driven on this connection: EQ, phase, trim, stereo split, MS
+    /// processing, AN 1>2, input link, width, FX send, varispeed pitch,
+    /// loopback and the front panel. Routing, preamps, gains, sample rate
+    /// and clock are *not* on that list; they work on both personalities.
+    ///
+    /// False on the class-compliant personality, where stock
+    /// `snd-usb-audio` exposes routing, preamps and clock and nothing else
+    /// (see `ControlGrammar` in the `babyface` module): the ALSA backend
+    /// answers from the grammar it detected at open, every other backend
+    /// drives the full set, and the UIs use this to stop offering controls
+    /// that cannot work.
+    fn protocol_features(&self) -> bool {
+        true
+    }
+
     /// Number of physical stereo output pairs on this device.
     fn output_pair_count(&self) -> usize;
 

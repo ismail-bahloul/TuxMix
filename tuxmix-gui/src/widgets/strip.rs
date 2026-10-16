@@ -135,6 +135,13 @@ impl CollapseAnim {
 pub struct StripParams<'a> {
     pub cid: ChannelId,
     pub output_idx: usize,
+    /// Whether the connection this strip is drawn for can drive RME's own
+    /// protocol (see `RmeDevice::protocol_features`). False on the
+    /// class-compliant personality, where EQ, Trim, Phase, Split and
+    /// Loopback would only be able to fail: they are left out entirely,
+    /// the same thing the `has_*` flags above already do for features a
+    /// channel does not have.
+    pub protocol_features: bool,
     pub name: String,
     pub type_tag: Option<(&'static str, Color)>,
     pub vol: f32,
@@ -473,6 +480,17 @@ pub fn strip<'a>(p: StripParams<'a>) -> Element<'a, Message> {
     }
 }
 
+/// The output index behind `cid`, when this strip should show the loopback
+/// toggle at all: outputs only, and only on a connection that can drive
+/// RME's own protocol (`OutputChannel::loopback` is a register the
+/// class-compliant personality does not have).
+fn loopback_target(cid: ChannelId, protocol_features: bool) -> Option<usize> {
+    match cid {
+        ChannelId::Output(i) if protocol_features => Some(i),
+        _ => None,
+    }
+}
+
 fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     let cid = p.cid;
     let out = p.output_idx;
@@ -662,7 +680,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // the real, working control on Hardware Inputs, skip it on Playback
     // rather than either faking one there or blocking on new protocol
     // work.
-    if p.has_trim {
+    if p.has_trim && p.protocol_features {
         let trim_open = p.open_flyout == Some(FlyoutKind::Trim);
         icon_col = icon_col.push(hint(
             button(centered_label("T", theme::TEXT_MICRO * scale))
@@ -679,7 +697,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             scale,
         ));
     }
-    if p.has_phase {
+    if p.has_phase && p.protocol_features {
         icon_col = icon_col.push(hint(
             button(centered_label("Ø", theme::TEXT_MICRO * scale))
                 .padding(0)
@@ -691,7 +709,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             scale,
         ));
     }
-    if p.has_split {
+    if p.has_split && p.protocol_features {
         icon_col = icon_col.push(hint(
             button(centered_label("SP", theme::TEXT_MICRO * scale))
                 .padding(0)
@@ -716,7 +734,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             scale,
         ));
     }
-    if p.has_eq {
+    if p.has_eq && p.protocol_features {
         let eq_open = p.open_flyout == Some(FlyoutKind::Eq);
         icon_col = icon_col.push(hint(
             button(centered_label("EQ", theme::TEXT_MICRO * scale))
@@ -854,7 +872,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             .width(Length::Fill)
             .center_x(Length::Fill),
         );
-    } else if let ChannelId::Output(i) = cid {
+    } else if let Some(i) = loopback_target(cid, p.protocol_features) {
         // Outputs have no route trigger (a single master, not a
         // per-submix crosspoint) — the same row slot shows the loopback
         // toggle instead (`OutputChannel::loopback`, bReq 0x15: feeds the
@@ -924,6 +942,17 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_is_output_only_and_needs_the_protocol() {
+        assert_eq!(loopback_target(ChannelId::Output(2), true), Some(2));
+        assert_eq!(
+            loopback_target(ChannelId::Output(2), false),
+            None,
+            "the class-compliant personality has no loopback register"
+        );
+        assert_eq!(loopback_target(ChannelId::Input(2), true), None);
+    }
     use std::time::Duration;
 
     #[test]

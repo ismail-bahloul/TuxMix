@@ -358,15 +358,17 @@ fn panel<'a>(content: Element<'a, Message>, scale: f32) -> Element<'a, Message> 
 /// the sidebar's device chip and the top bar's copy was removed as a
 /// straight duplicate — the status info still needs to live *somewhere*.
 fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
-    let status_color = if state.device.is_mock() {
-        theme::YSIM
+    // What the connection actually is: the mock, a class-compliant card
+    // (routing, preamps, gains and clock only, see
+    // `RmeDevice::protocol_features`), or a device that can be driven fully.
+    // The strips hide the controls that only exist on the last of those, so
+    // this line is where the user finds out why they are missing.
+    let (status_color, status_label) = if state.device.is_mock() {
+        (theme::YSIM, "Simulated")
+    } else if !state.device.protocol_features() {
+        (theme::YSIM, "Class Compliant")
     } else {
-        theme::GCONN
-    };
-    let status_label = if state.device.is_mock() {
-        "Simulated"
-    } else {
-        "Connected"
+        (theme::GCONN, "Connected")
     };
     // `model_name()` grows a " (mock)" suffix in mock mode (see
     // `mock.rs`) — that's needed for scene-compatibility checks, but
@@ -440,16 +442,13 @@ fn undo_redo_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
 /// exactly what that look is now reserved for. `F` stays skeleton (no
 /// `on_press`) — nothing in this app corresponds to TotalMix's own third
 /// button here, and a static screenshot can't confirm what it should do —
-/// so it gets the same dimmed text as the other inert controls
-/// (`disabled_segmented_row`) rather than looking like a live toggle that
-/// simply never lights up.
+/// and being unpressable is all it needs: `toggle_button` renders a
+/// `Disabled` button with the same dimmed label the other inert controls
+/// get (`disabled_segmented_row`), so it stops looking like a live toggle
+/// that never lights up.
 fn msf_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let muted_all = crate::app::all_channels_muted(state);
     let any_solo = crate::app::any_channel_soloed(state);
-    let inert = Color {
-        a: 0.4,
-        ..theme::TEXT_SEC
-    };
     row![
         button(text("M").size(theme::TEXT_SM * scale))
             .padding(theme::SPACE_SM * scale)
@@ -461,7 +460,7 @@ fn msf_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
             .width(Length::Fill)
             .style(theme::toggle_button(any_solo, theme::SOLO_COLOR))
             .on_press(Message::GlobalSoloToggle),
-        button(text("F").size(theme::TEXT_SM * scale).color(inert))
+        button(text("F").size(theme::TEXT_SM * scale))
             .padding(theme::SPACE_SM * scale)
             .width(Length::Fill)
             .style(theme::toggle_button(false, theme::ACCENT)),

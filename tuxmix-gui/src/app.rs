@@ -104,6 +104,18 @@ pub enum DeviceHandle {
     Usb(BabyfaceProUsb),
 }
 
+impl DeviceHandle {
+    /// Point the *mock* at the class-compliant personality's feature set.
+    /// Only tests ever need this: every real backend answers for itself,
+    /// and `TUXMIX_MOCK_CC` covers looking at the gated UI by hand.
+    #[cfg(test)]
+    fn set_protocol_features(&mut self, on: bool) {
+        if let DeviceHandle::Mock(dev) = self {
+            dev.set_protocol_features(on);
+        }
+    }
+}
+
 macro_rules! delegate {
     ($self:expr, $method:ident($($arg:expr),*)) => { match $self {
         DeviceHandle::Mock(d) => d.$method($($arg),*),
@@ -122,6 +134,9 @@ macro_rules! delegate {
 impl RmeDevice for DeviceHandle {
     fn model_name(&self) -> &str {
         delegate!(self, model_name)
+    }
+    fn protocol_features(&self) -> bool {
+        delegate!(self, protocol_features)
     }
     fn output_pair_count(&self) -> usize {
         delegate!(self, output_pair_count)
@@ -1402,7 +1417,48 @@ fn is_undoable(message: &Message) -> bool {
     )
 }
 
+/// Whether `message` can only do something on a connection that speaks
+/// RME's own protocol: the setters behind `require_proprietary` in the ALSA
+/// backend (`babyface.rs`), plus `set_eq_for_record`, which that backend
+/// does not implement at all. Everything else in the app (routing, gains,
+/// preamps, clock, meters, scenes, the sidebar's own state) works in either
+/// personality, so this is deliberately not a general "may the UI do this"
+/// list. The renderers hide the controls these carry, and `update` drops the
+/// messages, so a stale key binding or an OSC message cannot slip past a
+/// hidden button.
+fn needs_protocol_features(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::TrimChanged(..)
+            | Message::TrimReset(_)
+            | Message::PhaseChanged(..)
+            | Message::StereoSplitChanged(..)
+            | Message::LoopbackChanged(..)
+            | Message::PitchChanged(_)
+            | Message::WidthChanged(_)
+            | Message::MsProcChanged(_)
+            | Message::An12Changed(_)
+            | Message::InputLinkChanged(_)
+            | Message::EqForRecordChanged(_)
+            | Message::EqEnabled(..)
+            | Message::EqBandType(..)
+            | Message::EqBandFreq(..)
+            | Message::EqBandQ(..)
+            | Message::EqBandGain(..)
+            | Message::EqLowCutFreq(..)
+            | Message::EqLowCutSlope(..)
+    )
+}
+
 pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
+    // The class-compliant personality drives routing, preamps and clock and
+    // nothing else (see `RmeDevice::protocol_features`). The UI already
+    // hides the controls; this is the other half of that, so nothing built
+    // by hand reaches a setter that can only fail.
+    if needs_protocol_features(&message) && !state.device.protocol_features() {
+        log::debug!("ignored {message:?}: this connection has no RME-protocol features");
+        return Task::none();
+    }
     if is_undoable(&message) {
         let scene = state.device.capture_scene();
         state.undo_stack.push(scene);
@@ -2318,11 +2374,28 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
     .spacing(theme::SPACE_MD * scale)
     .align_y(iced::Alignment::Center);
 
-    container(
-        column![header, clock_row, rate_row, pitch_row, toggle_row]
-            .spacing(theme::SPACE_LG * scale)
-            .width(Length::Fill),
-    )
+    let mut body = column![header, clock_row, rate_row]
+        .spacing(theme::SPACE_LG * scale)
+        .width(Length::Fill);
+    if state.device.protocol_features() {
+        body = body.push(pitch_row).push(toggle_row);
+    } else {
+        // Say why the panel is shorter rather than leaving two knobs and
+        // five toggles silently missing: on the class-compliant personality
+        // everything below the sample rate lives in RME's own protocol.
+        body = body.push(
+            text(
+                "Class Compliant mode: routing, preamps, gains and clock only. \
+                 Pitch, Width, MS Proc, AN 1>2, Input Link, EQ for Record and \
+                 the optical-out format are RME-protocol features, and the \
+                 strips drop EQ, Trim, Phase \u{00d8}, Split and Loopback for the \
+                 same reason.",
+            )
+            .color(theme::TEXT_SEC)
+            .size(theme::TEXT_XS * scale),
+        );
+    }
+    container(body)
     .style(theme::top_bar)
     .padding(theme::SPACE_MD * scale)
     .width(Length::Fill)
@@ -2540,6 +2613,9 @@ fn strip_params<'a>(
     let base = strip::StripParams {
         cid,
         output_idx,
+        // The three per-kind literals below spread this one, so the
+        // capability is read once. See `RmeDevice::protocol_features`.
+        protocol_features: state.device.protocol_features(),
         name: String::new(),
         type_tag: None,
         vol: 0.0,
@@ -3882,6 +3958,43 @@ mod tests {
         let _ = update(&mut state, Message::GroupClear);
         assert!(state.groups.iter().all(|g| g.members.is_empty()));
         assert!(!state.group_editing);
+    }
+
+    #[test]
+    fn class_compliant_mode_drops_protocol_messages() {
+        let mut state = new(true, None, None);
+
+        // The mock drives the full set by default, so the message the TRIM
+        // control sends really does reach the device.
+        let _ = update(&mut state, Message::TrimChanged(0, 6.0));
+        assert_eq!(state.device.inputs()[0].trim, 6.0);
+
+        // On the class-compliant personality those setters can only fail,
+        // so the renderers hide the controls and `update` drops what a stale
+        // key binding or an OSC message would still send.
+        let pushed = state.undo_stack.len();
+        state.device.set_protocol_features(false);
+        let _ = update(&mut state, Message::TrimChanged(0, -3.0));
+        assert_eq!(state.device.inputs()[0].trim, 6.0, "trim must not move");
+        let _ = update(&mut state, Message::EqEnabled(0, true));
+        assert!(
+            !state.device.inputs()[0].eq.as_ref().unwrap().enabled,
+            "the EQ must not engage behind a hidden button"
+        );
+
+        // A dropped message leaves no scene behind: the guard has to run
+        // before the undo capture, or a trim drag in this mode would fill
+        // the stack with no-ops.
+        assert_eq!(
+            state.undo_stack.len(),
+            pushed,
+            "a dropped message must not have pushed a scene"
+        );
+
+        // Messages that are not protocol-bound still land, and still push.
+        let _ = update(&mut state, Message::Mute(ChannelId::Input(0), true));
+        assert!(state.device.inputs()[0].mute);
+        assert_eq!(state.undo_stack.len(), pushed + 1, "a real action still pushes a scene");
     }
 
     #[test]

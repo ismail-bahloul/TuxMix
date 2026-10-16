@@ -66,6 +66,9 @@ impl RmeDevice for DeviceHandle {
     fn model_name(&self) -> &str {
         delegate!(self, model_name)
     }
+    fn protocol_features(&self) -> bool {
+        delegate!(self, protocol_features)
+    }
     fn output_pair_count(&self) -> usize {
         delegate!(self, output_pair_count)
     }
@@ -924,19 +927,27 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                         // Not persisted: the next stream re-init starts at 0%.
                         KeyCode::Char('y') => {
                             let p = dev.settings().pitch_percent;
-                            let _ = dev.set_pitch((p + 0.1).min(5.0));
+                            if dev.protocol_features() {
+                                let _ = dev.set_pitch((p + 0.1).min(5.0));
+                            }
                         }
                         KeyCode::Char('h') => {
                             let p = dev.settings().pitch_percent;
-                            let _ = dev.set_pitch((p - 0.1).max(-5.0));
+                            if dev.protocol_features() {
+                                let _ = dev.set_pitch((p - 0.1).max(-5.0));
+                            }
                         }
                         KeyCode::Char('Y') => {
                             let p = dev.settings().pitch_percent;
-                            let _ = dev.set_pitch((p + 1.0).min(5.0));
+                            if dev.protocol_features() {
+                                let _ = dev.set_pitch((p + 1.0).min(5.0));
+                            }
                         }
                         KeyCode::Char('H') => {
                             let p = dev.settings().pitch_percent;
-                            let _ = dev.set_pitch((p - 1.0).max(-5.0));
+                            if dev.protocol_features() {
+                                let _ = dev.set_pitch((p - 1.0).max(-5.0));
+                            }
                         }
                         // Stereo width (global, -1..+1). `u`/`j` (vertically
                         // adjacent on QWERTY, same up/down convention as
@@ -944,29 +955,41 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                         // the much narrower range than pitch's.
                         KeyCode::Char('u') => {
                             let w = dev.settings().width;
-                            let _ = dev.set_width((w + 0.05).min(1.0));
+                            if dev.protocol_features() {
+                                let _ = dev.set_width((w + 0.05).min(1.0));
+                            }
                         }
                         KeyCode::Char('j') => {
                             let w = dev.settings().width;
-                            let _ = dev.set_width((w - 0.05).max(-1.0));
+                            if dev.protocol_features() {
+                                let _ = dev.set_width((w - 0.05).max(-1.0));
+                            }
                         }
                         // Global device toggles — mirrors tuxmix-gui's
                         // device_panel (MS Proc / AN 1>2 / Input Link).
                         KeyCode::Char('x') => {
                             let on = dev.settings().ms_proc;
-                            let _ = dev.set_ms_proc(!on);
+                            if dev.protocol_features() {
+                                let _ = dev.set_ms_proc(!on);
+                            }
                         }
                         KeyCode::Char('a') => {
                             let on = dev.settings().an12;
-                            let _ = dev.set_an12(!on);
+                            if dev.protocol_features() {
+                                let _ = dev.set_an12(!on);
+                            }
                         }
                         KeyCode::Char('k') => {
                             let on = dev.settings().input_link;
-                            let _ = dev.set_input_link(!on);
+                            if dev.protocol_features() {
+                                let _ = dev.set_input_link(!on);
+                            }
                         }
                         KeyCode::Char('f') => {
                             let on = dev.settings().eq_for_record;
-                            let _ = dev.set_eq_for_record(!on);
+                            if dev.protocol_features() {
+                                let _ = dev.set_eq_for_record(!on);
+                            }
                         }
                         KeyCode::Char('w') => {
                             let on = dev.settings().optical_out_spdif;
@@ -976,7 +999,7 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                         // tuxmix-gui's EQ flyout. See `render_eq`/
                         // `adjust_eq_field`.
                         KeyCode::Char('e') => {
-                            if section == 0 {
+                            if section == 0 && dev.protocol_features() {
                                 let idx = selected_input_idx(dev, channel);
                                 if idx < 4 {
                                     eq_view = Some((idx, 0));
@@ -994,7 +1017,9 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                                     };
                                     if let Some(oc) = dev.outputs().get(ch) {
                                         let new_state = !oc.loopback;
-                                        let _ = dev.set_loopback(pair, new_state);
+                                        if dev.protocol_features() {
+                                            let _ = dev.set_loopback(pair, new_state);
+                                        }
                                     }
                                 }
                             }
@@ -1024,7 +1049,9 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                                 let idx = selected_input_idx(dev, channel);
                                 if idx < 4 {
                                     let on = dev.inputs()[idx].phase;
-                                    let _ = dev.set_phase(idx, !on);
+                                    if dev.protocol_features() {
+                                        let _ = dev.set_phase(idx, !on);
+                                    }
                                 }
                             }
                         }
@@ -1042,7 +1069,9 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                                     };
                                     if let Some(pc) = dev.playbacks().get(ch) {
                                         let on = pc.split;
-                                        let _ = dev.set_stereo_split(ch, !on);
+                                        if dev.protocol_features() {
+                                            let _ = dev.set_stereo_split(ch, !on);
+                                        }
                                     }
                                 }
                             }
@@ -1343,13 +1372,26 @@ fn ui(
         "Tab: return to mixer".into()
     } else {
         format!(
-            "IN:{}:{}  +/-:vol  PgUp/PgDn:0.1dB  ,/.:pan  m:mute  s:solo  p:48V  P:pad  [/] or g/d:gain  v:sens  i:phase(IN)  l:loop(OUT)  c:cue(OUT)  n:split(PB)  t:stereo  arrows:navigate  q:quit",
+            // The keys that drive RME's own protocol are only listed when
+            // they can do something: on the class-compliant personality the
+            // footer says what is missing instead of advertising it.
+            "IN:{}:{}  +/-:vol  PgUp/PgDn:0.1dB  ,/.:pan  m:mute  s:solo  p:48V  P:pad  [/] or g/d:gain  v:sens{}  c:cue(OUT){}  t:stereo  arrows:navigate  q:quit",
             match sel_sec {
                 0 => "IN",
                 1 => "PB",
                 _ => "OUT",
             },
-            sel_chan
+            sel_chan,
+            if dev.protocol_features() {
+                "  i:phase(IN)  l:loop(OUT)  n:split(PB)  e:eq(IN)"
+            } else {
+                ""
+            },
+            if dev.protocol_features() {
+                ""
+            } else {
+                "  no RME-protocol features here: class compliant mode"
+            },
         )
     };
     f.render_widget(
@@ -1718,7 +1760,9 @@ fn adjust_eq_field(dev: &mut DeviceHandle, idx: usize, row: usize, dir: i32, coa
         .unwrap_or_default();
     match row {
         0 => {
-            let _ = dev.set_eq_enabled(idx, !eq.enabled);
+            if dev.protocol_features() {
+                let _ = dev.set_eq_enabled(idx, !eq.enabled);
+            }
         }
         1 | 5 | 9 => {
             let band = (row - 1) / 4;

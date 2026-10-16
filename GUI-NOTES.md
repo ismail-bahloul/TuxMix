@@ -2878,3 +2878,57 @@ plus du moteur de rendu (Qt ignore les masques comme il ignorait les clips).
 Vérifié à l'œil sur fond clair et sur fond sombre, et le fichier placé rend
 identique (AE 0) à celui qui a été regardé. En encre noire, c'est la **tuile**
 qui reste l'asset à utiliser sur fond sombre.
+
+## 2026-10-16 (suite) — mode Class Compliant : l'UI ne propose plus ce qui ne peut pas marcher
+
+L'item que le projet documentait comme ouvert : en CC, l'UI proposait
+toujours EQ, phase, trim, split, loopback, MS, AN 1>2, input link, width,
+pitch et EQ-for-record. Ils échouaient proprement (le `require_proprietary`
+du backend ALSA, 19 sites), mais ils étaient là : `BabyfacePro::grammar()`
+était exposé *exprès* pour ce filtrage (« Lets a UI gate the... ») et rien ne
+l'utilisait.
+
+Nouveau `RmeDevice::protocol_features()` (défaut `true`, l'ALSA répond
+`self.grammar != ControlGrammar::ClassCompliant`). Les deux `DeviceHandle`
+(GUI et TUI) délèguent, donc chaque backend répond pour lui-même. C'est le
+piège de ce genre de passe : le délégué oublié côté TUI ne se voyait pas à la
+compilation, `dev.protocol_features()` tombait sur le défaut du trait
+(`true`) et le gating n'aurait jamais rien fait.
+
+Côté GUI, les contrôles concernés sont **retirés**, pas grisés : c'est ce que
+font déjà les drapeaux `has_trim`/`has_phase`/`has_split`/`has_eq` pour un
+canal qui n'a pas la fonction, et c'est ce que le backlog demandait (« l'idéal
+serait de les masquer »). Il ne reste donc que l'engrenage ▼ dans la colonne
+d'icônes des entrées (48V/PAD/sensibilité marchent en CC), le bouton LOOP
+disparaît des sorties (via une petite aide `loopback_target` qui dit pourquoi,
+et son test), et le panneau DEVICE perd les deux knobs (pitch/width) et les
+cinq toggles en gardant clock et sample rate.
+
+Un contrôle masqué ne peut plus porter d'explication, donc les deux endroits
+où l'utilisateur cherche « à quoi je parle » la portent : la puce device de
+la sidebar affiche **Class Compliant** (en ambre, comme Simulated), et le
+panneau DEVICE affiche une ligne disant ce qui existe dans ce mode et ce que
+les strips ont retiré. Derrière, `update` a une garde
+`needs_protocol_features(&message)` (les setters de `require_proprietary`
+plus `set_eq_for_record`) qui jette ces messages *avant* la capture d'undo :
+une vieille combinaison de touches, un message OSC ou n'importe quel
+`Message` construit à la main ne peut pas contourner un bouton caché, et la
+garde placée après `is_undoable` aurait rempli la pile d'undo de scènes no-op
+pendant un drag de trim.
+
+Côté TUI, mêmes clés concernées (`y/h/Y/H`, `u/j`, `x`, `a`, `k`, `f`, `l`,
+`i`, `n`, `e`) : le setter n'est appelé que si `protocol_features()`, et le
+footer du mixer n'annonce plus phase/loop/split/EQ pour dire à la place « no
+RME-protocol features here: class compliant mode ».
+
+Vérifié : 178 tests, dont `protocol_features_follows_the_flag`,
+`class_compliant_mode_drops_protocol_messages` (le trim ne bouge pas, l'EQ ne
+s'engage pas, un mute passe toujours, et rien ne s'ajoute à la pile d'undo) et
+`loopback_is_output_only_and_needs_the_protocol` ; le test live CC existant
+pin désormais `!dev.protocol_features()` (il demande la carte en CC). Rendu
+capturé sur la vraie carte en propriétaire (T, Ø, engrenage et EQ toujours
+là, la puce dit Connected) puis en **CC simulé** (`TUXMIX_MOCK_CC=1 --mock`,
+ajouté au mock pour ça) où la colonne ne garde que l'engrenage, le panneau
+DEVICE affiche la ligne et la puce dit Class Compliant. Pas encore vérifié sur
+une carte en CC *réel* : ça demande de basculer la carte (SELECT + DIM à
+l'allumage), et c'est la seule chose qui reste.

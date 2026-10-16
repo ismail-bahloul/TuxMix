@@ -34,9 +34,20 @@ pub struct MockBabyfacePro {
     input_meters: Vec<f32>,
     playback_meters: Vec<f32>,
     tick: u64,
+    /// Whether this mock answers as a device that speaks RME's own protocol
+    /// (see `RmeDevice::protocol_features`). Seeded from `TUXMIX_MOCK_CC`
+    /// (any value, even empty) so the gated UI can be looked at without a
+    /// class-compliant card, and flippable at runtime for tests.
+    protocol_features: bool,
 }
 
 impl MockBabyfacePro {
+    /// Point this mock at the class-compliant personality's feature set, or
+    /// back at the full one. See the field's own comment.
+    pub fn set_protocol_features(&mut self, on: bool) {
+        self.protocol_features = on;
+    }
+
     fn update_meters(&mut self) {
         let mut rng = rand::thread_rng();
         self.tick += 1;
@@ -119,6 +130,10 @@ impl RmeDevice for MockBabyfacePro {
         PROFILE.output_pair_count()
     }
 
+    fn protocol_features(&self) -> bool {
+        self.protocol_features
+    }
+
     fn open() -> Result<Self, Error> {
         // Same topology as the real device, plus a mock-only demo
         // default: the first two (Mic) inputs start with phantom power
@@ -174,6 +189,10 @@ impl RmeDevice for MockBabyfacePro {
             input_meters: vec![0.0; PROFILE.input_count()],
             playback_meters: vec![0.0; PROFILE.output_pair_count() * 2],
             tick: 0,
+            // `TUXMIX_MOCK_CC=1` (or any value) turns the mock into the
+            // class-compliant personality's feature set, which is how the
+            // gated UI is screenshotted without unplugging anything.
+            protocol_features: std::env::var_os("TUXMIX_MOCK_CC").is_none(),
         })
     }
 
@@ -675,6 +694,18 @@ mod tests {
         let dev = MockBabyfacePro::open().unwrap();
         assert_eq!(dev.inputs().len(), 12);
         assert_eq!(dev.playbacks().len(), 12);
+    }
+
+    #[test]
+    fn protocol_features_follows_the_flag() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        dev.set_protocol_features(true);
+        assert!(dev.protocol_features());
+        dev.set_protocol_features(false);
+        assert!(
+            !dev.protocol_features(),
+            "the class-compliant personality has none of RME's own protocol features"
+        );
     }
 
     #[test]
