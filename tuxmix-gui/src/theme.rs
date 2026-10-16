@@ -1,35 +1,59 @@
-//! Color palette shared across the whole GUI, ported 1:1 from the v1 (egui) palette.
+//! Color palette shared across the whole GUI.
 
 use iced::gradient::Linear;
 use iced::widget::overlay::menu;
 use iced::widget::{button, container};
 use iced::{Background, Border, Color, Shadow};
 
-// Palette sampled directly from real RME TotalMix FX (live screenshots,
-// see the reference-totalmix-ui-assets memory) rather than guessed — a
-// cool blue-gray strip card against a near-black window, cyan for Mute,
-// a muted terracotta orange for everything else "engaged" (Solo, stereo
-// link, EQ on, 48V, route/settings open). TotalMix's own accent is that
-// same orange almost everywhere; cyan is reserved specifically for Mute.
-pub const BG_DEEP: Color = Color::from_rgb8(0x14, 0x17, 0x1a);
-pub const SURFACE: Color = Color::from_rgb8(0x38, 0x41, 0x47);
-pub const BORDER: Color = Color::from_rgb8(0x4a, 0x54, 0x5c);
-pub const TEXT_PRIMARY: Color = Color::from_rgb8(0xe8, 0xe8, 0xec);
-pub const TEXT_SEC: Color = Color::from_rgb8(0x9a, 0xa0, 0xa6);
-pub const ACCENT: Color = Color::from_rgb8(0xd4, 0x83, 0x54);
-pub const ACCENT_DIM: Color = Color::from_rgb8(0x5c, 0x41, 0x30);
-/// Sober neutral used for the fader rail/handle — kept separate from
-/// `ACCENT` so the fader doesn't compete visually with the orange brand
-/// color; matches the light silver/gray fader cap in the real reference.
-pub const FADER: Color = Color::from_rgb8(0xa8, 0xac, 0xb4);
-pub const MGREEN: Color = Color::from_rgb8(0x4c, 0xaf, 0x50);
-pub const MRED: Color = Color::from_rgb8(0xf4, 0x43, 0x36);
-pub const PHANTOM: Color = Color::from_rgb8(0xd4, 0x83, 0x54);
-pub const GCONN: Color = Color::from_rgb8(0x4c, 0xaf, 0x50);
-pub const YSIM: Color = Color::from_rgb8(0xff, 0xc1, 0x07);
-pub const MUTE_COLOR: Color = Color::from_rgb8(0x17, 0xbf, 0xcf);
-pub const SOLO_COLOR: Color = Color::from_rgb8(0xd4, 0x83, 0x54);
-pub const ON_ACTIVE: Color = Color::from_rgb8(0x14, 0x17, 0x1a);
+// Identity: the app icon is a pure-black tile with a monochrome silver
+// mark, so the UI is built from those same three ingredients and nothing
+// else - graphite surfaces, silver text, white for anything that is
+// "on" (engaged toggles, the selected strip, the active nav pill, the
+// section ticks). Hue is information, not decoration: green = signal and
+// connection, red = clip, amber = attention (solo, simulated/class
+// compliant), azure = mute. Before this pass the palette was sampled 1:1
+// from RME TotalMix FX (cool blue-gray cards, orange accent, cyan mute,
+// see the reference-totalmix-ui-assets memory) and read as a different
+// product than the icon on the taskbar.
+pub const BG_DEEP: Color = Color::from_rgb8(0x0e, 0x0e, 0x10);
+/// Card and control surface: the icon's tile black, lifted just enough
+/// to sit in UI range.
+pub const SURFACE: Color = Color::from_rgb8(0x1a, 0x1b, 0x1e);
+/// The fill under the cursor. Every hover in the app used to borrow a
+/// palette color that meant something else (the orange accent, a muted
+/// channel hue); this one means nothing but "here".
+pub const SURFACE_HI: Color = Color::from_rgb8(0x26, 0x27, 0x2b);
+/// Hairlines: one step above `SURFACE`, so a card reads as an object
+/// without a heavy outline.
+pub const BORDER: Color = Color::from_rgb8(0x30, 0x31, 0x36);
+/// The mark's white, softened a touch for body text.
+pub const TEXT_PRIMARY: Color = Color::from_rgb8(0xf2, 0xf3, 0xf5);
+/// The mark's own silver (`#b4b4b4` in the icon's gradient), dimmed one
+/// step: labels, secondary text, inactive controls.
+pub const TEXT_SEC: Color = Color::from_rgb8(0xa3, 0xa5, 0xab);
+/// "Engaged": every lit toggle, the selected strip's border, the section
+/// ticks, the active nav pill. It is the icon's own white, so the
+/// loudest state on screen is always the same color as the mark.
+pub const ACCENT: Color = Color::from_rgb8(0xf2, 0xf3, 0xf5);
+/// Quiet selected fill (menu highlight, text selection, the lit side of
+/// a sidebar switch): a graphite step, not a hue.
+pub const ACCENT_DIM: Color = Color::from_rgb8(0x37, 0x38, 0x3e);
+/// Fader cap and rail silver, from the icon's highlight (#d9d9d9
+/// family): the brightest neutral in the chrome.
+pub const FADER: Color = Color::from_rgb8(0xc9, 0xcb, 0xd1);
+pub const MGREEN: Color = Color::from_rgb8(0x3d, 0xd6, 0x8c);
+pub const MRED: Color = Color::from_rgb8(0xe5, 0x48, 0x4d);
+/// 48V lights like every other engaged toggle.
+pub const PHANTOM: Color = ACCENT;
+pub const GCONN: Color = Color::from_rgb8(0x3d, 0xd6, 0x8c);
+/// Amber: attention without alarm - the Simulated / Class Compliant
+/// chip, solo, warnings that are not failures.
+pub const YSIM: Color = Color::from_rgb8(0xf0, 0xb4, 0x29);
+pub const MUTE_COLOR: Color = Color::from_rgb8(0x3d, 0x9d, 0xf6);
+pub const SOLO_COLOR: Color = Color::from_rgb8(0xf0, 0xb4, 0x29);
+/// Text on an engaged (white) toggle and on the active nav pill: the
+/// near-black of the tile behind the mark.
+pub const ON_ACTIVE: Color = Color::from_rgb8(0x10, 0x10, 0x12);
 
 // ── Type scale ───────────────────────────────────────────────────
 // Every text element in the app maps to one of these six tiers rather
@@ -81,14 +105,13 @@ pub const SCALE_MAX: f32 = 1.75;
 // used 6 with no reason they were ever different — just whatever felt
 // fine in isolation when each was written.
 
-/// The section-header accent tick — barely-there rounding on a thin bar.
-pub const RADIUS_XS: f32 = 2.0;
+/// The section-header accent tick - barely-there rounding on a thin bar.
+pub const RADIUS_XS: f32 = 3.0;
 /// Every interactive control: buttons, text inputs, pick lists/menus, the
 /// scrollbar scroller.
-pub const RADIUS_SM: f32 = 4.0;
-/// Container chrome: strip cards (`panel`) and top-bar groups (`chip`) —
-/// previously 7 and 6 respectively, for no reason they needed to differ.
-pub const RADIUS_MD: f32 = 8.0;
+pub const RADIUS_SM: f32 = 6.0;
+/// Container chrome: strip cards (`panel`) and top-bar groups (`chip`).
+pub const RADIUS_MD: f32 = 10.0;
 
 // ── Spacing scale ────────────────────────────────────────────────────
 // Same consolidation for `.spacing()`/`.padding()` call sites — before
@@ -200,9 +223,9 @@ pub fn strip_panel(
                     ..base.border
                 },
                 shadow: Shadow {
-                    color: Color { a: 0.25, ..ACCENT },
+                    color: Color { a: 0.12, ..ACCENT },
                     offset: iced::Vector::new(0.0, 0.0),
-                    blur_radius: 8.0,
+                    blur_radius: 10.0,
                 },
                 ..base
             }
@@ -267,7 +290,7 @@ pub fn toggle_button(
         let mut background = if active {
             active_color
         } else if hovered {
-            SURFACE
+            SURFACE_HI
         } else {
             BG_DEEP
         };
@@ -320,24 +343,25 @@ pub fn toggle_button(
     }
 }
 
-/// The MIXER/MATRIX view switch in the top bar — a plain-text segmented
-/// pair rather than another boxed `chip`, so it doesn't compete for
-/// attention with the device-identity chip next to it. Active tab gets a
-/// filled pill (same `ACCENT_DIM` used elsewhere for "selected"); inactive
-/// stays flat until hovered.
+/// The QUICK/MIXER/MATRIX view switch in the top bar, the app's primary
+/// navigation: the active tab is the icon's own white pill with the
+/// tile's near-black label, inactive tabs stay flat text until hovered.
+/// It is the same `ACCENT`/`ON_ACTIVE` pair every engaged toggle uses,
+/// so "this is the active view" reads in the same language as "this
+/// switch is on".
 pub fn tab_toggle(active: bool) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
     move |_theme, status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let pressed = matches!(status, button::Status::Pressed);
         let background = if active {
             if pressed {
-                blend(ACCENT_DIM, Color::BLACK, PRESS_DARKEN)
+                blend(ACCENT, Color::BLACK, PRESS_DARKEN)
             } else {
-                ACCENT_DIM
+                ACCENT
             }
         } else if pressed {
-            // The resting/hover states here are SURFACE/TRANSPARENT, and
-            // TRANSPARENT has nothing for `blend` toward black to darken —
+            // The resting/hover states here are SURFACE_HI/TRANSPARENT, and
+            // TRANSPARENT has nothing for `blend` toward black to darken -
             // give the inactive tab its own distinct, visible press color
             // instead of falling through to "looks like hover held longer."
             Color {
@@ -345,13 +369,13 @@ pub fn tab_toggle(active: bool) -> impl Fn(&iced::Theme, button::Status) -> butt
                 ..ACCENT_DIM
             }
         } else if hovered {
-            SURFACE
+            SURFACE_HI
         } else {
             Color::TRANSPARENT
         };
         button::Style {
             background: Some(Background::Color(background)),
-            text_color: if active { TEXT_PRIMARY } else { TEXT_SEC },
+            text_color: if active { ON_ACTIVE } else { TEXT_SEC },
             border: Border {
                 radius: RADIUS_SM.into(),
                 ..Border::default()
@@ -364,14 +388,13 @@ pub fn tab_toggle(active: bool) -> impl Fn(&iced::Theme, button::Status) -> butt
 
 /// One cell of a 2-way segmented switch (`sidebar::segmented_row`).
 ///
-/// The option the switch currently points at gets `ACCENT_DIM`, the same
-/// "selected" fill `tab_toggle` uses, instead of `toggle_button`'s
-/// full-strength `ACCENT` plus glow. Those two were indistinguishable in
-/// the sidebar: a switch resting on one of its sides looked exactly as
-/// "engaged" as a channel that really is muted, so neither state carried
-/// meaning. Filling only what is actually *on* with the brand orange
-/// (M/S, a group link) and leaving switch positions dim is what makes the
-/// two readable apart.
+/// The option the switch currently points at gets a raised graphite fill
+/// (`ACCENT_DIM` plus a `FADER` border), not `toggle_button`'s
+/// full-strength `ACCENT` plus glow: a switch resting on one of its sides
+/// must not look as "engaged" as a channel that really is muted, or
+/// neither state carries meaning. Only what is actually *on* takes a
+/// state color (the mute azure, solo amber, a group link's white) while
+/// switch positions stay in the graphite family.
 ///
 /// A fixed pair (`routing: submix`) renders as `segment_button(true)` with
 /// no `on_press` on either side and is still drawn lit, unlike
@@ -388,13 +411,7 @@ pub fn segment_button(active: bool) -> impl Fn(&iced::Theme, button::Status) -> 
         } else {
             BG_DEEP
         };
-        let border_color = if active {
-            ACCENT_DIM
-        } else if hovered {
-            FADER
-        } else {
-            BORDER
-        };
+        let border_color = if active || hovered { FADER } else { BORDER };
 
         button::Style {
             background: Some(Background::Color(if pressed {
@@ -416,8 +433,8 @@ pub fn segment_button(active: bool) -> impl Fn(&iced::Theme, button::Status) -> 
 
 pub fn plain_button(_theme: &iced::Theme, status: button::Status) -> button::Style {
     let bg = match status {
-        button::Status::Pressed => blend(ACCENT_DIM, Color::BLACK, PRESS_DARKEN),
-        button::Status::Hovered => ACCENT_DIM,
+        button::Status::Pressed => blend(SURFACE_HI, Color::BLACK, PRESS_DARKEN),
+        button::Status::Hovered => SURFACE_HI,
         _ => SURFACE,
     };
     button::Style {
@@ -433,8 +450,8 @@ pub fn plain_button(_theme: &iced::Theme, status: button::Status) -> button::Sty
     }
 }
 
-/// A flat, textual button: no box at rest, brightening to `SURFACE` under
-/// the cursor.
+/// A flat, textual button: no box at rest, brightening to `SURFACE_HI`
+/// under the cursor.
 ///
 /// For secondary actions and utilities (undo/redo, a panel's "store", its
 /// "−"/"+") that were previously the same bordered box as a real control.
@@ -451,7 +468,7 @@ pub fn ghost_button(_theme: &iced::Theme, status: button::Status) -> button::Sty
             Background::Color(blend(SURFACE, Color::BLACK, PRESS_DARKEN)),
             TEXT_PRIMARY,
         ),
-        button::Status::Hovered => (Background::Color(SURFACE), TEXT_PRIMARY),
+        button::Status::Hovered => (Background::Color(SURFACE_HI), TEXT_PRIMARY),
         button::Status::Disabled => (
             Background::Color(Color::TRANSPARENT),
             Color { a: 0.4, ..TEXT_SEC },
@@ -478,11 +495,11 @@ pub fn ghost_button(_theme: &iced::Theme, status: button::Status) -> button::Sty
 pub fn tab_handle(_theme: &iced::Theme, status: button::Status) -> button::Style {
     let (background, border_color, text_color) = match status {
         button::Status::Pressed => (
-            Background::Color(blend(SURFACE, Color::BLACK, PRESS_DARKEN)),
+            Background::Color(blend(SURFACE_HI, Color::BLACK, PRESS_DARKEN)),
             FADER,
             TEXT_PRIMARY,
         ),
-        button::Status::Hovered => (Background::Color(SURFACE), FADER, TEXT_PRIMARY),
+        button::Status::Hovered => (Background::Color(SURFACE_HI), FADER, TEXT_PRIMARY),
         _ => (Background::Color(BG_DEEP), BORDER, TEXT_SEC),
     };
     button::Style {
@@ -498,7 +515,7 @@ pub fn tab_handle(_theme: &iced::Theme, status: button::Status) -> button::Style
     }
 }
 
-/// The small colored tick to the left of a section header label.
+/// The small white tick to the left of a section header label.
 pub fn accent_bar(_theme: &iced::Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(ACCENT)),
@@ -533,7 +550,7 @@ pub fn text_input(
 ) -> iced::widget::text_input::Style {
     use iced::widget::text_input::Status;
     let border_color = match status {
-        Status::Focused { .. } => FADER,
+        Status::Focused { .. } => ACCENT,
         _ => BORDER,
     };
     iced::widget::text_input::Style {

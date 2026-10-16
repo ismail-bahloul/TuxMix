@@ -5,6 +5,7 @@
 //! cargo run -p tuxmix-gui -- --mock    # simulation
 //! cargo run -p tuxmix-gui -- --mock --osc   # + OSC control surface
 //! cargo run -p tuxmix-gui -- --backend usb  # force libusb over the kernel driver
+//! cargo run -p tuxmix-gui -- --view mixer  # open straight on the Mixer page
 //! ```
 
 mod about;
@@ -50,6 +51,24 @@ fn arg_value(args: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
+/// `--view quick|mixer|matrix`: the page the window opens on. `Quick` is
+/// the default (the landing view), but the Mixer is where the full work
+/// happens and where the device panel lives, so the caller can land there
+/// directly. Unknown values fall back to the default, the same way
+/// `--backend` falls back to auto-detect instead of opening nothing.
+fn parse_view(args: &[String]) -> Option<app::View> {
+    match arg_value(args, "--view").as_deref() {
+        Some("quick") => Some(app::View::Quick),
+        Some("mixer") => Some(app::View::Mixer),
+        Some("matrix") => Some(app::View::Matrix),
+        Some(other) => {
+            eprintln!("Unknown --view value {other:?} (use quick|mixer|matrix), starting on Quick");
+            None
+        }
+        None => None,
+    }
+}
+
 fn main() -> iced::Result {
     env_logger::init();
     let args: Vec<String> = std::env::args().collect();
@@ -80,8 +99,16 @@ fn main() -> iced::Result {
             .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
     });
 
+    let start_view = parse_view(&args);
+
     iced::application(
-        move || app::new(mock, osc_config.clone(), backend.clone()),
+        move || {
+            let mut state = app::new(mock, osc_config.clone(), backend.clone());
+            if let Some(view) = start_view {
+                state.view = view;
+            }
+            state
+        },
         app::update,
         app::view,
     )
@@ -104,4 +131,28 @@ fn main() -> iced::Result {
         ..window::Settings::default()
     })
     .run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_view;
+    use crate::app::View;
+
+    fn args_with_view(value: &str) -> Vec<String> {
+        vec!["tuxmix-gui".into(), "--view".into(), value.into()]
+    }
+
+    #[test]
+    fn view_flag_picks_the_starting_page() {
+        assert_eq!(parse_view(&args_with_view("quick")), Some(View::Quick));
+        assert_eq!(parse_view(&args_with_view("mixer")), Some(View::Mixer));
+        assert_eq!(parse_view(&args_with_view("matrix")), Some(View::Matrix));
+        assert_eq!(parse_view(&args_with_view("wat")), None);
+    }
+
+    #[test]
+    fn view_flag_absent_starts_on_the_default() {
+        assert_eq!(parse_view(&["tuxmix-gui".into()]), None);
+        assert_eq!(parse_view(&["tuxmix-gui".into(), "--mock".into()]), None);
+    }
 }

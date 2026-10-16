@@ -58,20 +58,25 @@ pub(crate) fn pair_bus_label(left: &str, right: &str) -> String {
 }
 
 pub fn type_tag(t: ChannelType) -> (&'static str, iced::Color) {
+    // The muted type family: quiet enough to live in a graphite UI
+    // without fighting the white "engaged" states for attention, but
+    // still separable hues for scanning a long strip row. Mic, line and
+    // instrument keep their console associations (blue, neutral, amber);
+    // the two digital ports share a violet.
     match t {
-        ChannelType::Mic => ("MIC", theme::MUTE_COLOR),
-        ChannelType::Instrument => ("INST", iced::Color::from_rgb8(0xff, 0xb7, 0x4d)),
-        ChannelType::Line => ("LINE", theme::ACCENT),
-        ChannelType::SPDIF => ("SPDIF", iced::Color::from_rgb8(0xba, 0x68, 0xc8)),
-        ChannelType::ADAT => ("ADAT", iced::Color::from_rgb8(0xba, 0x68, 0xc8)),
+        ChannelType::Mic => ("MIC", iced::Color::from_rgb8(0x7f, 0xb3, 0xd5)),
+        ChannelType::Instrument => ("INST", iced::Color::from_rgb8(0xd9, 0xa8, 0x5c)),
+        ChannelType::Line => ("LINE", iced::Color::from_rgb8(0x9d, 0xa3, 0xac)),
+        ChannelType::SPDIF => ("SPDIF", iced::Color::from_rgb8(0xa2, 0x92, 0xc6)),
+        ChannelType::ADAT => ("ADAT", iced::Color::from_rgb8(0xa2, 0x92, 0xc6)),
     }
 }
 
 /// Tag colors for the bus rows (not real `ChannelType`s, so not part of
 /// `type_tag`) — kept distinct from the input-type palette above so PB/OUT
 /// don't just blend into the secondary-text gray everything else uses.
-pub const PB_TAG: iced::Color = iced::Color::from_rgb8(0x4d, 0xb6, 0xac);
-pub const OUT_TAG: iced::Color = iced::Color::from_rgb8(0x81, 0xc7, 0x84);
+pub const PB_TAG: iced::Color = iced::Color::from_rgb8(0x5f, 0xb3, 0xa8);
+pub const OUT_TAG: iced::Color = iced::Color::from_rgb8(0x7f, 0xbf, 0x8a);
 
 pub fn parse_db_input(s: &str) -> Option<f32> {
     let raw = s.trim().to_lowercase();

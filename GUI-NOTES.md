@@ -2964,3 +2964,52 @@ bouton C du GUI est dans le même cas, visible sur la capture CC. Deux options
 plus tard : implémenter le cue côté ALSA (les crosspoints du driver noyau le
 permettent) ou masquer ce que le backend ne supporte pas, ce qui demanderait
 une sonde de capacité plutôt qu'un gating de grammaire.
+
+## 2026-10-16 (suite 3) : refonte visuelle mono, alignée sur l'icône
+
+Nouvelle identité : l'icône est une tuile noire au mark argent monochrome,
+donc l'UI est faite des mêmes trois ingrédients : graphite, argent, et le
+blanc du mark pour tout ce qui est « engagé » (toggles allumés, strip
+sélectionné, onglet actif, ticks de section). La couleur redevient de
+l'information : vert = signal/connexion, rouge = clip, ambre = attention
+(solo, Simulated/Class Compliant), azur = mute. Avant, la palette était
+échantillonnée sur TotalMix FX (cartes bleu-gris, accent orange, mute cyan)
+et jurait avec l'icône de la barre des tâches.
+
+| token | avant | après |
+|---|---|---|
+| fond | `#14171a` | `#0e0e10` |
+| cartes | `#384147` | `#1a1b1e` |
+| survol | empruntait une couleur à sens | `SURFACE_HI` `#26272b` |
+| texte | `#e8e8ec` / `#9aa0a6` | `#f2f3f5` / `#a3a5ab` |
+| accent engagé | `#d48354` | `#f2f3f5` (texte `#101012`) |
+| fader | `#a8acb4` | `#c9cbd1` |
+| mute / solo | `#17bfcf` / orange | `#3d9df6` / `#f0b429` |
+| vert / rouge | `#4caf50` / `#f44336` | `#3dd68c` / `#e5484d` |
+| coins | 4 / 8 px | 6 / 10 px |
+
+Tout est resté tokenisé (`theme.rs`), donc les deux vues et la sidebar suivent
+d'office ; seules les couleurs de type de canal étaient hors du fichier de
+thème (`app.rs`, `type_tag` / `PB_TAG` / `OUT_TAG`). Elles sont adoucies (MIC
+bleu acier, INST ambre, LINE gris neutre, SPDIF/ADAT violet, PB sarcelle, OUT
+vert doux) : elles servent toujours de teinte de carte (10 %), assez pour
+trier une rangée d'un coup d'œil, pas assez pour concurrencer le blanc
+« engagé ».
+
+Détails : survols sur une couleur dédiée au lieu d'emprunter une couleur qui
+signifie autre chose ; halo de survol des strips adouci (blanc 12 %, 10 px) ;
+focus des champs de saisie en blanc ; l'onglet actif (QUICK/MIXER/MATRIX)
+devient la pilule blanche, même paire `ACCENT`/`ON_ACTIVE` que les toggles
+allumés.
+
+Au passage, un flag `--view quick|mixer|matrix` (avec 2 tests) pour ouvrir
+directement sur la vue de travail ; c'est aussi ce qui a permis de capturer
+la vue Mixer pour la vérification (pas d'injection clavier/souris dans
+l'environnement de capture).
+
+Vérifié : `cargo test --workspace` en vert, captures avant/après en Quick et
+Mixer sur la vraie carte. Pas capturé : le panneau DEVICE, sous la ligne de
+flottaison de la page Mixer ; il n'utilise que les mêmes primitives
+tokenisées. Pas touché : le TUI (palette du terminal ; à accorder un jour si
+on veut). Pas de transitions animées non plus : iced n'en a pas nativement,
+il faudrait un état d'animation par widget, à voir comme passe séparée.
