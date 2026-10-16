@@ -76,11 +76,13 @@ const fn indent(left: f32) -> iced::Padding {
 /// caption the reference uses there ("solo/pfl mode") at `TEXT_XS`.
 const OPTIONS_LABEL_W: f32 = 76.0;
 
-/// Width of the fold tab that straddles the sidebar's inner edge.
-const TAB_W: f32 = 18.0;
-/// Height of that tab — tall enough to read as a grip, short enough that
-/// it doesn't read as a scrollbar segment.
-const TAB_H: f32 = 40.0;
+/// Width of the fold tab that straddles the sidebar's inner edge. Narrow
+/// enough to read as a grip on the edge (`theme::tab_handle` finishes it
+/// as a capsule) rather than a button parked next to it.
+const TAB_W: f32 = 14.0;
+/// Height of that tab — tall enough that the capsule reads as a handle,
+/// short enough that it doesn't read as a scrollbar segment.
+const TAB_H: f32 = 52.0;
 /// How much of the tab overlaps the sidebar itself — exactly the column's
 /// own left padding (`SPACE_MD`), so the tab hangs over the mixer's side
 /// of the boundary without ever covering a row. The rest of it
@@ -218,16 +220,29 @@ impl SkeletonPairs {
 /// `SPACE_MD` from the column's left edge.
 const RESIZE_W: f32 = theme::SPACE_MD;
 
-/// The fold control itself: a small grip whose glyph points the way the
-/// column is about to move (`›` folds it away to the right, `‹` brings
-/// it back).
-fn tab_button(glyph: &'static str, scale: f32) -> Element<'static, Message> {
-    button(text(glyph).size(theme::TEXT_SM * scale))
-        .width(Length::Fixed(TAB_W * scale))
-        .height(Length::Fixed(TAB_H * scale))
-        .style(theme::tab_handle)
-        .on_press(Message::ToggleSidebar)
-        .into()
+/// The fold control itself: a small grip whose chevron points the way
+/// the column is about to move (right folds it away, left brings it
+/// back). The chevron is canvas-drawn (`widgets::chevron`), not a font
+/// glyph: at `TAB_W` wide, every candidate glyph's side bearing put its
+/// ink visibly off the capsule's center, and `Button`'s own default
+/// padding (5px a side) left no content box at all in a box this narrow —
+/// padding zeroed, the canvas fills the whole tab.
+fn tab_button(right: bool, scale: f32) -> Element<'static, Message> {
+    button(
+        iced::widget::canvas(crate::widgets::chevron::Chevron {
+            color: theme::TEXT_SEC,
+            right,
+            scale,
+        })
+        .width(Length::Fill)
+        .height(Length::Fill),
+    )
+    .padding(0)
+    .width(Length::Fixed(TAB_W * scale))
+    .height(Length::Fixed(TAB_H * scale))
+    .style(theme::tab_handle)
+    .on_press(Message::ToggleSidebar)
+    .into()
 }
 
 /// Top-level entry point — one scrollable column, filling the window's
@@ -246,7 +261,7 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
     // one control that brings the column back *is* the whole rail, and
     // the tab is centered so it doesn't move height between states.
     if !state.sidebar_open {
-        return container(tab_button("‹", scale))
+        return container(tab_button(false, scale))
             .padding(theme::SPACE_TIGHT * scale)
             .align_y(iced::Alignment::Center)
             .width(Length::Fixed(COLLAPSED_WIDTH * scale))
@@ -328,7 +343,7 @@ pub fn fold_tab(state: &TuxMix) -> Element<'_, Message> {
 
     row![
         iced::widget::Space::new().width(Length::Fill),
-        tab_button("›", scale),
+        tab_button(true, scale),
         iced::widget::Space::new().width(Length::Fixed((state.sidebar_width - TAB_INSIDE) * scale)),
     ]
     .align_y(iced::Alignment::Center)
@@ -649,7 +664,7 @@ fn options_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     }
 
     let mut body = column![]
-        .spacing(theme::SPACE_TIGHT * scale)
+        .spacing(theme::SPACE_SM * scale)
         .padding(indent(CONTENT_INDENT * scale))
         .width(Length::Fill);
 

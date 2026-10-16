@@ -3013,3 +3013,40 @@ flottaison de la page Mixer ; il n'utilise que les mêmes primitives
 tokenisées. Pas touché : le TUI (palette du terminal ; à accorder un jour si
 on veut). Pas de transitions animées non plus : iced n'en a pas nativement,
 il faudrait un état d'animation par widget, à voir comme passe séparée.
+
+## 2026-10-16 (suite 4) : le mark dans l'app, et une passe de layout
+
+Le mark (le logotype sans sa tuile) entre dans l'app à deux endroits : la
+barre du haut (20 px, à côté du wordmark) et le panneau About (44 px). Un
+vieux commentaire d'`about.rs` l'avait écarté pour de bon (« la feature
+`image` d'iced tire 76 crates ») : vrai pour la feature complète (79
+mesurés), faux depuis `image-without-codecs` (7 crates), le widget sans
+décodeurs, alors que le repo décode déjà ses PNG à la main pour l'icône de
+fenêtre (`icon.rs`, crate `png` déjà en dépendance). `icon::mark()` décode
+une fois (`OnceLock`) et les deux emplacements partagent le même asset :
+`tuxmix-mark-256.png`, rendu depuis `tuxmix-logo.svg` en blanc plat
+(`rsvg-convert -w 256`), copié dans les deux dossiers assets comme le reste.
+
+Passe de layout sur les zones qui se lisaient comme improvisées :
+
+- **Top bar** : le chip `session` (Submix + Clock) était étiré sur
+  `FillPortion(20)` dans un scrollable horizontal, ce qui peignait un grand
+  pavé à peine rempli au milieu de la barre et laissait About orphelin à
+  l'autre bout. Il se replie sur son contenu et forme un cluster d'outils au
+  bord droit, About juste à côté.
+- **Options (sidebar)** : les pilules « allumées » passent d'`ACCENT_DIM`
+  (gris clair, 5 rangées qui criaient) à `SURFACE_HI` + liseré argent, et les
+  rangées respirent (2 → 4 px). L'étirement des paires au bord du panneau
+  était déjà bon, rien touché de ce côté.
+- **Languette de pliage** : boîte 18×40 → capsule 14×52, chevron dessiné en
+  canvas (`widgets/chevron.rs`) et non plus un glyphe de fonte. Deux causes
+  au décalage : le padding par défaut du `Button` (5 px par côté) ne laissait
+  aucune boîte de contenu dans 14 px, et les glyphes `›`/`▸` ont un côté
+  d'approche qui décale l'encre d'environ 2 px du centre. Première version du
+  widget invisible (points calculés depuis `bounds`, en coordonnées de
+  layout, alors qu'un `Frame` de canvas a son origine au coin du widget) :
+  vu sur capture, corrigé, re-mesuré (encre 3×8 px pile au centre).
+
+Vérifié : `cargo test --workspace` (185), captures (mark dans la barre et
+About, languette mesurée au pixel), binaires release reconstruits. Pas
+touché : la palette du TUI.

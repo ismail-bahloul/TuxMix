@@ -2539,16 +2539,40 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
         scale,
     );
 
-    let mut bar = row![
-        text("TuxMix")
+    // The mark and the wordmark as one lockup, the same artwork the window
+    // icon wears (see `icon::mark`), flat white like every other engaged
+    // state and sized off the wordmark's own height. A missing asset just
+    // falls back to the plain wordmark.
+    let brand: Element<'_, Message> = match crate::icon::mark() {
+        Some((handle, ratio)) => {
+            let mark_h = 20.0 * scale;
+            row![
+                iced::widget::image(handle)
+                    .width(mark_h * ratio)
+                    .height(mark_h)
+                    .filter_method(iced::widget::image::FilterMethod::Linear),
+                text("TuxMix")
+                    .color(theme::ACCENT)
+                    .size(theme::TEXT_XL * scale),
+            ]
+            .spacing(theme::SPACE_SM * scale)
+            .align_y(iced::Alignment::Center)
+            .into()
+        }
+        None => text("TuxMix")
             .color(theme::ACCENT)
-            .size(theme::TEXT_XL * scale),
+            .size(theme::TEXT_XL * scale)
+            .into(),
+    };
+
+    let mut bar = row![
+        brand,
         tab_toggle,
-        // A small flexible pusher rather than the whole remaining width —
-        // `session` below claims the bulk of it (`FillPortion(20)`), so
-        // this just keeps it from being flush against `tab_toggle` on a
-        // wide window without competing with it for space on a narrow one.
-        iced::widget::Space::new().width(Length::FillPortion(1)),
+        // Everything right of here is a tool cluster: the flexible space
+        // sits in the middle, so the session chip and About group against
+        // the right edge instead of floating at whatever width the chip
+        // used to claim for itself.
+        iced::widget::Space::new().width(Length::Fill),
     ]
     .spacing(theme::SPACE_XXL)
     .align_y(iced::Alignment::Center);
@@ -2563,20 +2587,14 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
                 .on_press(Message::ToggleOscLog),
         );
     }
-    // `session` (Scene/Save/load/Submix/Clock) has no natural upper bound
-    // on its own width — at the default 1280px window it used to overflow
-    // past the window's right edge entirely, making the Clock Source
-    // button (which opens `device_panel`) unreachable without resizing
-    // wider first. A horizontal scrollable clips it to whatever room
-    // `FillPortion(20)` actually leaves it and offers a scrollbar instead
-    // of silently running off-screen — same overflow idiom `responsive_row`
-    // already uses for strip rows, applied here too.
-    bar = bar.push(
-        scrollable(session)
-            .direction(scrollable::Direction::Horizontal(theme::thin_scrollbar()))
-            .style(theme::scrollable)
-            .width(Length::FillPortion(20)),
-    );
+    // The session chip hugs its own content (Submix + Clock) and sits with
+    // About at the right edge: it used to be stretched across
+    // `FillPortion(20)` inside a scrollable, which painted a mostly-empty
+    // recessed pill across the middle of the window and left About
+    // stranded on its far side. Content-sized, the two read as one
+    // right-hand tool cluster. The scrollable went with the stretch: at
+    // the chip's real width there is nothing left to overflow.
+    bar = bar.push(session);
     bar = bar.push(
         iced::widget::button(text("About").size(theme::TEXT_MD * scale))
             .padding([theme::SPACE_SM * scale, theme::SPACE_XL * scale])

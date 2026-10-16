@@ -405,7 +405,7 @@ pub fn segment_button(active: bool) -> impl Fn(&iced::Theme, button::Status) -> 
         let pressed = matches!(status, button::Status::Pressed);
 
         let background = if active {
-            ACCENT_DIM
+            SURFACE_HI
         } else if hovered {
             SURFACE
         } else {
@@ -487,12 +487,15 @@ pub fn ghost_button(_theme: &iced::Theme, status: button::Status) -> button::Sty
     }
 }
 
-/// The sidebar's fold tab (`sidebar.rs`): a small vertical grip centered
-/// on the edge it folds. Boxed at rest — unlike every other utility in
-/// that column it has to be findable without hovering, since it is the
-/// only way to get the sidebar back once it's gone — then brightening to
-/// the same `SURFACE`/`FADER` hover as everything else.
+/// The sidebar's fold tab (`sidebar.rs`): a capsule grip, half the width
+/// of the old box and taller, straddling the edge it folds. Boxed at rest,
+/// unlike every other utility in that column, because it has to be
+/// findable without hovering (it is the only way to get the sidebar back
+/// once it is gone); brightens to the same `SURFACE_HI`/`FADER` hover as
+/// everything else.
 pub fn tab_handle(_theme: &iced::Theme, status: button::Status) -> button::Style {
+    // Half of `sidebar::TAB_W`: capsule, not rounded box.
+    const TAB_RADIUS: f32 = 7.0;
     let (background, border_color, text_color) = match status {
         button::Status::Pressed => (
             Background::Color(blend(SURFACE_HI, Color::BLACK, PRESS_DARKEN)),
@@ -508,7 +511,7 @@ pub fn tab_handle(_theme: &iced::Theme, status: button::Status) -> button::Style
         border: Border {
             color: border_color,
             width: 1.0,
-            radius: RADIUS_SM.into(),
+            radius: TAB_RADIUS.into(),
         },
         shadow: Shadow::default(),
         snap: false,

@@ -12,7 +12,7 @@ alsa = ["tuxmix-core/alsa"]
 
 [dependencies]
 tuxmix-core = { path = "../tuxmix-core", default-features = false, features = ["usb"] }
-iced = { version = "0.14", features = ["canvas", "tokio", "advanced"] }
+iced = { version = "0.14", features = ["canvas", "tokio", "advanced", "image-without-codecs"] }
 log = "0.4"
 env_logger = "0.11"
 rosc = "0.11"
