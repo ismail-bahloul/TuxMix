@@ -2777,3 +2777,43 @@ Décisions prises le même jour sur les deux questions qui restaient
 ouvertes : les quatre panneaux restent ouverts par défaut (comme la
 référence) et la sidebar est redimensionnable (ci-dessus) au lieu d'être
 fixe à 210px.
+
+## 2026-10-16 — nouvelle icône : le mark en tuile monochrome
+
+Il a dessiné une icône monochrome (tuile sombre arrondie, mark en dégradés
+métalliques) et veut qu'elle devienne l'icône principale ; le reste du GUI
+garde sa palette orange/cyan pour l'instant, le re-thème viendra après.
+C'est un choix d'icône, pas un changement d'identité : le mark
+orange/cyan (`tuxmix-logo.svg`) reste pour le README et tout ce qui a de la
+place.
+
+Le fichier de travail est un export Inkscape de 30 Ko, dont deux tiers
+étaient un bloc `metadata` (manifeste C2PA de provenance, en base64), et
+qui portait encore deux calques de dessin en `display:none`.
+`assets/tuxmix.svg` est ce fichier nettoyé : plus de namespaces
+inkscape/sodipodi/rdf/cc/dc/c2pa, plus de `namedview` ni de `metadata`, les
+calques morts retirés avec les `defs` qu'ils étaient seuls à utiliser
+(dégradés `body`/`bodyhi`/`belly`, filtres `sh`/`gl`), les déclarations
+`style` réduites à ce qui n'était pas un no-op, et les 37 `id` que plus rien
+ne référence supprimés. Un piège au passage : les `stop` des dégradés
+portaient un `style` qui *contredisait* leur propre attribut (le style gagne
+en cascade), donc ses valeurs ont été repliées dans l'attribut au lieu
+d'être jetées avec le style.
+
+Vérifié : le nettoyage est sans effet visuel. `magick compare -metric AE`
+entre l'original et le fichier nettoyé donne 0, au même rendu 256px produit
+par `inkscape --export-width` (c'est ce même export qui donne
+`tuxmix-128.png`/`tuxmix-256.png`, ceux que le PKGBUILD installe et que
+`icon.rs` embarque). Le fichier passe de 30 Ko à 7,2 Ko, et le test
+`the_packaged_icon_decodes_as_256_rgba` continue de passer.
+
+Réserve signalée, pas masquée : le mark n'est plus lisible sous 32px
+(planche 16/22/24/32/48/64/128/256 et zooms pixel du 16/22/32) ; à 16-22px
+il ne reste que la silhouette de la tuile et une tache claire, ce qui est le
+prix de la tuile contre le crop sur la tête. KDE rastérise le SVG à la
+taille demandée, donc c'est ce rendu-là qui arrive dans la barre de tâches.
+
+Icônes locales (`~/.local/share/icons/hicolor` + le `.desktop`) mises à jour
+et `plasma-plasmashell.service` redémarré pour vider le cache : l'entrée de
+la barre de tâches montre bien la tuile. La version AUR, elle, livrera
+encore l'ancienne icône jusqu'à son prochain `pkgrel`.
