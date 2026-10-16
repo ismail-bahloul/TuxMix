@@ -949,13 +949,13 @@ impl RmeDevice for BabyfaceProUsb {
 
     fn set_loopback(&mut self, out: usize, on: bool) -> Result<(), Error> {
         output_for(out)?; // validate the pair index
-        // Loopback is pair-level (both channels together) — `out` is a
-        // submix pair (0-5), so both physical channels of it get the
-        // same flag. `self.outputs` is per-physical-channel now (see the
-        // `outputs` doc comment in `open()`); the device's own 30-channel
-        // loopback map already addresses channels 1:1 (PROTOCOL.md:
-        // "AN1/2 output loopback = channels 0/1"), so no `/2` is needed
-        // when reading it back below anymore.
+                          // Loopback is pair-level (both channels together) — `out` is a
+                          // submix pair (0-5), so both physical channels of it get the
+                          // same flag. `self.outputs` is per-physical-channel now (see the
+                          // `outputs` doc comment in `open()`); the device's own 30-channel
+                          // loopback map already addresses channels 1:1 (PROTOCOL.md:
+                          // "AN1/2 output loopback = channels 0/1"), so no `/2` is needed
+                          // when reading it back below anymore.
         self.outputs[out * 2].loopback = on;
         self.outputs[out * 2 + 1].loopback = on;
         // TotalMix ALWAYS writes the full 30-channel map on every toggle
@@ -1126,9 +1126,6 @@ impl RmeDevice for BabyfaceProUsb {
         self.dev.send_all(&reqs)?;
         Ok(())
     }
-
-
-
 
     fn set_clock_source(&mut self, source: &str) -> Result<(), Error> {
         if !self.settings.clock_sources.iter().any(|s| s == source) {
@@ -1539,7 +1536,11 @@ impl BabyfaceProUsb {
                 2 => 5, // Opt = ADAT7/8
                 _ => 0,
             };
-            let db = 20.0 * self.outputs[pair * 2].volume.clamp(f32::EPSILON, 2.0).log10();
+            let db = 20.0
+                * self.outputs[pair * 2]
+                    .volume
+                    .clamp(f32::EPSILON, 2.0)
+                    .log10();
             let new_db = (db + 0.5 * delta as f32).clamp(-65.0, 6.0);
             let raw = master_db_to_raw(new_db);
             let new_vol = 10f32.powf(new_db / 20.0);
@@ -1636,7 +1637,9 @@ mod tests {
         // "Babyface Pro FS (USB)") stays backend-specific; only the
         // canonical one has to match.
         let mut scene = crate::scene::Scene::new("test");
-        scene.model = crate::profiles::babyface_pro::PROFILE.model_name.to_string();
+        scene.model = crate::profiles::babyface_pro::PROFILE
+            .model_name
+            .to_string();
         assert!(scene
             .check_compatible(crate::profiles::babyface_pro::PROFILE.model_name)
             .is_ok());
@@ -1705,7 +1708,7 @@ mod tests {
         assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Instrument, 4), 8);
         assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Instrument, 9), 18);
         assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Instrument, 99), 18); // clamped
-        // The mic law is the packed one, not this.
+                                                                                  // The mic law is the packed one, not this.
         assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Mic, 0), 0x00);
         assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Mic, 65), 0xB4);
         assert_eq!(BabyfaceProUsb::gain_to_raw(ChannelType::Mic, 35), 0x4B);
