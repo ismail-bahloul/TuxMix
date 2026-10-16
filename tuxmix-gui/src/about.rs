@@ -35,11 +35,13 @@ fn header(scale: f32) -> Element<'static, Message> {
 pub fn about_panel(state: &TuxMix) -> Element<'_, Message> {
     let scale = state.ui_scale;
 
-    // Which build, and which device it is driving right now. Between them
-    // they are most of what a bug report needs to start with, and the sidebar
-    // chip that says the same thing scrolls away with the mixer. The mock
-    // suffix goes: the simulated/connected word right after it already says
-    // it, and "(mock) (simulated)" reads like a bug of its own.
+    // Which build, and which device it is driving right now, in which
+    // state (the same four words the sidebar chip uses, disconnect
+    // included). Between them they are most of what a bug report needs
+    // to start with, and the sidebar chip that says the same thing
+    // scrolls away with the mixer. The mock suffix goes: the word right
+    // after it already says it, and "(mock) (simulated)" reads like a
+    // bug of its own.
     let model = state
         .device
         .model_name()
@@ -47,10 +49,14 @@ pub fn about_panel(state: &TuxMix) -> Element<'_, Message> {
         .unwrap_or_else(|| state.device.model_name());
     let device = format!(
         "Driving {model} ({})",
-        if state.device.is_mock() {
+        if !state.connected {
+            "disconnected"
+        } else if state.device.is_mock() {
             "simulated"
+        } else if !state.device.protocol_features() {
+            "class-compliant"
         } else {
-            "connected"
+            "proprietary"
         },
     );
 

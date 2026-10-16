@@ -69,6 +69,9 @@ impl RmeDevice for DeviceHandle {
     fn protocol_features(&self) -> bool {
         delegate!(self, protocol_features)
     }
+    fn is_connected(&self) -> bool {
+        delegate!(self, is_connected)
+    }
     fn output_pair_count(&self) -> usize {
         delegate!(self, output_pair_count)
     }

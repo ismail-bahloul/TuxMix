@@ -26,6 +26,37 @@ pub use stream::{AudioRing, EventFd, IntrStream, MeterAccum, StreamStats};
 pub const VID: u16 = 0x2A39;
 pub const PID: u16 = 0x3FC0;
 
+/// Whether a proprietary-mode Babyface Pro FS is enumerated at exactly
+/// `(bus, address)` right now, without opening it. The identity check
+/// behind `BabyfaceUsb::is_connected`: a replug re-enumerates to a new
+/// USB address, which is the USB-side equivalent of the ALSA `devnum`.
+fn device_present_at(bus: u8, address: u8) -> bool {
+    rusb::devices()
+        .map(|list| {
+            list.iter().any(|d| {
+                d.bus_number() == bus
+                    && d.address() == address
+                    && d.device_descriptor()
+                        .map(|desc| desc.vendor_id() == VID && desc.product_id() == PID)
+                        .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+impl BabyfaceUsb {
+    /// Whether the device behind this open handle is still the one on
+    /// the bus: an open libusb handle keeps answering after the unit is
+    /// unplugged, so only a fresh enumeration can tell, and comparing
+    /// `(bus, address)` catches the replug that comes back looking
+    /// identical everywhere else. The liveness probe behind
+    /// `RmeDevice::is_connected` for the USB backend.
+    pub fn is_connected(&self) -> bool {
+        let dev = self.handle.device();
+        device_present_at(dev.bus_number(), dev.address())
+    }
+}
+
 /// Audio streaming interface and endpoints — confirmed against the real
 /// device descriptor AND a cold-plug capture of TotalMix on Windows
 /// (cap_coldplug.pcap): the audio runs on **interface 5**, endpoints
@@ -606,5 +637,13 @@ mod tests {
     fn ids_are_the_captured_device() {
         assert_eq!(VID, 0x2A39);
         assert_eq!(PID, 0x3FC0);
+    }
+
+    /// The identity probe's failure mode: USB addresses start at 1, so
+    /// nothing is ever enumerated at bus 0 address 0 and the probe must
+    /// say so rather than defaulting to "present".
+    #[test]
+    fn device_present_at_rejects_a_nonexistent_address() {
+        assert!(!device_present_at(0, 0));
     }
 }

@@ -368,29 +368,57 @@ fn panel<'a>(content: Element<'a, Message>, scale: f32) -> Element<'a, Message> 
         .into()
 }
 
-/// Absorbs what used to be the top bar's own device chip (status dot +
-/// "Simulated"/"Connected" label, see `top_bar`) now that this one is
-/// the sidebar's device chip and the top bar's copy was removed as a
-/// straight duplicate — the status info still needs to live *somewhere*.
-fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
-    // What the connection actually is: the mock, a class-compliant card
-    // (routing, preamps, gains and clock only, see
-    // `RmeDevice::protocol_features`), or a device that can be driven fully.
-    // The strips hide the controls that only exist on the last of those, so
-    // this line is where the user finds out why they are missing.
-    let (status_color, status_label) = if state.device.is_mock() {
+/// The device chip's own state word and color, in priority order: a
+/// disconnected device outranks the personality it had (the green/amber
+/// words describe a card that is actually there), and the mock's
+/// "Simulated" would otherwise mask a mock-side disconnect. Pure, so the
+/// mapping is pinned by a test (`app`'s own, where states are easy to
+/// build).
+pub(crate) fn device_state(state: &TuxMix) -> (Color, &'static str) {
+    if !state.connected {
+        (theme::MRED, "Disconnected")
+    } else if state.device.is_mock() {
         (theme::YSIM, "Simulated")
     } else if !state.device.protocol_features() {
         (theme::YSIM, "Class Compliant")
     } else {
-        (theme::GCONN, "Connected")
-    };
+        (theme::GCONN, "Proprietary")
+    }
+}
+
+/// Absorbs what used to be the top bar's own device chip (status dot +
+/// "Simulated"/"Connected" label, see `top_bar`) now that this one is
+/// the sidebar's device chip and the top bar's copy was removed as a
+/// straight duplicate — the status info still needs to live *somewhere*.
+///
+/// The label names the card's own personality, not just a connection
+/// flag: "Proprietary" (the kernel driver speaks RME's protocol and
+/// everything in the app works), "Class Compliant" (routing, preamps and
+/// clock only; the strips hide the rest), "Simulated" (no hardware). The
+/// two non-default states were already named while the default said only
+/// "Connected", which left the one users see every day as the one that
+/// explained the least.
+///
+/// Full width like every other row in this column, so it tracks the
+/// sidebar as it is dragged, with the identity on one line and the state
+/// under it: one line for both wraps "Class Compliant", the longest word,
+/// against the default column width (seen live), and a clipped or
+/// wrapping state word is worse than a second line. The `▾` that used to
+/// sit at the right edge suggested a dropdown that never existed —
+/// nothing behind it was clickable — and the row-per-line stack around it
+/// left most of the card empty.
+fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
+    // What the connection actually is right now (see `device_state`);
+    // the strips hide the controls that only exist on some of those
+    // states, so this line is where the user finds out why they are
+    // missing, and where a card that vanished shows up as gone.
+    let (status_color, status_label) = device_state(state);
     // `model_name()` grows a " (mock)" suffix in mock mode (see
     // `mock.rs`) — that's needed for scene-compatibility checks, but
-    // redundant here since the status line right below already says
+    // redundant here since the state right next to it already says
     // "Simulated", and the suffix alone was enough to push
-    // "Babyface Pro FS (mock)" past this chip's ~150px text budget
-    // in a 210px-wide sidebar. Strip it for display only.
+    // "Babyface Pro FS (mock)" past this chip's text budget in a
+    // 210px-wide sidebar. Strip it for display only.
     let display_name = state
         .device
         .model_name()
@@ -402,11 +430,7 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
                 text("●").size(theme::TEXT_XS * scale).color(status_color),
                 text(display_name)
                     .size(theme::TEXT_MD * scale)
-                    .color(theme::TEXT_PRIMARY)
-                    .width(Length::Fill),
-                text("▾")
-                    .size(theme::TEXT_XS * scale)
-                    .color(theme::TEXT_SEC),
+                    .color(theme::TEXT_PRIMARY),
             ]
             .spacing(theme::SPACE_SM * scale)
             .align_y(iced::Alignment::Center),

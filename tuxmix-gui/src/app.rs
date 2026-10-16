@@ -119,6 +119,16 @@ impl DeviceHandle {
             dev.set_protocol_features(on);
         }
     }
+
+    /// Point the *mock* at "unplugged", or back. Tests only; every real
+    /// backend answers for itself, and `TUXMIX_MOCK_DISCONNECT` covers
+    /// looking at the disconnected chip by hand.
+    #[cfg(test)]
+    fn set_connected(&mut self, on: bool) {
+        if let DeviceHandle::Mock(dev) = self {
+            dev.set_connected(on);
+        }
+    }
 }
 
 macro_rules! delegate {
@@ -142,6 +152,9 @@ impl RmeDevice for DeviceHandle {
     }
     fn protocol_features(&self) -> bool {
         delegate!(self, protocol_features)
+    }
+    fn is_connected(&self) -> bool {
+        delegate!(self, is_connected)
     }
     fn output_pair_count(&self) -> usize {
         delegate!(self, output_pair_count)
@@ -871,6 +884,20 @@ pub struct TuxMix {
     /// Docked drawer with the version, the icon and the links, the same
     /// pattern again: see `about::about_panel`.
     pub show_about: bool,
+    /// Whether the device this handle was opened on is still there, as of
+    /// the last `Message::Tick` probe (`RmeDevice::is_connected`): the
+    /// handle keeps answering for a card that is long gone, so the chip
+    /// and About read this, not the handle's mere existence.
+    pub connected: bool,
+    /// How the device was opened (`None` = auto-detect), kept so a
+    /// reconnect can use the same path (see `DeviceHandle::open_real`).
+    backend: Option<String>,
+    /// `--mock` was passed: never auto-reconnect, there is no hardware to
+    /// come back and the mock was asked for.
+    explicit_mock: bool,
+    /// When the connection was last probed. The throttle for the Tick
+    /// probe; `None` = never, so the first tick probes.
+    last_conn_check: Option<Instant>,
     /// Debounce timer for the auto-saved mixer state (see
     /// `Message::Tick` — the device has no readback, so this is how the
     /// UI restores the gains/volumes/48V on the next open).
@@ -1018,8 +1045,13 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
     let n_inputs = device.inputs().len();
     let n_playbacks = device.playbacks().len();
     let n_outputs = device.outputs().len();
+    // Probed before the literal: `device` moves into the struct, so it
+    // cannot be asked afterwards.
+    let connected = device.is_connected();
+
     TuxMix {
         device,
+        connected,
         sel_out: 0,
         last_panel_out: None,
         view: View::Quick,
@@ -1049,6 +1081,9 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         show_osc_log: false,
         show_device_panel: false,
         show_about: false,
+        backend,
+        explicit_mock: mock,
+        last_conn_check: None,
         // State persistence (the device has no gain/volume readback —
         // TotalMix re-applies its saved state; this is our equivalent).
         last_auto_save: Instant::now(),
@@ -1480,6 +1515,30 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             // past `RESIZE_THROTTLE`, so this only ever catches the tail end
             // of a drag.
             apply_pending_resize(state);
+            // Connection probe, throttled: the handle keeps answering
+            // after the card is unplugged (and after a personality switch
+            // re-enumerates it), so this is the only thing that can tell
+            // the chip the truth. When the card is back: reopen through
+            // the same path the app started with, and re-apply the
+            // auto-saved scene exactly like `new` does, so the UI and the
+            // hardware agree again.
+            let conn_due = state
+                .last_conn_check
+                .map_or(true, |t| t.elapsed() >= Duration::from_millis(CONN_CHECK_MS));
+            if conn_due {
+                state.last_conn_check = Some(Instant::now());
+                state.connected = state.device.is_connected();
+                if !state.connected && !state.explicit_mock {
+                    if let Some(fresh) = DeviceHandle::open_real(state.backend.as_deref()) {
+                        log::info!("Device reconnected");
+                        state.device = fresh;
+                        state.connected = true;
+                        if let Some(scene) = tuxmix_core::scene::load_auto_scene() {
+                            let _ = state.device.apply_scene(&scene);
+                        }
+                    }
+                }
+            }
             let _ = state.device.poll_events();
             // Follow the front panel's OUT selection (TotalMix
             // highlights the panel's current submix) — only when it
@@ -2786,6 +2845,12 @@ fn strip_params<'a>(
 /// cadence without feeling laggy.
 const RESIZE_THROTTLE: Duration = Duration::from_millis(16);
 
+/// How often `Message::Tick` probes whether the device is still there
+/// (`RmeDevice::is_connected`): the tick itself runs at 20 Hz, and a card
+/// does not vanish between two frames. Doubles as the reconnect retry
+/// cadence while disconnected.
+const CONN_CHECK_MS: u64 = 1000;
+
 /// Apply the stashed resize width to `window_width`/`ui_scale`, but at most
 /// once per `RESIZE_THROTTLE` — see `Message::WindowResized` and the const
 /// above for why. No-op when there's nothing pending or the throttle window
@@ -3677,14 +3742,16 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
     // One centered group when it fits, as the view is meant to be read as a
     // single sentence instead of a page of controls; the scrolling page the
     // other views use is the fallback for small windows and a zoomed-in UI.
-    // The height is per unit of `scale`, so it grows with the zoom the same
-    // way the content it measures does.
+    // Centered *horizontally* only: centering it vertically too left a dead
+    // band between the top bar and the QUICK CONTROL header that read as a
+    // layout bug (asked to be removed, 2026-10-16). The height is per unit
+    // of `scale`, so it grows with the zoom the same way the content it
+    // measures does.
     let content = responsive(move |size| {
         let needed = (QUICK_CHROME + QUICK_STRIP_UNIT * QUICK_SCALE_MULT) * scale;
         if size.height >= needed {
             container(build_content())
                 .center_x(Length::Fill)
-                .center_y(Length::Fill)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into()
@@ -3981,6 +4048,39 @@ mod tests {
         let _ = update(&mut state, Message::GroupClear);
         assert!(state.groups.iter().all(|g| g.members.is_empty()));
         assert!(!state.group_editing);
+    }
+
+    /// The chip's word maps the connection state in priority order: a
+    /// disconnect outranks everything, then the mock's own "Simulated"
+    /// (it is the loudest fact about the connection, even when the mock
+    /// imitates a class-compliant card). The two real words only exist
+    /// on real hardware, where they were verified live.
+    #[test]
+    fn device_state_reports_the_personality_and_a_disconnect() {
+        let mut state = new(true, None, None);
+        assert_eq!(crate::sidebar::device_state(&state).1, "Simulated");
+
+        // The mock keeps its own word even when it imitates the
+        // class-compliant feature set (`TUXMIX_MOCK_CC=1 --mock`).
+        state.device.set_protocol_features(false);
+        assert_eq!(crate::sidebar::device_state(&state).1, "Simulated");
+
+        state.device.set_connected(false);
+        let _ = update(&mut state, Message::Tick);
+        assert!(!state.connected, "the tick probe must see the disconnect");
+        assert_eq!(crate::sidebar::device_state(&state).1, "Disconnected");
+        assert_eq!(
+            crate::sidebar::device_state(&state).0,
+            crate::theme::MRED,
+            "a disconnect is the red state, not the amber ones"
+        );
+
+        // `--mock` was explicit here, so the probe must not try to
+        // "reconnect" to hardware that was never asked for: force the
+        // throttle open and tick again.
+        state.last_conn_check = None;
+        let _ = update(&mut state, Message::Tick);
+        assert!(!state.connected, "explicit --mock never reconnects");
     }
 
     #[test]

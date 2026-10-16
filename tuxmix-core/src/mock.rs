@@ -39,6 +39,11 @@ pub struct MockBabyfacePro {
     /// (any value, even empty) so the gated UI can be looked at without a
     /// class-compliant card, and flippable at runtime for tests.
     protocol_features: bool,
+    /// Whether this mock answers as a device that is still plugged in
+    /// (see `RmeDevice::is_connected`). Seeded from
+    /// `TUXMIX_MOCK_DISCONNECT` so the disconnected chip can be looked at
+    /// without unplugging anything, and flippable at runtime for tests.
+    connected: bool,
 }
 
 impl MockBabyfacePro {
@@ -46,6 +51,12 @@ impl MockBabyfacePro {
     /// back at the full one. See the field's own comment.
     pub fn set_protocol_features(&mut self, on: bool) {
         self.protocol_features = on;
+    }
+
+    /// Point this mock at "unplugged", or back. See the field's own
+    /// comment.
+    pub fn set_connected(&mut self, on: bool) {
+        self.connected = on;
     }
 
     fn update_meters(&mut self) {
@@ -134,6 +145,10 @@ impl RmeDevice for MockBabyfacePro {
         self.protocol_features
     }
 
+    fn is_connected(&self) -> bool {
+        self.connected
+    }
+
     fn open() -> Result<Self, Error> {
         // Same topology as the real device, plus a mock-only demo
         // default: the first two (Mic) inputs start with phantom power
@@ -193,6 +208,10 @@ impl RmeDevice for MockBabyfacePro {
             // class-compliant personality's feature set, which is how the
             // gated UI is screenshotted without unplugging anything.
             protocol_features: std::env::var_os("TUXMIX_MOCK_CC").is_none(),
+            // `TUXMIX_MOCK_DISCONNECT=1` (or any value) is how the
+            // disconnected chip is screenshotted without unplugging
+            // anything.
+            connected: std::env::var_os("TUXMIX_MOCK_DISCONNECT").is_none(),
         })
     }
 

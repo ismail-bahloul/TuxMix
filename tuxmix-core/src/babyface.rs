@@ -356,6 +356,11 @@ pub struct BabyfacePro {
     /// change personality without re-enumerating (the PC/CC toggle is
     /// a power-on button combo, see `PROTOCOL.md`).
     grammar: ControlGrammar,
+    /// The kernel's enumeration number of the USB device this mixer was
+    /// opened on (see `AlsaMixer::card_devnum`): a re-created card comes
+    /// back on the same ALSA index with the same names, so this is what
+    /// `is_connected` has to tell "still ours" apart with.
+    card_devnum: Option<String>,
     profile: &'static DeviceProfile,
     inputs: Vec<InputChannel>,
     playbacks: Vec<PlaybackChannel>,
@@ -1183,6 +1188,20 @@ impl RmeDevice for BabyfacePro {
         self.grammar != ControlGrammar::ClassCompliant
     }
 
+    /// Card still resolvable (the unplug case ends here, silently), and
+    /// still the same *enumeration*: a re-created card (replug,
+    /// personality switch) comes back on the same ALSA index with the
+    /// same names while our mixer keeps answering from a fd the old card
+    /// no longer backs, and the USB `devnum` is the one thing that
+    /// moves. A mixer iteration cannot tell: snd_mixer caches its
+    /// element list, so it yields elements long after the card is gone
+    /// (checked against a live personality switch, 2026-10-16: the chip
+    /// kept saying "Proprietary" for a class-compliant card).
+    fn is_connected(&self) -> bool {
+        AlsaMixer::resolve_card(PROFILE.card_substring).is_some()
+            && AlsaMixer::card_devnum(self.mixer.card_name()) == self.card_devnum
+    }
+
     fn open() -> Result<Self, Error> {
         info!("Searching for RME Babyface Pro...");
         let profile = &PROFILE;
@@ -1227,6 +1246,7 @@ impl RmeDevice for BabyfacePro {
             log::warn!("Could not open the capture PCM for AN1/AN2 level metering — meters will read N/A");
         }
         let mut device = Self {
+            card_devnum: AlsaMixer::card_devnum(mixer.card_name()),
             mixer,
             grammar,
             capture_meter,
@@ -2303,6 +2323,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The identity probe's failure modes: a name that cannot be a card
+    /// and an index no card occupies both resolve to no `devnum`, which
+    /// `is_connected` reads as "not ours".
+    #[test]
+    fn card_devnum_is_none_for_a_missing_card() {
+        assert!(AlsaMixer::card_devnum("nonsense").is_none());
+        assert!(AlsaMixer::card_devnum("hw:99").is_none());
+    }
+
+    /// The "card is gone" half of the ALSA liveness probe: a name nothing
+    /// matches must resolve to nothing, which is what makes the chip show
+    /// Disconnected. (The "card is there" half needs the real card and is
+    /// covered live.)
+    #[test]
+    fn resolve_card_finds_nothing_for_a_missing_name() {
+        assert!(AlsaMixer::resolve_card("TuxMix No Such Card").is_none());
     }
 
     #[test]

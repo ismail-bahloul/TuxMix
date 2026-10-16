@@ -3050,3 +3050,43 @@ Passe de layout sur les zones qui se lisaient comme improvisées :
 Vérifié : `cargo test --workspace` (185), captures (mark dans la barre et
 About, languette mesurée au pixel), binaires release reconstruits. Pas
 touché : la palette du TUI.
+
+## 2026-10-16 (suite 5) : l'état device devient vivant, la puce se range, Quick se recolle en haut
+
+La puce était la dernière chose qui ment : une carte débranchée en pleine
+session gardait son ancienne personnalité pour toujours, parce qu'un handle
+mixer/USB ouvert continue de répondre après que la carte soit partie.
+
+`RmeDevice::is_connected` (défaut `true` : un backend qui ne peut pas savoir
+doit continuer à supposer le mieux plutôt que clignoter une fausse
+déconnexion). **ALSA** : la carte doit encore se résoudre par nom ET son
+`devnum` USB (enregistré à l'ouverture) doit encore correspondre — une carte
+ré-énumérée réutilise l'index, l'id et tous les noms, seul le `devnum` bouge.
+Piège attrapé en live : la première version testait le handle lui-même via une
+itération du mixer, sauf que `snd_mixer` **met sa liste d'éléments en cache**
+— elle répond encore sur un fd mort, la sonde disait "connecté" et la puce est
+restée sur "Proprietary" pour une carte passée en CC (reproduit, puis corrigé).
+**USB** : une ré-énumération doit retrouver la même `(bus, adresse)` que le
+handle. **Mock** : flag + `TUXMIX_MOCK_DISCONNECT`. Le GUI sonde une fois par
+seconde dans son Tick existant, affiche **Disconnected** en rouge (au-dessus
+des mots de personnalité et du "Simulated" du mock), et **se reconnecte seul**
+par le même chemin de backend qu'au démarrage, en ré-appliquant la scène
+auto-sauvegardée comme au lancement. Les deux délégués `DeviceHandle` (GUI et
+TUI) sont câblés — sans eux le défaut du trait (`true`) répondait en silence,
+exactement le piège de la passe Class Compliant.
+
+Puce : pleine largeur comme les autres rangées de la colonne, sur deux lignes
+(une seule ligne fait passer "Class Compliant" à la ligne à la largeur par
+défaut, vu en live), les mots deviennent **Proprietary / Class Compliant /
+Simulated / Disconnected** et la flèche décorative (jamais cliquable) a
+disparu. About dit les mêmes quatre mots dans sa ligne `Driving X (...)`.
+
+Quick : le contenu est aligné en haut au lieu d'être centré verticalement, ce
+qui laissait une bande morte entre la barre du haut et l'en-tête QUICK
+CONTROL.
+
+Vérifié : 189 tests (cartographie des états, modes d'échec du `devnum`, sonde
+d'adresse USB, jamais de reconnexion en `--mock` explicite), débranchement /
+rebranchement et bascule de mode en live sur la vraie carte, captures. Pas
+touché : l'indicateur côté TUI (le délégué est en place, une ligne de footer
+suffirait).

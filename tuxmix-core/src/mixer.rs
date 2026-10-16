@@ -52,9 +52,26 @@ impl AlsaMixer {
     /// Reads `/proc/asound/cards` first to avoid spurious ALSA library
     /// error messages when probing non-existent card indices.
     pub fn open_by_card_name(card_substring: &str) -> Result<Self, Error> {
-        let card_list = read_card_list();
+        match Self::resolve_card(card_substring) {
+            Some((card_name, name)) => {
+                info!("Detected target device: {} ({})", name, card_name);
+                let mixer = Mixer::new(&card_name, false)?;
+                let _ = mixer.find_selem(&SelemId::new("", 0));
+                Ok(Self { mixer, card_name })
+            }
+            None => Err(Error::DeviceNotFound {
+                model: card_substring.to_string(),
+            }),
+        }
+    }
 
-        for (card_idx, _name) in &card_list {
+    /// The scan half of `open_by_card_name`, opening nothing: the
+    /// `(card_name, card_info_name)` of the first card whose name
+    /// contains `card_substring`. Kept quiet on purpose: this is what the
+    /// once-a-second liveness probe (see `RmeDevice::is_connected`) runs,
+    /// and the `info!` belongs to the open, not to the scan.
+    pub(crate) fn resolve_card(card_substring: &str) -> Option<(String, String)> {
+        for (card_idx, _name) in &read_card_list() {
             let card_name = format!("hw:{}", card_idx);
 
             let ctl = match Ctl::new(&card_name, false) {
@@ -71,16 +88,27 @@ impl AlsaMixer {
             debug!("Found ALSA card: {} — {}", card_name, name);
 
             if name.contains(card_substring) {
-                info!("Detected target device: {} ({})", name, card_name);
-                let mixer = Mixer::new(&card_name, false)?;
-                let _ = mixer.find_selem(&SelemId::new("", 0));
-                return Ok(Self { mixer, card_name });
+                return Some((card_name, name));
             }
         }
 
-        Err(Error::DeviceNotFound {
-            model: card_substring.to_string(),
-        })
+        None
+    }
+
+    /// The kernel's enumeration number (`devnum`) of the USB device behind
+    /// an ALSA card (`hw:N`). It increments on every re-enumeration, while
+    /// a re-created card reuses the very same ALSA index and names: this
+    /// is the one thing that tells a replug or a personality switch apart
+    /// from the card a mixer handle was opened on. `None` when the card is
+    /// gone, is not USB, or its sysfs entry cannot be read.
+    pub(crate) fn card_devnum(card_name: &str) -> Option<String> {
+        let idx = card_name.strip_prefix("hw:")?;
+        let device = std::fs::canonicalize(format!("/sys/class/sound/card{idx}/device")).ok()?;
+        // `.../usb1/1-2/1-2:1.0` — the USB device is the interface's
+        // parent, and `devnum` lives there.
+        let usb_device = device.parent()?;
+        let devnum = std::fs::read_to_string(usb_device.join("devnum")).ok()?;
+        Some(devnum.trim().to_string())
     }
 
     /// Find a mixer element by name.

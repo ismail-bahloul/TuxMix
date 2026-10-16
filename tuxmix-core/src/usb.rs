@@ -531,6 +531,14 @@ impl RmeDevice for BabyfaceProUsb {
         "Babyface Pro FS (USB)"
     }
 
+    /// The USB bus is the authority here: an open libusb handle keeps
+    /// answering after the unit is unplugged, so a fresh enumeration
+    /// checks `(bus, address)` against the one this handle was opened on
+    /// (see `BabyfaceUsb::is_connected`).
+    fn is_connected(&self) -> bool {
+        self.dev.is_connected()
+    }
+
     /// Same physical device as `BabyfacePro` (the ALSA/kernel-driver
     /// backend) — its own topology (`inputs` above) matches
     /// `profiles::babyface_pro::PROFILE`'s channel count/types/order

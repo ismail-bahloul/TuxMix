@@ -168,6 +168,18 @@ pub trait RmeDevice {
         true
     }
 
+    /// Whether the device this handle was opened on is still there, and
+    /// still the same one. A card that was unplugged (or re-enumerated
+    /// under a new card index, e.g. by a personality switch) keeps
+    /// answering a mixer or USB handle it was opened from: only a fresh
+    /// lookup sees the difference, so the UI polls this instead of
+    /// trusting the handle. Defaults to `true`, since a backend that
+    /// cannot tell must keep assuming the best rather than flashing a
+    /// false "disconnected".
+    fn is_connected(&self) -> bool {
+        true
+    }
+
     /// Number of physical stereo output pairs on this device.
     fn output_pair_count(&self) -> usize;
 
