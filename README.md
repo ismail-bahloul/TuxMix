@@ -1,5 +1,7 @@
 # TuxMix: a TotalMix-class mixer for RME interfaces
 
+<img src="assets/tuxmix.svg" width="140" alt="TuxMix: the mark on a dark tile">
+
 TuxMix is an open-source control application for RME audio interfaces,
 starting with the **Babyface Pro FS**.  It brings the TotalMix
 experience to Linux, without the RME Windows software: routing, gains,
