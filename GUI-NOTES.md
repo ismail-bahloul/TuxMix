@@ -2807,6 +2807,16 @@ par `inkscape --export-width` (c'est ce même export qui donne
 `icon.rs` embarque). Le fichier passe de 30 Ko à 7,2 Ko, et le test
 `the_packaged_icon_decodes_as_256_rgba` continue de passer.
 
+Deux retouches plus tard (le stop du bas passé de `#333333` à `#1d1d1d`,
+puis la tuile carrément en noir plein, `bg` supprimé), le nettoyage est
+devenu un outil du repo : `tools/clean-icon-svg.py`, avec toute la chaîne
+dans son docstring. Chaque export passe par les mêmes contrôles : fichier
+nettoyé pixel-identique à l'export (AE 0), et diff contre l'icône
+précédente cerné dans une boîte pour vérifier que seule la retouche
+annoncée a bougé (0,7% des pixels dans la moitié basse de la tuile pour la
+première, 1018 pixels dans une boîte de 220x24 en bas de tuile pour la
+seconde).
+
 Réserve signalée, pas masquée : le mark n'est plus lisible sous 32px
 (planche 16/22/24/32/48/64/128/256 et zooms pixel du 16/22/32) ; à 16-22px
 il ne reste que la silhouette de la tuile et une tache claire, ce qui est le
@@ -2815,5 +2825,17 @@ taille demandée, donc c'est ce rendu-là qui arrive dans la barre de tâches.
 
 Icônes locales (`~/.local/share/icons/hicolor` + le `.desktop`) mises à jour
 et `plasma-plasmashell.service` redémarré pour vider le cache : l'entrée de
-la barre de tâches montre bien la tuile. La version AUR, elle, livrera
-encore l'ancienne icône jusqu'à son prochain `pkgrel`.
+la barre de tâches montre bien la tuile.
+
+**L'AUR en `0.1.0-2`, même jour.** Vérifié avant de promettre quoi que ce
+soit : le PKGBUILD compile depuis l'archive du tag `v0.1.0`, et ce tag est
+antérieur au mark, donc les utilisateurs AUR installaient encore l'icône
+placeholder du premier release, et une montée de `pkgrel` seule n'y
+changeait rien. D'où `pkgrel=2` en portant les trois fichiers d'icône dans
+le dépôt AUR lui-même (ils y sont `source` à part entière, checksummés) :
+c'est la définition d'un `pkgrel`, un changement d'empaquetage à binaires
+identiques, et les utilisateurs l'ont au prochain `-Syu` sans attendre une
+version. À faire au prochain release : retirer ces trois sources et
+remettre les chemins `tuxmix-gui/assets/` dans `package()`, l'archive les
+fournira. Le dossier `aur/tuxmix/` du repo principal garde la copie prête à
+pousser (PKGBUILD + `.SRCINFO` + les trois fichiers).
