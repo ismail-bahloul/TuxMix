@@ -7,27 +7,32 @@
 //! `input_peaks()` (`tuxmix-usb`), just a different audio source (ALSA
 //! capture instead of the raw isochronous stream it already owns).
 //!
-//! **Scope: AN1-AN4 (capture channels 0-3).** The kernel driver maps
-//! app capture channel `i` to device word `i` for `i < 4`
-//! (`babyface_capture_copy`'s own map), and words 0-3 are the analog
-//! inputs' record buses. IN3/IN4 (channels 2/3) are the PH3/4 record
-//! bus: it carries the instrument inputs at idle, but the PH3/4 output
-//! bus once that output's loopback is on, since the loopback taps the
-//! output bus into the same record pair. So these are record-bus
-//! levels, not strictly raw input levels, when loopback is in use.
+//! **Mapping, confirmed live on 2026-10-17** by playing a 1 kHz tone on
+//! PB1 and enabling the device's own loopback on one output pair at a
+//! time (no external source needed). The capture channels are the
+//! output pairs' record buses:
 //!
-//! The reader still drains all twelve capture channels, even though only
-//! the first four are mapped to strips. Setting `TUXMIX_METER_DEBUG=1`
-//! prints every channel's level once a second: that is how the remaining
-//! mappings are confirmed on hardware, by feeding a known signal into
-//! one digital input at a time and watching which index moves. Channels
-//! 4-9 are the digital inputs (device words 6-11), 10/11 are the FX send
-//! (the driver's comment also calls them a fixed-gain playback tap), and
-//! words 4/5, where a separate SPDIF pair could sit, read as a fixed
-//! marker in the record stream. Showing any of those on a strip before
-//! the mapping is confirmed would risk attributing a level to the wrong
-//! physical input, worse than the honest "N/A" this falls back to (see
-//! `DeviceHandle::has_input_meter` in `tuxmix-gui`).
+//! | capture | input strip |
+//! |---------|-------------|
+//! | 0/1     | AN1/2       |
+//! | 2/3     | IN3/4 (PH3/4 record bus) |
+//! | 4/5     | ADAT3/4     |
+//! | 6/7     | ADAT5/6     |
+//! | 8/9     | ADAT7/8     |
+//! | 10/11   | playback tap / FX send, not an input |
+//!
+//! AS1/2 is absent from the capture stream: its record words are 4/5,
+//! which `babyface_capture_copy` skips as a fixed marker, so that strip
+//! stays N/A until the kernel driver exposes those words.
+//!
+//! Each pair is a record bus, and the device's loopback taps an output
+//! bus into the same words, so enabling loopback on an output makes the
+//! matching input pair read that output bus too. That is a property of
+//! the record path, not a mapping error. `INPUT_FOR_CAPTURE` below is
+//! the table, shared with `BabyfacePro::meters`.
+//!
+//! `TUXMIX_METER_DEBUG=1` prints every channel once a second for future
+//! hardware checks; the normal path only uses the table.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -37,13 +42,30 @@ use std::time::Duration;
 use alsa::pcm::{Access, Format, HwParams, State, PCM};
 use alsa::{Direction, ValueOr};
 
-/// The four analog inputs mapped to strips today (AN1-AN4).
-pub(crate) const METERED_CHANNELS: usize = 4;
 /// Every channel the kernel driver can expose: 0-3 = AN1-AN4, 4-9 = the
-/// digital inputs (device words 6-11), 10/11 = the FX send (words
-/// 12/13). All of them are drained for `TUXMIX_METER_DEBUG`; only the
-/// first `METERED_CHANNELS` are exposed as input meters.
+/// digital inputs, 10/11 = the playback tap / FX send. All of them are
+/// drained; `INPUT_FOR_CAPTURE` says which are input strips.
 pub(crate) const CAPTURE_CHANNELS: usize = 12;
+
+/// Capture channel to input-strip index, or `None` for the channels that
+/// are not inputs. Confirmed live on 2026-10-17 (see the module doc
+/// comment): AN1/2, IN3/4, ADAT3/4, ADAT5/6, ADAT7/8 in order; AS1/2 is
+/// missing from the stream entirely. The last two channels are the
+/// playback tap / FX send.
+pub(crate) const INPUT_FOR_CAPTURE: [Option<usize>; CAPTURE_CHANNELS] = [
+    Some(0),
+    Some(1),
+    Some(2),
+    Some(3),
+    Some(6),
+    Some(7),
+    Some(8),
+    Some(9),
+    Some(10),
+    Some(11),
+    None,
+    None,
+];
 /// Small period so a blocked `readi()` call returns quickly enough for
 /// `Drop` to stop the thread without a noticeable shutdown delay.
 const PERIOD_FRAMES: alsa::pcm::Frames = 256;
@@ -163,10 +185,10 @@ impl CaptureMeter {
 
     /// Print every capture channel once a second when
     /// `TUXMIX_METER_DEBUG` is set, in dBFS (`-120.0` for silence).
-    /// Exists for the live mapping of the digital inputs: play a known
-    /// signal into one input at a time and watch which index moves.
-    /// Index map: 0-3 = AN1-4, 4-9 = the digital inputs (AS1/2 and
-    /// ADAT3-8, order still to be confirmed), 10/11 = the FX send.
+    /// Exists for hardware checks like the 2026-10-17 loopback mapping:
+    /// play a known signal into one bus at a time and watch which index
+    /// moves. Index map: 0/1 = AN1/2, 2/3 = IN3/4, 4/5 = ADAT3/4,
+    /// 6/7 = ADAT5/6, 8/9 = ADAT7/8, 10/11 = playback tap / FX send.
     pub fn debug_log(peaks: &[f32; CAPTURE_CHANNELS]) {
         use std::sync::OnceLock;
         use std::time::Instant;

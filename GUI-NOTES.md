@@ -3124,3 +3124,46 @@ du scrim en rouge opaque pour confirmer qu'il couvre bien toute la fenêtre
 et rien en dehors. La première capture du modal était vide, ce qui a lancé
 une fausse piste dans `stack`/`opaque` : le code réel s'est avéré correct
 une fois le binaire reconstruit. Pas touché : le reste de la top bar.
+
+## 2026-10-17 (suite 7) : la table des meters, trouvée sans source externe
+
+Le backend ALSA ne mesurait que AN1/2 parce que le lecteur ne demandait
+que deux canaux de capture. Le driver kernel expose douze canaux, mais
+seule la correspondance des deux premiers était confirmée. Pour la
+trancher sans source externe, on a utilisé le loopback du device : un ton
+1 kHz à -30 dBFS sur PB1 (déjà routé vers toutes les sorties à -6 dB),
+loopback activé sur une sortie à la fois (`amixer -c 3 cset numid=122..127
+on`), et `arecord -D hw:3,0 -f S32_LE -c 12` pendant une seconde. Le
+loopback injecte le bus de sortie dans les mots de record du même couple,
+donc le canal chaud révèle la correspondance.
+
+Table obtenue :
+
+| capture | strip |
+|---------|-------|
+| 0/1 | AN1/2 |
+| 2/3 | IN3/4 (bus PH3/4) |
+| 4/5 | ADAT3/4 |
+| 6/7 | ADAT5/6 |
+| 8/9 | ADAT7/8 |
+| 10/11 | tap de playback / FX send, pas une entrée |
+
+AS1/2 n'apparaît nulle part : son loopback n'allume que le tap direct
+10/11. Ses mots de record sont 4/5, que `babyface_capture_copy` saute
+comme marqueur fixe. Sa strip reste donc en N/A ; l'exposer demanderait
+un changement du driver kernel (passer à 14 canaux applicatifs, ou
+sacrifier le tap FX). À noter pour `babyface-pro-linux`.
+
+Côté code, `CaptureMeter` draine toujours les douze canaux, mais un
+`INPUT_FOR_CAPTURE` les mappe vers les strips (10 des 12 entrées), et
+`BabyfacePro::meters` remplit le vecteur par cette table au lieu des
+quatre premiers indices. `DeviceHandle::has_input_meter` accepte
+`0..=3` et `6..=11`, refuse 4/5, et garde `meters_available()` pour ne
+pas mentir si le PCM n'a pas pu s'ouvrir. `TUXMIX_METER_DEBUG=1` reste
+en place pour les prochaines vérifications matérielles.
+
+Vérifié : 190 tests, capture GUI avec ADAT3-8 en tracks réels et AS1/2
+en pointillés, et un ton bouclé sur ADAT3/4 qui allume bien le meter
+ADAT3/4 dans le GUI. Loopbacks remis à off et scène auto non modifiée.
+Reste ouvert : AS1/2 (driver), playback (PipeWire), sorties (N/A tant
+que toutes les sources ne sont pas mesurées), parité TUI.

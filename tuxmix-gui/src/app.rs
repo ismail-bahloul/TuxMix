@@ -411,10 +411,10 @@ impl DeviceHandle {
     /// Whether `input_meters()` is real across *every* input, not just
     /// the ones with a confirmed mapping — see `draw_meter`'s doc
     /// comment in `widgets/fader.rs`. Mock and USB always have it; the
-    /// ALSA/kernel-driver backend meters only the four analog inputs
-    /// (see `has_input_meter`), so this stays false there. The
-    /// host-computed output meters consult it: a partial set of source
-    /// meters makes their sum an underestimate, not a reading.
+    /// ALSA/kernel-driver backend meters ten of the twelve inputs (all
+    /// but AS1/2, see `has_input_meter`), so this stays false there.
+    /// The host-computed output meters consult it: a partial set of
+    /// source meters makes their sum an underestimate, not a reading.
     pub fn has_input_meters(&self) -> bool {
         match self {
             DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
@@ -423,20 +423,22 @@ impl DeviceHandle {
         }
     }
     /// Per-channel version of `has_input_meters` — real across the
-    /// board for Mock/USB; on the ALSA/kernel-driver backend, AN1-AN4
-    /// (idx 0-3) come from the card's own capture stream, provided it
-    /// opened (`BabyfacePro::meters_available`). Those four are the
-    /// analog record buses; IN3/IN4 (idx 2/3) show the PH3/4 output bus
-    /// instead while that output's loopback is on (see
-    /// `capture_meter`'s module doc comment). Every other input (AS1/2,
-    /// ADAT3-8) stays N/A until its capture-word mapping is confirmed
-    /// on hardware: a level attributed to the wrong physical input is
-    /// worse than the honest dashes.
+    /// board for Mock/USB; on the ALSA/kernel-driver backend, every
+    /// input in the capture stream (AN1-AN4 and ADAT3-8, idx 0-3 and
+    /// 6-11) is real, provided the PCM opened
+    /// (`BabyfacePro::meters_available`). AS1/2 (idx 4/5) stays N/A:
+    /// its record words are the ones the kernel driver skips, so there
+    /// is no reading to show (see `capture_meter`'s module doc
+    /// comment). Each capture pair is also the matching output pair's
+    /// record bus, so enabling that output's loopback makes the input
+    /// meter read the output bus too.
     pub fn has_input_meter(&self, idx: usize) -> bool {
         match self {
             DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
             #[cfg(feature = "alsa")]
-            DeviceHandle::Real(d) => idx < 4 && d.meters_available(),
+            DeviceHandle::Real(d) => {
+                d.meters_available() && (idx < 4 || (6..=11).contains(&idx))
+            }
         }
     }
     /// Whether `playback_meters()` is real — true only for Mock. The USB

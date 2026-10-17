@@ -371,11 +371,11 @@ pub struct BabyfacePro {
     /// which also keeps this outside `DeviceSettings` (no getter exists
     /// in [`RmeDevice`] for it, only `set_input_link`).
     linked: bool,
-    /// Real-time AN1-AN4 level metering — `None` if the capture PCM
-    /// couldn't be opened (metering is a nice-to-have, not something
-    /// that should keep the rest of the device from working). See
-    /// `capture_meter`'s own module doc comment for why this is scoped
-    /// to the analog inputs.
+    /// Real-time input level metering for every input that appears in
+    /// the capture stream — `None` if the capture PCM couldn't be opened
+    /// (metering is a nice-to-have, not something that should keep the
+    /// rest of the device from working). AS1/2 is not in that stream,
+    /// see `capture_meter`'s module doc comment.
     capture_meter: Option<crate::capture_meter::CaptureMeter>,
     /// The driver's "DIM Button Press Count" as last seen, `None` when the
     /// control does not exist (an older driver that applied DIM itself,
@@ -396,8 +396,8 @@ impl BabyfacePro {
     /// Whether the capture stream behind [`RmeDevice::meters`] opened at
     /// all. Per-channel availability is still exposed separately (see
     /// `capture_meter`'s module doc comment); this only answers "could
-    /// we meter anything", so a failed PCM open does not read as four
-    /// silent-but-live inputs.
+    /// we meter anything", so a failed PCM open does not read as a bank
+    /// of silent-but-live inputs.
     pub fn meters_available(&self) -> bool {
         self.capture_meter.is_some()
     }
@@ -1242,16 +1242,16 @@ impl RmeDevice for BabyfacePro {
 
         // Request all 12 capture channels. The kernel driver's own
         // channel map (`babyfacepro.c`'s `babyface_capture_copy`) walks
-        // `map[i]` for `i in 0..channels_requested`, so `map[0..4] ==
-        // [0, 1, 2, 3]` = the analog record buses (the only ones mapped
-        // to input strips today), while `map[4..10]` carries device
-        // words 6-11 and `map[10..12]` words 12/13. Those extra channels
-        // are what `TUXMIX_METER_DEBUG` prints for the digital mapping
-        // session (see `capture_meter`'s module doc comment).
+        // `map[i]` for `i in 0..channels_requested`; the resulting
+        // channels are the output pairs' record buses, and
+        // `capture_meter::INPUT_FOR_CAPTURE` maps them onto input strips
+        // (AN1/2, IN3/4, ADAT3/4, ADAT5/6, ADAT7/8). AS1/2 is not in the
+        // stream at all: the driver skips its words 4/5. See
+        // `capture_meter`'s module doc comment for the live mapping.
         let capture_meter =
             crate::capture_meter::CaptureMeter::start(mixer.card_name(), 48_000);
         if capture_meter.is_none() {
-            log::warn!("Could not open the capture PCM for AN1-AN4 level metering; meters will read N/A");
+            log::warn!("Could not open the capture PCM for input level metering; meters will read N/A");
         }
         let mut device = Self {
             card_devnum: AlsaMixer::card_devnum(mixer.card_name()),
@@ -2200,27 +2200,26 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
-    /// Real for AN1-AN4 (`self.inputs[0..4]`) via `capture_meter`;
-    /// every other index reads 0.0 here, but the GUI never shows that
-    /// as a real "silent" reading: `DeviceHandle::has_input_meter`
-    /// gates it back to "N/A". `None` when the capture PCM could not be
-    /// opened at all, matching the trait's own contract. The reader
-    /// drains all twelve capture channels, but only the first four are
-    /// mapped onto inputs here; the rest go to `debug_log` for the
-    /// digital mapping session. See `capture_meter`'s module doc
-    /// comment.
+    /// Real for every input in the capture stream (AN1-AN4, ADAT3-8)
+    /// via `capture_meter`; AS1/2 and the indices the table does not
+    /// cover read 0.0, but the GUI never shows that as a real "silent"
+    /// reading: `DeviceHandle::has_input_meter` gates it back to "N/A".
+    /// `None` when the capture PCM could not be opened at all, matching
+    /// the trait's own contract. See `capture_meter`'s module doc
+    /// comment for the live mapping behind `INPUT_FOR_CAPTURE`.
     fn meters(&self) -> Option<Vec<f32>> {
         let cm = self.capture_meter.as_ref()?;
         let peaks = cm.drain();
         crate::capture_meter::CaptureMeter::debug_log(&peaks);
         let mut levels = vec![0.0; self.inputs.len()];
-        for (i, v) in peaks
+        for (cap, input) in peaks
             .iter()
-            .take(crate::capture_meter::METERED_CHANNELS)
-            .enumerate()
+            .zip(crate::capture_meter::INPUT_FOR_CAPTURE)
         {
-            if let Some(slot) = levels.get_mut(i) {
-                *slot = *v;
+            if let Some(i) = input {
+                if let Some(slot) = levels.get_mut(i) {
+                    *slot = *cap;
+                }
             }
         }
         Some(levels)
