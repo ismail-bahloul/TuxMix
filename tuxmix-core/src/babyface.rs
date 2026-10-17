@@ -371,11 +371,11 @@ pub struct BabyfacePro {
     /// which also keeps this outside `DeviceSettings` (no getter exists
     /// in [`RmeDevice`] for it, only `set_input_link`).
     linked: bool,
-    /// Real-time AN1/AN2 level metering — `None` if the capture PCM
+    /// Real-time AN1-AN4 level metering — `None` if the capture PCM
     /// couldn't be opened (metering is a nice-to-have, not something
     /// that should keep the rest of the device from working). See
     /// `capture_meter`'s own module doc comment for why this is scoped
-    /// to just these two channels.
+    /// to the analog inputs.
     capture_meter: Option<crate::capture_meter::CaptureMeter>,
     /// The driver's "DIM Button Press Count" as last seen, `None` when the
     /// control does not exist (an older driver that applied DIM itself,
@@ -393,6 +393,15 @@ pub struct BabyfacePro {
 }
 
 impl BabyfacePro {
+    /// Whether the capture stream behind [`RmeDevice::meters`] opened at
+    /// all. Per-channel availability is still exposed separately (see
+    /// `capture_meter`'s module doc comment); this only answers "could
+    /// we meter anything", so a failed PCM open does not read as four
+    /// silent-but-live inputs.
+    pub fn meters_available(&self) -> bool {
+        self.capture_meter.is_some()
+    }
+
     /// Look up a crosspoint's ALSA element: `BF_SOURCES[src]` at
     /// `.index = output*14 + src`, exactly `mixer.c`'s
     /// `babyface_create_xpoints` layout.
@@ -1231,19 +1240,19 @@ impl RmeDevice for BabyfacePro {
         };
         info!("ALSA control grammar: {grammar:?}");
 
-        // Requesting just 2 capture channels (not the full 12) lands
-        // exactly on AN1/AN2: the kernel driver's own channel map
+        // Requesting just 4 capture channels (not the full 12) lands
+        // exactly on AN1-AN4: the kernel driver's own channel map
         // (`babyfacepro.c`'s `babyface_capture_copy`) walks `map[i]`
-        // for `i in 0..channels_requested`, and `map[0..2] == [0, 1]`
-        // — device words 0/1, the one mapping confirmed against real
-        // hardware (see `capture_meter`'s module doc comment).
+        // for `i in 0..channels_requested`, and `map[0..4] ==
+        // [0, 1, 2, 3]` — the analog inputs' record buses (see
+        // `capture_meter`'s module doc comment).
         let capture_meter = crate::capture_meter::CaptureMeter::start(
             mixer.card_name(),
-            2,
+            4,
             48_000,
         );
         if capture_meter.is_none() {
-            log::warn!("Could not open the capture PCM for AN1/AN2 level metering — meters will read N/A");
+            log::warn!("Could not open the capture PCM for AN1-AN4 level metering; meters will read N/A");
         }
         let mut device = Self {
             card_devnum: AlsaMixer::card_devnum(mixer.card_name()),
@@ -2192,19 +2201,19 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
-    /// Real for AN1/AN2 (`self.inputs[0]`/`[1]`) via `capture_meter`;
+    /// Real for AN1-AN4 (`self.inputs[0..4]`) via `capture_meter`;
     /// every other index reads 0.0 here, but the GUI never shows that
-    /// as a real "silent" reading — `DeviceHandle::has_input_meter`
-    /// gates it back to "N/A" for anything past index 1. See
-    /// `capture_meter`'s own module doc comment for why this doesn't
-    /// cover more channels.
+    /// as a real "silent" reading: `DeviceHandle::has_input_meter`
+    /// gates it back to "N/A". `None` when the capture PCM could not be
+    /// opened at all, matching the trait's own contract. See
+    /// `capture_meter`'s module doc comment for why the digital inputs
+    /// are not covered yet.
     fn meters(&self) -> Option<Vec<f32>> {
+        let cm = self.capture_meter.as_ref()?;
         let mut levels = vec![0.0; self.inputs.len()];
-        if let Some(cm) = &self.capture_meter {
-            for (i, v) in cm.drain().into_iter().enumerate() {
-                if let Some(slot) = levels.get_mut(i) {
-                    *slot = v;
-                }
+        for (i, v) in cm.drain().into_iter().enumerate() {
+            if let Some(slot) = levels.get_mut(i) {
+                *slot = v;
             }
         }
         Some(levels)

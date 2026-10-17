@@ -7,16 +7,24 @@
 //! `input_peaks()` (`tuxmix-usb`), just a different audio source (ALSA
 //! capture instead of the raw isochronous stream it already owns).
 //!
-//! **Scope: only AN1/AN2 (capture words 0/1) are metered.** That's the
-//! one capture-channel mapping confirmed against real hardware
-//! (`PROTOCOL.md`: "w0/1 = the AN1/2 record bus" + a live mic test).
-//! Every other physical input's word mapping is either genuinely
-//! contextual (IN3/4 share a word pair with the PH3/4 output bus's
-//! loopback signal — not a fixed channel at all) or disputed between
-//! `PROTOCOL.md` and the more recent `KERNEL-DRIVER.md`. Showing a
-//! reading for those would risk attributing a level to the wrong
-//! physical input, worse than the honest "N/A" this falls back to —
-//! see `DeviceHandle::has_input_meter` in `tuxmix-gui`.
+//! **Scope: AN1-AN4 (capture channels 0-3).** The kernel driver maps
+//! app capture channel `i` to device word `i` for `i < 4`
+//! (`babyface_capture_copy`'s own map), and words 0-3 are the analog
+//! inputs' record buses. IN3/IN4 (channels 2/3) are the PH3/4 record
+//! bus: it carries the instrument inputs at idle, but the PH3/4 output
+//! bus once that output's loopback is on, since the loopback taps the
+//! output bus into the same record pair. So these are record-bus
+//! levels, not strictly raw input levels, when loopback is in use.
+//!
+//! Everything past channel 3 is left out for now. Channels 4-9 are the
+//! digital inputs (device words 6-11), but how those words line up
+//! with the AS1/2 and ADAT3-8 strips is not confirmed (and words 4/5,
+//! where a separate SPDIF pair could sit, read as a fixed marker in the
+//! record stream); channels 10/11 are the FX send (the driver's comment
+//! also calls them a fixed-gain playback tap). Showing a reading there
+//! would risk attributing a level to the wrong physical input, worse
+//! than the honest "N/A" this falls back to (see
+//! `DeviceHandle::has_input_meter` in `tuxmix-gui`).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,9 +34,9 @@ use std::time::Duration;
 use alsa::pcm::{Access, Format, HwParams, State, PCM};
 use alsa::{Direction, ValueOr};
 
-/// AN1, AN2 — see the module doc comment for why nothing past these
-/// two is metered.
-const CONFIRMED_CHANNELS: usize = 2;
+/// AN1-AN4 — see the module doc comment for why nothing past these
+/// four is metered.
+const METERED_CHANNELS: usize = 4;
 /// Small period so a blocked `readi()` call returns quickly enough for
 /// `Drop` to stop the thread without a noticeable shutdown delay.
 const PERIOD_FRAMES: alsa::pcm::Frames = 256;
@@ -37,7 +45,7 @@ const PERIOD_FRAMES: alsa::pcm::Frames = 256;
 /// blocks, so this can't run on the UI thread) — `drain()` is the only
 /// thing the rest of `tuxmix-core` touches.
 pub struct CaptureMeter {
-    peaks: Arc<Mutex<[f32; CONFIRMED_CHANNELS]>>,
+    peaks: Arc<Mutex<[f32; METERED_CHANNELS]>>,
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -71,7 +79,7 @@ impl CaptureMeter {
         // pegging a full core within seconds of launch.
         pcm.start().ok()?;
 
-        let peaks = Arc::new(Mutex::new([0.0f32; CONFIRMED_CHANNELS]));
+        let peaks = Arc::new(Mutex::new([0.0f32; METERED_CHANNELS]));
         let stop = Arc::new(AtomicBool::new(false));
         let peaks2 = Arc::clone(&peaks);
         let stop2 = Arc::clone(&stop);
@@ -92,7 +100,7 @@ impl CaptureMeter {
                         // theoretical edge case. `unsigned_abs()` has
                         // no such hole: `i32::MIN`'s magnitude fits a
                         // `u32` fine, unlike its `i32` negation.
-                        let mut local = [0u32; CONFIRMED_CHANNELS];
+                        let mut local = [0u32; METERED_CHANNELS];
                         for frame in 0..n {
                             for (ch, slot) in local.iter_mut().enumerate() {
                                 let s = buf[frame * channels + ch].unsigned_abs();
@@ -134,15 +142,15 @@ impl CaptureMeter {
     }
 
     /// Peak level (0.0-1.0 of full scale) accumulated since the last
-    /// call, per confirmed channel — resets the accumulator, matching
+    /// call, per metered channel: resets the accumulator, matching
     /// `tuxmix-usb`'s own `input_peaks()` draining convention (poll
     /// once per UI tick, not once per channel).
-    pub fn drain(&self) -> [f32; CONFIRMED_CHANNELS] {
+    pub fn drain(&self) -> [f32; METERED_CHANNELS] {
         let Ok(mut p) = self.peaks.lock() else {
-            return [0.0; CONFIRMED_CHANNELS];
+            return [0.0; METERED_CHANNELS];
         };
         let out = *p;
-        *p = [0.0; CONFIRMED_CHANNELS];
+        *p = [0.0; METERED_CHANNELS];
         out
     }
 }
