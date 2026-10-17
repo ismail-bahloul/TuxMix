@@ -1240,17 +1240,16 @@ impl RmeDevice for BabyfacePro {
         };
         info!("ALSA control grammar: {grammar:?}");
 
-        // Requesting just 4 capture channels (not the full 12) lands
-        // exactly on AN1-AN4: the kernel driver's own channel map
-        // (`babyfacepro.c`'s `babyface_capture_copy`) walks `map[i]`
-        // for `i in 0..channels_requested`, and `map[0..4] ==
-        // [0, 1, 2, 3]` — the analog inputs' record buses (see
-        // `capture_meter`'s module doc comment).
-        let capture_meter = crate::capture_meter::CaptureMeter::start(
-            mixer.card_name(),
-            4,
-            48_000,
-        );
+        // Request all 12 capture channels. The kernel driver's own
+        // channel map (`babyfacepro.c`'s `babyface_capture_copy`) walks
+        // `map[i]` for `i in 0..channels_requested`, so `map[0..4] ==
+        // [0, 1, 2, 3]` = the analog record buses (the only ones mapped
+        // to input strips today), while `map[4..10]` carries device
+        // words 6-11 and `map[10..12]` words 12/13. Those extra channels
+        // are what `TUXMIX_METER_DEBUG` prints for the digital mapping
+        // session (see `capture_meter`'s module doc comment).
+        let capture_meter =
+            crate::capture_meter::CaptureMeter::start(mixer.card_name(), 48_000);
         if capture_meter.is_none() {
             log::warn!("Could not open the capture PCM for AN1-AN4 level metering; meters will read N/A");
         }
@@ -2205,15 +2204,23 @@ impl RmeDevice for BabyfacePro {
     /// every other index reads 0.0 here, but the GUI never shows that
     /// as a real "silent" reading: `DeviceHandle::has_input_meter`
     /// gates it back to "N/A". `None` when the capture PCM could not be
-    /// opened at all, matching the trait's own contract. See
-    /// `capture_meter`'s module doc comment for why the digital inputs
-    /// are not covered yet.
+    /// opened at all, matching the trait's own contract. The reader
+    /// drains all twelve capture channels, but only the first four are
+    /// mapped onto inputs here; the rest go to `debug_log` for the
+    /// digital mapping session. See `capture_meter`'s module doc
+    /// comment.
     fn meters(&self) -> Option<Vec<f32>> {
         let cm = self.capture_meter.as_ref()?;
+        let peaks = cm.drain();
+        crate::capture_meter::CaptureMeter::debug_log(&peaks);
         let mut levels = vec![0.0; self.inputs.len()];
-        for (i, v) in cm.drain().into_iter().enumerate() {
+        for (i, v) in peaks
+            .iter()
+            .take(crate::capture_meter::METERED_CHANNELS)
+            .enumerate()
+        {
             if let Some(slot) = levels.get_mut(i) {
-                *slot = v;
+                *slot = *v;
             }
         }
         Some(levels)

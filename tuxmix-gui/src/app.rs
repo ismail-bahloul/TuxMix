@@ -448,18 +448,20 @@ impl DeviceHandle {
     pub fn has_playback_meters(&self) -> bool {
         matches!(self, DeviceHandle::Mock(_))
     }
-    /// Output meters, computed host-side like TotalMix: each output's
-    /// level is the power sum of every routed source (inputs + playbacks)
-    /// scaled by that source's fader into the output. See
-    /// `power_sum_output_meters`'s own doc comment for the actual math —
-    /// pulled out as a free function so it's testable with deterministic
-    /// inputs, since the mock backend's own meter readings are randomized.
-    pub fn output_meters(&self) -> Vec<f32> {
+    /// Output meters, computed host-side like TotalMix from levels the
+    /// caller already drained this tick: each output's level is the
+    /// power sum of every routed source (inputs + playbacks) scaled by
+    /// that source's fader into the output. Passing the levels in
+    /// matters: the previous `output_meters()` called `input_meters()`/
+    /// `playback_meters()` itself, and those drain, so on USB and ALSA
+    /// the sum was computed from the near-empty second drain. See
+    /// `power_sum_output_meters`'s own doc comment for the math.
+    pub fn output_meters_from(&self, input_meters: &[f32], playback_meters: &[f32]) -> Vec<f32> {
         power_sum_output_meters(
             &self.inputs().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
-            &self.input_meters(),
+            input_meters,
             &self.playbacks().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
-            &self.playback_meters(),
+            playback_meters,
             self.outputs().len(),
         )
     }
@@ -500,7 +502,7 @@ impl DeviceHandle {
     }
 }
 
-/// The actual math behind `DeviceHandle::output_meters` — each output
+/// The actual math behind `DeviceHandle::output_meters_from` — each output
 /// *channel*'s level is the power sum of every input/playback source
 /// routed into it, scaled by that source's live meter reading. Pulled
 /// out as a free, pure function (rather than left inline) so it's
@@ -1564,7 +1566,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             for (i, m) in state.playback_meters.iter_mut().enumerate() {
                 m.step(pb_levels.get(i).copied().unwrap_or(0.0));
             }
-            let out_levels = state.device.output_meters();
+            let out_levels = state.device.output_meters_from(&in_levels, &pb_levels);
             for (i, m) in state.output_meters.iter_mut().enumerate() {
                 m.step(out_levels.get(i).copied().unwrap_or(0.0));
             }
