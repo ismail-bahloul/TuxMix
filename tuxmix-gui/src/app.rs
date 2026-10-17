@@ -719,7 +719,7 @@ pub enum Message {
     /// Toggles the global device settings drawer (clock source, SPDIF,
     /// sample rate).
     ToggleDevicePanel,
-    /// Toggles the About drawer (version, icon, links; see `about`).
+    /// Toggles the About modal (version, icon, links; see `about`).
     ToggleAbout,
     /// Opens the repository in the desktop's browser, from the About
     /// drawer's own link.
@@ -881,8 +881,8 @@ pub struct TuxMix {
     /// Docked drawer for global device settings (clock source, SPDIF
     /// flags) — same pattern as `show_osc_log`, see `device_panel`.
     pub show_device_panel: bool,
-    /// Docked drawer with the version, the icon and the links, the same
-    /// pattern again: see `about::about_panel`.
+    /// Whether the About modal is open: the version, the icon and the
+    /// links, layered above the whole window (see `about::about_modal`).
     pub show_about: bool,
     /// Whether the device this handle was opened on is still there, as of
     /// the last `Message::Tick` probe (`RmeDevice::is_connected`): the
@@ -1659,7 +1659,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             apply_pending_resize(state);
         }
         Message::EscapePressed => {
-            if state.editing.is_some() {
+            // Topmost thing first: the modal outranks an in-place edit.
+            if state.show_about {
+                state.show_about = false;
+            } else if state.editing.is_some() {
                 state.editing = None;
             }
         }
@@ -2227,10 +2230,18 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
     if state.show_device_panel {
         col = col.push(device_panel(state));
     }
+    let base: Element<'_, Message> = col.into();
     if state.show_about {
-        col = col.push(about::about_panel(state));
+        // The About dialog rides above the whole window, drawers included:
+        // it is a modal now, not one more docked panel (see
+        // `about::about_modal`).
+        stack(vec![base, about::about_modal(state)])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    } else {
+        base
     }
-    col.into()
 }
 
 /// A fixed-height drawer docked under the main view, listing raw OSC
@@ -2602,7 +2613,7 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
     // icon wears (see `icon::mark`), flat white like every other engaged
     // state and sized off the wordmark's own height. A missing asset just
     // falls back to the plain wordmark.
-    let brand: Element<'_, Message> = match crate::icon::mark() {
+    let brand_row: Element<'_, Message> = match crate::icon::mark() {
         Some((handle, ratio)) => {
             let mark_h = 20.0 * scale;
             row![
@@ -2624,12 +2635,22 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
             .into(),
     };
 
+    // The lockup is the way into About: the product's face opens the
+    // product's own dialog, which is also why the separate "About" button
+    // that used to sit at the far right of this bar is gone. A ghost
+    // button keeps it looking like the wordmark at rest and gives it a
+    // hover target and a pointer cursor.
+    let brand = iced::widget::button(brand_row)
+        .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+        .style(theme::ghost_button)
+        .on_press(Message::ToggleAbout);
+
     let mut bar = row![
         brand,
         tab_toggle,
-        // Everything right of here is a tool cluster: the flexible space
-        // sits in the middle, so the session chip and About group against
-        // the right edge instead of floating at whatever width the chip
+        // Everything right of here is the tool side of the bar: the
+        // flexible space sits in the middle, so the session chip stays
+        // against the right edge instead of floating at whatever width it
         // used to claim for itself.
         iced::widget::Space::new().width(Length::Fill),
     ]
@@ -2646,20 +2667,13 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
                 .on_press(Message::ToggleOscLog),
         );
     }
-    // The session chip hugs its own content (Submix + Clock) and sits with
-    // About at the right edge: it used to be stretched across
-    // `FillPortion(20)` inside a scrollable, which painted a mostly-empty
-    // recessed pill across the middle of the window and left About
-    // stranded on its far side. Content-sized, the two read as one
+    // The session chip hugs its own content (Submix + Clock) at the right
+    // edge: it used to be stretched across `FillPortion(20)` inside a
+    // scrollable, which painted a mostly-empty recessed pill across the
+    // middle of the window. Content-sized, it reads as the bar's
     // right-hand tool cluster. The scrollable went with the stretch: at
     // the chip's real width there is nothing left to overflow.
     bar = bar.push(session);
-    bar = bar.push(
-        iced::widget::button(text("About").size(theme::TEXT_MD * scale))
-            .padding([theme::SPACE_SM * scale, theme::SPACE_XL * scale])
-            .style(theme::tab_toggle(state.show_about))
-            .on_press(Message::ToggleAbout),
-    );
 
     container(bar)
         .style(theme::top_bar)
@@ -4413,7 +4427,7 @@ mod tests {
     }
 
     #[test]
-    fn about_drawer_messages_are_not_undoable() {
+    fn about_modal_messages_are_not_undoable() {
         // Both are pure UI, so neither may push an undo step. Checked through
         // the predicate rather than by dispatching, because dispatching
         // `OpenRepoUrl` would launch the machine's browser.
@@ -4424,6 +4438,21 @@ mod tests {
         let _ = update(&mut state, Message::ToggleAbout);
         assert!(state.show_about);
         assert!(state.undo_stack.is_empty());
+    }
+
+    #[test]
+    fn escape_closes_the_about_modal_before_an_edit() {
+        // The modal is the topmost thing on screen, so Escape must dismiss
+        // it without also abandoning the inline edit underneath it.
+        let mut state = new(true, None, None);
+        state.show_about = true;
+        state.editing = Some(ChannelId::Input(0));
+        let _ = update(&mut state, Message::EscapePressed);
+        assert!(!state.show_about);
+        assert_eq!(state.editing, Some(ChannelId::Input(0)));
+
+        let _ = update(&mut state, Message::EscapePressed);
+        assert_eq!(state.editing, None);
     }
 
     #[test]

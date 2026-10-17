@@ -1,7 +1,7 @@
 //! The product artwork, decoded from the same PNGs the packaging installs
 //! into the icon theme: the tile (for the window to wear, see
 //! `main::window_icon`) and the bare mark (for the in-app lockup in the
-//! top bar and the About drawer). One place decodes the assets, so the
+//! top bar and the About dialog). One place decodes the assets, so the
 //! UI and the packaging can never drift apart on which file is the icon.
 //!
 //! Decoding uses the `png` crate directly and feeds iced's codec-free
@@ -67,7 +67,7 @@ mod tests {
         assert_eq!(pixels.len(), (width * height * 4) as usize);
     }
 
-    /// The mark feeds the top bar and the About drawer: it must decode,
+    /// The mark feeds the top bar and the About dialog: it must decode,
     /// be wider than tall (the bird, not the square tile), and be the one
     /// white ink on transparency the rasterization is supposed to emit.
     /// An empty or solid-black rasterization would paint a blank box or

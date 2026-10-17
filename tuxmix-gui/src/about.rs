@@ -1,11 +1,13 @@
-//! The About drawer: what the app is, which version of it is running, and
-//! where the source lives. Same docked-drawer pattern as the device settings
-//! and the OSC log (see `device_panel`/`osc_log_panel` in `app`), toggled
-//! from the top bar, rather than a second window: this GUI has exactly one
-//! window everywhere else.
+//! The About dialog: what the app is, which version of it is running, and
+//! which device it is driving. Opened from the brand lockup in the top bar
+//! (the mark + wordmark, see `app::top_bar`), it draws as a centered modal
+//! above the whole window (see `about_modal`) rather than the docked drawer
+//! it used to be: that drawer was pushed after the page content, so on the
+//! Quick view it landed below the fold and on the Mixer view it came after
+//! every strip row.
 
-use iced::widget::{button, column, container, row, text, Space};
-use iced::{Element, Length};
+use iced::widget::{button, column, container, mouse_area, opaque, row, stack, text, Space};
+use iced::{Alignment, Background, Color, Element, Length};
 
 use tuxmix_core::RmeDevice;
 
@@ -15,6 +17,11 @@ use crate::theme;
 /// Where the source and the releases live: the same URL `tuxmix.desktop`
 /// carries as its homepage, and the one the AUR package points at.
 pub const REPO_URL: &str = "https://github.com/ismail-bahloul/TuxMix";
+
+/// The card's width cap at `ui_scale == 1.0`: wide enough for the repo URL
+/// on one line, narrow enough to read as a dialog, and capped rather than
+/// fixed so a narrow window shrinks it instead of clipping it.
+const CARD_W: f32 = 420.0;
 
 fn header(scale: f32) -> Element<'static, Message> {
     row![
@@ -28,11 +35,15 @@ fn header(scale: f32) -> Element<'static, Message> {
             .on_press(Message::ToggleAbout),
     ]
     .spacing(theme::SPACE_MD * scale)
-    .align_y(iced::Alignment::Center)
+    .align_y(Alignment::Center)
     .into()
 }
 
-pub fn about_panel(state: &TuxMix) -> Element<'_, Message> {
+/// The whole overlay: a dimming scrim that closes on click and blocks the
+/// window behind it, with the card centered above it. Both layers are
+/// `opaque`, so a click inside the card (its padding included) never falls
+/// through to the scrim and closes the dialog under the cursor.
+pub fn about_modal(state: &TuxMix) -> Element<'_, Message> {
     let scale = state.ui_scale;
 
     // Which build, and which device it is driving right now, in which
@@ -70,7 +81,7 @@ pub fn about_panel(state: &TuxMix) -> Element<'_, Message> {
                 .size(theme::TEXT_MD * scale),
         ]
         .spacing(theme::SPACE_LG)
-        .align_y(iced::Alignment::Center),
+        .align_y(Alignment::Center),
         text("Open-source TotalMix replacement for RME audio interfaces")
             .color(theme::TEXT_SEC)
             .size(theme::TEXT_XS * scale),
@@ -88,12 +99,9 @@ pub fn about_panel(state: &TuxMix) -> Element<'_, Message> {
     ]
     .spacing(theme::SPACE_SM * scale);
 
-    // The mark next to the identity block, the one place in the app where
-    // the product gets to show its face (the working views stay clean).
-    // Same asset the window icon wears, decoded by the crate's own `png`
-    // decoder and shown through iced's codec-free image widget: the full
-    // `image` feature would pull ~79 crates of decoders for one
-    // decoration. A missing asset just drops the mark.
+    // The mark beside the identity block: the same asset the window icon
+    // wears, decoded by the crate's own `png` decoder and shown through
+    // iced's codec-free image widget (see `icon::mark`).
     let identity_row: Element<'_, Message> = match crate::icon::mark() {
         Some((handle, ratio)) => {
             let mark_h = 44.0 * scale;
@@ -105,22 +113,52 @@ pub fn about_panel(state: &TuxMix) -> Element<'_, Message> {
                 identity,
             ]
             .spacing(theme::SPACE_XL * scale)
-            .align_y(iced::Alignment::Center)
+            .align_y(Alignment::Center)
             .into()
         }
         None => identity.into(),
     };
 
-    // Sized by its content, like the device settings drawer: every line here
-    // is static, so there is nothing to settle and no reason for a fixed
-    // height that would have to be re-tuned by eye at every type size.
-    container(
-        column![header(scale), identity_row]
-            .spacing(theme::SPACE_LG * scale)
-            .width(Length::Fill),
-    )
-    .style(theme::top_bar)
-    .padding(theme::SPACE_MD * scale)
+    let card = opaque(
+        container(
+            column![header(scale), identity_row]
+                .spacing(theme::SPACE_LG * scale)
+                .width(Length::Fill),
+        )
+        .style(theme::dialog)
+        .padding(theme::SPACE_XL * scale)
+        .width(Length::Fill)
+        .max_width(CARD_W * scale),
+    );
+
+    // The scrim is the invisible half of the modal: dim it, catch the
+    // click that closes the dialog, and keep every event from reaching
+    // the window underneath.
+    let scrim = opaque(
+        mouse_area(
+            container(Space::new().width(Length::Fill).height(Length::Fill)).style(
+                |_theme: &iced::Theme| container::Style {
+                    background: Some(Background::Color(Color {
+                        a: 0.55,
+                        ..Color::BLACK
+                    })),
+                    ..container::Style::default()
+                },
+            ),
+        )
+        .on_press(Message::ToggleAbout),
+    );
+
+    stack(vec![
+        scrim,
+        container(card)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+    ])
     .width(Length::Fill)
+    .height(Length::Fill)
     .into()
 }

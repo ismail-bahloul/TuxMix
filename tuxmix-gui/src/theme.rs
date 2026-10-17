@@ -157,6 +157,30 @@ pub fn panel(_theme: &iced::Theme) -> container::Style {
     }
 }
 
+/// A floating dialog card: the same graphite surface as `panel`, plus a
+/// drop shadow so it reads as raised above the window instead of drawn
+/// into it. First user: the About modal (`about::about_modal`).
+pub fn dialog(_theme: &iced::Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(SURFACE)),
+        border: Border {
+            color: BORDER,
+            width: 1.0,
+            radius: RADIUS_MD.into(),
+        },
+        text_color: Some(TEXT_PRIMARY),
+        shadow: Shadow {
+            color: Color {
+                a: 0.55,
+                ..Color::BLACK
+            },
+            offset: iced::Vector::new(0.0, 10.0),
+            blur_radius: 30.0,
+        },
+        snap: false,
+    }
+}
+
 /// Linear-interpolates `base` toward `tint` by `amount` (0 = pure `base`,
 /// 1 = pure `tint`), keeping `base`'s own alpha — used to tint a strip
 /// card just enough to read as "this channel's category" at a glance

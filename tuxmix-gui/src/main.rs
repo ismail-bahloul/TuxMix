@@ -35,7 +35,7 @@ const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf")
 /// included) in the taskbar and the window list.
 const APP_ID: &str = "tuxmix";
 
-/// The window icon, from the same decoded PNG the About drawer draws (see
+/// The window icon, from the same decoded PNG the About dialog draws (see
 /// `icon`). `None` on a decode error: a missing icon is cosmetic, not a
 /// reason to fail the launch.
 fn window_icon() -> Option<window::Icon> {

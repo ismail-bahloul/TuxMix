@@ -3090,3 +3090,37 @@ d'adresse USB, jamais de reconnexion en `--mock` explicite), débranchement /
 rebranchement et bascule de mode en live sur la vraie carte, captures. Pas
 touché : l'indicateur côté TUI (le délégué est en place, une ligne de footer
 suffirait).
+
+## 2026-10-17 (suite 6) : About devient un vrai modal, ouvert par le logo
+
+Le bouton « About » du bord droit de la barre disparaît : c'est le lockup
+mark + wordmark qui ouvre désormais le dialogue, comme le logo d'une app
+ouvre ses informations. Il est enveloppé dans un `button` avec
+`theme::ghost_button` : au repos rien ne bouge (fond transparent, le texte
+garde son `ACCENT` explicite), au survol il gagne le même `SURFACE_HI` que
+le reste de la barre, et le curseur main signale qu'il est cliquable.
+
+Le panneau, lui, n'est plus un tiroir poussé après le contenu de la page
+(ce qui le mettait sous la ligne de flottaison en Quick et après toutes les
+tranches en Mixer). `view` empile maintenant `stack([base, about_modal])` :
+un scrim noir à 55 % couvre exactement la zone cliente, un clic dessus
+ferme, et la carte est centrée dans la fenêtre (`container().center_x` /
+`.center_y` sur `Fill`). La carte reprend `SURFACE`, le liseré `BORDER`, le
+rayon `RADIUS_MD` et une ombre portée (`theme::dialog`), largeur plafonnée à
+420 px pour se lire comme un dialogue et non comme une page.
+
+Deux `opaque` protègent les couches : le scrim avale les clics qui ne sont
+pas sur la carte, la carte avale ceux qui sont dedans, sinon le clic sur
+Close traverserait jusqu'au scrim et refermerait le dialogue par le
+mauvais chemin. `stack` dispatche de la couche du dessus vers le bas et
+s'arrête au premier événement capturé, donc l'ordre est le bon. Échap
+ferme le modal avant d'annuler une édition en cours (test dédié), et
+`ToggleAbout` reste non annulable.
+
+Vérifié : 190 tests workspace (69 côté GUI, dont le nouvel ordre d'Échap),
+capture du modal centré (centre carte 959,5 / 538 px contre 959,5 / 531 px
+pour la zone cliente, l'écart venant de l'ombre), et un passage temporaire
+du scrim en rouge opaque pour confirmer qu'il couvre bien toute la fenêtre
+et rien en dehors. La première capture du modal était vide, ce qui a lancé
+une fausse piste dans `stack`/`opaque` : le code réel s'est avéré correct
+une fois le binaire reconstruit. Pas touché : le reste de la top bar.
