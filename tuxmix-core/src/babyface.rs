@@ -371,11 +371,10 @@ pub struct BabyfacePro {
     /// which also keeps this outside `DeviceSettings` (no getter exists
     /// in [`RmeDevice`] for it, only `set_input_link`).
     linked: bool,
-    /// Real-time input level metering for every input that appears in
-    /// the capture stream — `None` if the capture PCM couldn't be opened
-    /// (metering is a nice-to-have, not something that should keep the
-    /// rest of the device from working). AS1/2 is not in that stream,
-    /// see `capture_meter`'s module doc comment.
+    /// Real-time input level metering for every hardware input — `None`
+    /// if the capture PCM couldn't be opened (metering is a nice-to-have,
+    /// not something that should keep the rest of the device from
+    /// working). See `capture_meter`'s module doc comment.
     capture_meter: Option<crate::capture_meter::CaptureMeter>,
     /// The driver's "DIM Button Press Count" as last seen, `None` when the
     /// control does not exist (an older driver that applied DIM itself,
@@ -1242,12 +1241,11 @@ impl RmeDevice for BabyfacePro {
 
         // Request all 12 capture channels. The kernel driver's own
         // channel map (`babyfacepro.c`'s `babyface_capture_copy`) walks
-        // `map[i]` for `i in 0..channels_requested`; the resulting
-        // channels are the output pairs' record buses, and
-        // `capture_meter::INPUT_FOR_CAPTURE` maps them onto input strips
-        // (AN1/2, IN3/4, ADAT3/4, ADAT5/6, ADAT7/8). AS1/2 is not in the
-        // stream at all: the driver skips its words 4/5. See
-        // `capture_meter`'s module doc comment for the live mapping.
+        // `map[i]` for `i in 0..channels_requested`; with the 2026-10-17
+        // map the channels are AN1/2, IN3/4, ADAT3/4, ADAT5/6, ADAT7/8
+        // and AS1/2 at 10/11, and `capture_meter::INPUT_FOR_CAPTURE`
+        // maps them onto the input strips. See `capture_meter`'s module
+        // doc comment for the live mapping.
         let capture_meter =
             crate::capture_meter::CaptureMeter::start(mixer.card_name(), 48_000);
         if capture_meter.is_none() {
@@ -2200,13 +2198,12 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
-    /// Real for every input in the capture stream (AN1-AN4, ADAT3-8)
-    /// via `capture_meter`; AS1/2 and the indices the table does not
-    /// cover read 0.0, but the GUI never shows that as a real "silent"
-    /// reading: `DeviceHandle::has_input_meter` gates it back to "N/A".
-    /// `None` when the capture PCM could not be opened at all, matching
-    /// the trait's own contract. See `capture_meter`'s module doc
-    /// comment for the live mapping behind `INPUT_FOR_CAPTURE`.
+    /// Real for every hardware input (AN1-AN4, AS1/2, ADAT3-8) via
+    /// `capture_meter`; the GUI gates a failed capture open back to
+    /// "N/A" through `DeviceHandle::has_input_meter`. `None` when the
+    /// capture PCM could not be opened at all, matching the trait's own
+    /// contract. See `capture_meter`'s module doc comment for the live
+    /// mapping behind `INPUT_FOR_CAPTURE`.
     fn meters(&self) -> Option<Vec<f32>> {
         let cm = self.capture_meter.as_ref()?;
         let peaks = cm.drain();

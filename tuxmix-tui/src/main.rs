@@ -323,10 +323,12 @@ impl DeviceHandle {
             DeviceHandle::Usb(_) => vec![0.0; n],
         }
     }
-    /// Whether `input_meters()` is real across *every* input — see
-    /// `tuxmix-gui`'s identical method. Mock and USB always have it; the
-    /// ALSA backend meters ten of the twelve inputs (all but AS1/2), so
-    /// this stays false there for the host-computed output meters.
+    /// Whether every source of the host-computed output meters is real
+    /// (all inputs plus every playback channel) — see `tuxmix-gui`'s
+    /// identical method. Mock and USB answer for themselves; the ALSA
+    /// backend now meters all twelve inputs, but playback levels depend
+    /// on the PipeWire monitor, so a full output sum is not guaranteed
+    /// there. The input strips use the per-channel `has_input_meter`.
     fn has_input_meters(&self) -> bool {
         match self {
             DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
@@ -334,16 +336,16 @@ impl DeviceHandle {
             DeviceHandle::Real(_) => false,
         }
     }
-    /// Per-channel version: the ALSA backend has real levels for every
-    /// input in its capture stream (AN1-AN4 and ADAT3-8); AS1/2 is not
-    /// in that stream. See `tuxmix-gui`'s identical method and
-    /// `tuxmix-core`'s `capture_meter` module for the live mapping.
+    /// Per-channel availability for the input strips: the ALSA backend
+    /// has real levels for all twelve inputs with the updated driver
+    /// (AS1/2 is at capture 10/11). See `tuxmix-gui`'s identical method
+    /// and `tuxmix-core`'s `capture_meter` module for the live mapping.
     fn has_input_meter(&self, idx: usize) -> bool {
         match self {
             DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
             #[cfg(feature = "alsa")]
             DeviceHandle::Real(d) => {
-                d.meters_available() && (idx < 4 || (6..=11).contains(&idx))
+                idx < d.inputs().len() && d.meters_available()
             }
         }
     }

@@ -409,13 +409,13 @@ impl DeviceHandle {
             DeviceHandle::Usb(_) => vec![0.0; n],
         }
     }
-    /// Whether `input_meters()` is real across *every* input, not just
-    /// the ones with a confirmed mapping — see `draw_meter`'s doc
-    /// comment in `widgets/fader.rs`. Mock and USB always have it; the
-    /// ALSA/kernel-driver backend meters ten of the twelve inputs (all
-    /// but AS1/2, see `has_input_meter`), so this stays false there.
-    /// The host-computed output meters consult it: a partial set of
-    /// source meters makes their sum an underestimate, not a reading.
+    /// Whether every source of the host-computed output meters is real
+    /// (all inputs plus every playback channel) — see `draw_meter`'s doc
+    /// comment in `widgets/fader.rs`. Mock and USB answer for
+    /// themselves; the ALSA backend now meters all twelve inputs, but
+    /// playback levels depend on the PipeWire monitor and the card
+    /// profile (see `pw_meter`), so a full output sum is not guaranteed
+    /// there. The input strips use the per-channel `has_input_meter`.
     pub fn has_input_meters(&self) -> bool {
         match self {
             DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
@@ -423,14 +423,14 @@ impl DeviceHandle {
             DeviceHandle::Real(_) => false,
         }
     }
-    /// Per-channel version of `has_input_meters` — real across the
-    /// board for Mock/USB; on the ALSA/kernel-driver backend, every
-    /// input in the capture stream (AN1-AN4 and ADAT3-8, idx 0-3 and
-    /// 6-11) is real, provided the PCM opened
-    /// (`BabyfacePro::meters_available`). AS1/2 (idx 4/5) stays N/A:
-    /// its record words are the ones the kernel driver skips, so there
-    /// is no reading to show (see `capture_meter`'s module doc
-    /// comment). Each capture pair is also the matching output pair's
+    /// Per-channel availability for the input strips: all twelve
+    /// inputs are real on every backend here. On the ALSA/kernel-driver
+    /// backend that means AN1-AN4, ADAT3-8 and AS1/2 (the last at app
+    /// capture channels 10/11 in the 2026-10-17 driver map, see
+    /// `capture_meter`'s module doc comment), provided the PCM opened
+    /// (`BabyfacePro::meters_available`). An older driver exposes the
+    /// playback echo tap on 10/11 instead, so AS1/2 needs the updated
+    /// driver. Each capture pair is also the matching output pair's
     /// record bus, so enabling that output's loopback makes the input
     /// meter read the output bus too.
     pub fn has_input_meter(&self, idx: usize) -> bool {
@@ -438,7 +438,7 @@ impl DeviceHandle {
             DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
             #[cfg(feature = "alsa")]
             DeviceHandle::Real(d) => {
-                d.meters_available() && (idx < 4 || (6..=11).contains(&idx))
+                idx < d.inputs().len() && d.meters_available()
             }
         }
     }

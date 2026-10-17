@@ -19,11 +19,14 @@
 //! | 4/5     | ADAT3/4     |
 //! | 6/7     | ADAT5/6     |
 //! | 8/9     | ADAT7/8     |
-//! | 10/11   | playback tap / FX send, not an input |
+//! | 10/11   | AS1/2       |
 //!
-//! AS1/2 is absent from the capture stream: its record words are 4/5,
-//! which `babyface_capture_copy` skips as a fixed marker, so that strip
-//! stays N/A until the kernel driver exposes those words.
+//! AS1/2 is capture 10/11 in the driver's 2026-10-17 map (device words
+//! 4/5, confirmed with the same loopback test). That map keeps channels
+//! 0-9 untouched and replaces the old playback echo tap (words 12/13)
+//! with AS1/2, so existing 12-channel recordings keep their order. A
+//! driver built before that date still exposes the playback tap there;
+//! this table assumes the updated driver.
 //!
 //! Each pair is a record bus, and the device's loopback taps an output
 //! bus into the same words, so enabling loopback on an output makes the
@@ -42,16 +45,14 @@ use std::time::Duration;
 use alsa::pcm::{Access, Format, HwParams, State, PCM};
 use alsa::{Direction, ValueOr};
 
-/// Every channel the kernel driver can expose: 0-3 = AN1-AN4, 4-9 = the
-/// digital inputs, 10/11 = the playback tap / FX send. All of them are
-/// drained; `INPUT_FOR_CAPTURE` says which are input strips.
+/// Every channel the kernel driver exposes: 0-3 = AN1-AN4, 4-9 = the
+/// digital inputs, 10/11 = AS1/2. All of them are drained;
+/// `INPUT_FOR_CAPTURE` maps them to input strips.
 pub(crate) const CAPTURE_CHANNELS: usize = 12;
 
-/// Capture channel to input-strip index, or `None` for the channels that
-/// are not inputs. Confirmed live on 2026-10-17 (see the module doc
-/// comment): AN1/2, IN3/4, ADAT3/4, ADAT5/6, ADAT7/8 in order; AS1/2 is
-/// missing from the stream entirely. The last two channels are the
-/// playback tap / FX send.
+/// Capture channel to input-strip index. Confirmed live on 2026-10-17
+/// (see the module doc comment): AN1/2, IN3/4, ADAT3/4, ADAT5/6,
+/// ADAT7/8, then AS1/2 at 10/11.
 pub(crate) const INPUT_FOR_CAPTURE: [Option<usize>; CAPTURE_CHANNELS] = [
     Some(0),
     Some(1),
@@ -63,8 +64,8 @@ pub(crate) const INPUT_FOR_CAPTURE: [Option<usize>; CAPTURE_CHANNELS] = [
     Some(9),
     Some(10),
     Some(11),
-    None,
-    None,
+    Some(4),
+    Some(5),
 ];
 /// Small period so a blocked `readi()` call returns quickly enough for
 /// `Drop` to stop the thread without a noticeable shutdown delay.
@@ -188,7 +189,7 @@ impl CaptureMeter {
     /// Exists for hardware checks like the 2026-10-17 loopback mapping:
     /// play a known signal into one bus at a time and watch which index
     /// moves. Index map: 0/1 = AN1/2, 2/3 = IN3/4, 4/5 = ADAT3/4,
-    /// 6/7 = ADAT5/6, 8/9 = ADAT7/8, 10/11 = playback tap / FX send.
+    /// 6/7 = ADAT5/6, 8/9 = ADAT7/8, 10/11 = AS1/2.
     pub fn debug_log(peaks: &[f32; CAPTURE_CHANNELS]) {
         use std::sync::OnceLock;
         use std::time::Instant;
@@ -234,5 +235,20 @@ impl Drop for CaptureMeter {
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::INPUT_FOR_CAPTURE;
+
+    #[test]
+    fn capture_table_covers_every_input_once() {
+        let mut seen = [false; 12];
+        for input in INPUT_FOR_CAPTURE.iter().flatten() {
+            assert!(!seen[*input], "input {input} appears twice");
+            seen[*input] = true;
+        }
+        assert!(seen.iter().all(|seen| *seen), "not every input is covered");
     }
 }

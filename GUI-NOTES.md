@@ -3232,3 +3232,29 @@ PCM sous lui), et peut faire disparaître la source d'entrée jusqu'à un
 cycle de profil. Le remède simple : choisir le profil avant de lancer
 TuxMix (l'app le lit au démarrage). Les meters PB, eux, s'adaptent au
 vol. Le TUI reste sans meters PB pour l'instant (le tap est côté GUI).
+
+## 2026-10-17 (suite 10) : AS1/2 enfin mesuré, côté driver aussi
+
+Le dernier input manquant était AS1/2. Le commentaire du driver kernel
+disait que les mots 4/5 du frame étaient un marqueur fixe, pas de
+l'audio ; le loopback du device a montré le contraire : un ton sur PB1
+avec le loopback AS1/2 actif apparaît sur les mots 4/5 (canaux de
+capture 4/5 avec la map identité), et disparaît loopback off.
+
+Map finale du driver, choisie pour ne pas casser l'existant :
+`{0,1,2,3,6,7,8,9,10,11,4,5}`, soit ch0-3 = AN1-4, ch4-9 = ADAT3-8
+(inchangés), ch10/11 = AS1/2 (mots 4/5). L'ancien tap playback (mots
+12/13) n'est plus exposé ; le PCM reste à 12 canaux, désormais tous des
+entrées. Le driver a été rebuild et installé via DKMS, et les docs
+(`KERNEL-DRIVER.md`, `PROTOCOL.md`) corrigées.
+
+Côté TuxMix, `INPUT_FOR_CAPTURE` mappe les deux derniers canaux vers les
+strips 4/5, et `has_input_meter` accepte les douze entrées (GUI et TUI).
+Un test unitaire vérifie que la table couvre chaque input exactement une
+fois. Attention : un driver antérieur au 2026-10-17 expose encore le tap
+playback sur ch10/11 ; le strip AS1/2 a alors besoin du driver mis à
+jour.
+
+Vérifié : 196 tests workspace, loopback AS1/2 qui allume le strip AS1/2
+dans le GUI (et rien sans loopback), ADAT3/4 toujours sur ch4/5, AN1/2
+sur ch0/1, PB1 via PipeWire en même temps. Release GUI reconstruit.
