@@ -38,6 +38,7 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "alsa")]
 use tuxmix_core::BabyfacePro;
 use tuxmix_core::channel::{ChannelType, EqBandType};
+use tuxmix_core::pw_meter::PlaybackTap;
 use tuxmix_core::{BabyfaceProUsb, ChannelId, MockBabyfacePro, RmeDevice};
 
 enum DeviceHandle {
@@ -367,14 +368,26 @@ impl DeviceHandle {
 /// output N/A; inputs are real per `has_input_meter`. See `tuxmix-gui`'s
 /// `output_meter_available` for the GUI version, which does have
 /// playback meters.
-fn output_meter_available(dev: &DeviceHandle, out_idx: usize) -> bool {
+/// Whether playback channel `idx` has a real level. Mock is always
+/// real; a real backend follows the PipeWire tap's channel count (2 =
+/// PB1 only, 12 = all six pairs).
+fn playback_meter_available(dev: &DeviceHandle, tap_channels: usize, idx: usize) -> bool {
+    if dev.is_mock() {
+        dev.has_playback_meters()
+    } else {
+        idx < tap_channels
+    }
+}
+
+fn output_meter_available(dev: &DeviceHandle, tap_channels: usize, out_idx: usize) -> bool {
     let one_per_pair = dev.outputs().len() == dev.output_pair_count();
     let pair = if one_per_pair { out_idx } else { out_idx / 2 };
     let inputs_ok = dev.inputs().iter().enumerate().all(|(i, ch)| {
         ch.volumes.get(pair).copied().unwrap_or(0.0) == 0.0 || dev.has_input_meter(i)
     });
-    let playbacks_ok = dev.playbacks().iter().all(|ch| {
-        ch.volumes.get(pair).copied().unwrap_or(0.0) == 0.0 || dev.has_playback_meters()
+    let playbacks_ok = dev.playbacks().iter().enumerate().all(|(i, ch)| {
+        ch.volumes.get(pair).copied().unwrap_or(0.0) == 0.0
+            || playback_meter_available(dev, tap_channels, i)
     });
     inputs_ok && playbacks_ok
 }
@@ -645,6 +658,13 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
     // auto-save in the loop + a final save on quit.
     let mut last_auto_save = Instant::now();
     let mut last_saved_json: Option<String> = None;
+    // Mock has its own generated playback levels; a real backend gets
+    // them from PipeWire's sink monitor (the same tap as the GUI).
+    let playback_tap = if dev.is_mock() {
+        PlaybackTap::disabled()
+    } else {
+        PlaybackTap::start()
+    };
     loop {
         let _ = dev.poll_events();
         if last_auto_save.elapsed() >= Duration::from_secs(3) {
@@ -675,7 +695,12 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
         }
         // Meters are draining on the USB backend — fetch once per draw.
         let in_meters = dev.input_meters();
-        let pb_meters = dev.playback_meters();
+        let (tap_levels, tap_channels) = playback_tap.drain();
+        let pb_meters = if dev.is_mock() {
+            dev.playback_meters()
+        } else {
+            tap_levels.to_vec()
+        };
         let out_meters = dev.output_meters_from(&in_meters, &pb_meters);
         term.draw(|f| {
             ui(
@@ -683,6 +708,7 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                 dev,
                 &in_meters,
                 &pb_meters,
+                tap_channels,
                 &out_meters,
                 show_matrix,
                 section,
@@ -1171,6 +1197,7 @@ fn ui(
     dev: &DeviceHandle,
     in_meters: &[f32],
     pb_meters: &[f32],
+    pb_channels: usize,
     out_meters: &[f32],
     show_matrix: bool,
     sel_sec: usize,
@@ -1256,7 +1283,6 @@ fn ui(
     } else if show_matrix {
         render_matrix(f, "Matrix Mixer", matrix_area, dev, matrix_col);
     } else {
-        let has_pb_meters = dev.has_playback_meters();
         // All three sections grouped by pair, TotalMix-style: a linked
         // pair (the default) shows as ONE entry driving both channels; a
         // split pair shows its two channels separately — see
@@ -1349,7 +1375,7 @@ fn ui(
                     label.push_str(" [SPLIT]");
                 }
                 label.push_str(&format!(" {}", pan_text(ch.pans[sel_out])));
-                (label, m, has_pb_meters)
+                (label, m, playback_meter_available(dev, pb_channels, ch_idx))
             },
         );
         let out_items = output_items(dev);
@@ -1390,7 +1416,7 @@ fn ui(
                 (
                     label,
                     out_meters.get(ch_idx).copied().unwrap_or(0.0),
-                    output_meter_available(dev, ch_idx),
+                    output_meter_available(dev, pb_channels, ch_idx),
                 )
             },
         );
@@ -2002,7 +2028,7 @@ mod tests {
         let dev = DeviceHandle::open_mock();
         // The mock has real input and playback meters, so even a fully
         // routed output can be summed without guessing.
-        assert!(output_meter_available(&dev, 0));
+        assert!(output_meter_available(&dev, 0, 0));
     }
 
     #[test]

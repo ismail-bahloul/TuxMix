@@ -27,6 +27,7 @@ pub mod mock;
 pub mod panel;
 pub mod profile;
 pub mod profiles;
+pub mod pw_meter;
 pub mod scene;
 #[cfg(feature = "usb")]
 pub mod usb;

@@ -3292,3 +3292,24 @@ Deux corrections attrapées pendant ce test :
 Vérifié : 197 tests workspace (le test TUI des sorties mock en plus),
 destination réelle en Pro Audio, N/A en stéréo, release GUI et TUI
 reconstruits.
+
+## 2026-10-17 (suite 12) : la TUI partage le tap playback
+
+Le tap `pw_meter` vivait dans `tuxmix-gui`, donc la TUI n'avait aucun
+moyen de mesurer les PB : elle affichait n/a partout et ses sorties
+restaient n/a dès qu'un playback était routé. Le module déménage dans
+`tuxmix-core` (`pub mod pw_meter`), la GUI l'importe depuis
+`tuxmix_core::pw_meter`, et la TUI démarre le même tap une fois par run
+(sauf en mock, où ses propres meters générés restent la référence).
+
+Le draw draine le tap une fois, utilise ces niveaux pour les strips PB
+et pour `output_meters_from`, et passe le nombre de canaux du tap à
+`ui`. La disponibilité PB est par canal (`playback_meter_available`) et
+la disponibilité des sorties TUI prend maintenant le tap en compte
+(`output_meter_available(dev, tap_channels, ...)`), donc les sorties
+deviennent réelles quand tous les PB routés sont couverts (12 canaux
+en Pro Audio).
+
+Vérifié : 197 tests workspace, TUI en stéréo avec PB1 à 0 % et PB2-6 en
+n/a, sorties n/a ; TUI en Pro Audio avec les six PB et les six sorties
+réelles à 0 %. Release GUI et TUI reconstruits.

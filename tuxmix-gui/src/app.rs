@@ -19,7 +19,7 @@ use tuxmix_core::{
 use crate::about;
 use crate::matrix;
 use crate::osc::{self, OscCommand, OscConfig, OscOutbound};
-use crate::pw_meter;
+use tuxmix_core::pw_meter;
 use crate::scenes::{load_scene_file, save_scene_file};
 use crate::sidebar::{self, Group};
 use crate::theme;
