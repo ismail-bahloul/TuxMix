@@ -3185,3 +3185,50 @@ de rappeler `input_meters()`/`playback_meters()`.
 Vérifié : 190 tests, lancement réel sous `script` (pty 120x40), 13 `n/a`
 (AS1/2 + 6 PB + 6 sorties) et 5 strips d'entrée réels, aucun panic.
 Release TUI reconstruit.
+
+## 2026-10-17 (suite 9) : les meters de playback via PipeWire
+
+Le device n'a pas de registre de meter pour le playback, et le tap du
+flux de capture (canaux 10/11) est un mixdown stéréo de tous les PB :
+vérifié en jouant un ton sur PB1 puis PB2 à PB6, les deux canaux
+s'allument à chaque fois, sans distinction. Impossible d'en tirer des
+meters par PB.
+
+La source correcte est le monitor du sink PipeWire, qui porte le mix de
+playback avec les mêmes canaux que le device. Deux profils :
+`stereo-fallback` expose un monitor 2 canaux (PB1 seulement), et
+`pro-audio` un monitor 12 canaux (les six paires PB1-6). La découverte
+se fait par `pactl --format=json list sources` (source dont le nom
+contient « Babyface » et finit par `.monitor`, `sample_specification`
+« s32le 12ch 48000Hz »), et on garde le monitor le plus large.
+
+La capture lance `pw-record` avec `--target <sink>` et surtout
+`--properties stream.capture.sink=true`. Piège attrapé en live : viser
+le nom du monitor directement (`--target <sink>.monitor`) ne relie pas
+le stream au monitor, PipeWire retombe silencieusement sur la source
+par défaut (le micro du laptop). Le property est ce qui demande
+vraiment la face monitor du sink.
+
+Les pics sont calculés par canal, avec soustraction de la moyenne du
+buffer avant la valeur absolue. Ce n'était pas nécessaire avec le vrai
+monitor (moyenne nulle), mais la première version liée au micro du
+laptop montrait un offset DC de 0,07 et 0,28 FS qui allumait le meter en
+permanence ; garder ce DC blocker est une assurance cheap. Un watchdog
+re-découvre le sink toutes les 2 s : sur un changement de profil le
+sink est recréé (nom et nombre de canaux changent), l'ancien `pw-record`
+reste vivant mais délié, donc il est tué et relancé. La disponibilité
+suit `playback_tap_channels` : 2 = PB1 seul, 12 = les six paires, et un
+tap absent laisse tout en `n/a`.
+
+Vérifié : 195 tests workspace (74 GUI, dont 5 pour la découverte, le
+parsing et les pics), ton stéréo à -20 dBFS sur PB1 (silence = aucune
+barre, ton = barre jusqu'à -20), passage stéréo → Pro Audio → stéréo
+avec redémarrage automatique du tap, et ton 12 canaux sur PB3 qui
+n'allume que le strip AS1/2 PB. Release GUI reconstruit.
+
+Limite à connaître : changer le profil PipeWire pendant que TuxMix
+tourne casse le capture meter d'entrée ALSA (PipeWire reconfigure le
+PCM sous lui), et peut faire disparaître la source d'entrée jusqu'à un
+cycle de profil. Le remède simple : choisir le profil avant de lancer
+TuxMix (l'app le lit au démarrage). Les meters PB, eux, s'adaptent au
+vol. Le TUI reste sans meters PB pour l'instant (le tap est côté GUI).

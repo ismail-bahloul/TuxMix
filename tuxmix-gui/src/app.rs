@@ -19,6 +19,7 @@ use tuxmix_core::{
 use crate::about;
 use crate::matrix;
 use crate::osc::{self, OscCommand, OscConfig, OscOutbound};
+use crate::pw_meter;
 use crate::scenes::{load_scene_file, save_scene_file};
 use crate::sidebar::{self, Group};
 use crate::theme;
@@ -797,6 +798,12 @@ pub struct TuxMix {
     /// uniformly regardless of data source (mock or real hardware).
     pub input_meters: Vec<MeterAnim>,
     pub playback_meters: Vec<MeterAnim>,
+    /// Host-side playback tap from PipeWire's sink monitor. Disabled in
+    /// mock mode, where the mock's own levels are authoritative.
+    pub playback_tap: pw_meter::PlaybackTap,
+    /// Monitor channel count the tap currently has (0 = not running):
+    /// 2 in the stereo profile (PB1 only), 12 in Pro Audio (all pairs).
+    pub playback_tap_channels: usize,
     /// Host-computed output levels (power sum of routed sources ×
     /// faders) — same ballistics as the input/playback meters.
     pub output_meters: Vec<MeterAnim>,
@@ -1051,6 +1058,13 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
     // Probed before the literal: `device` moves into the struct, so it
     // cannot be asked afterwards.
     let connected = device.is_connected();
+    // Mock generates its own playback levels; a real backend gets them
+    // from PipeWire's sink monitor (see `pw_meter`).
+    let playback_tap = if device.is_mock() {
+        pw_meter::PlaybackTap::disabled()
+    } else {
+        pw_meter::PlaybackTap::start()
+    };
 
     TuxMix {
         device,
@@ -1065,6 +1079,8 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         modifiers: keyboard::Modifiers::default(),
         input_meters: vec![MeterAnim::new(); n_inputs],
         playback_meters: vec![MeterAnim::new(); n_playbacks],
+        playback_tap,
+        playback_tap_channels: 0,
         output_meters: vec![MeterAnim::new(); n_outputs],
         collapsed: HashSet::new(),
         collapse_anim: HashMap::new(),
@@ -1564,7 +1580,15 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             for (i, m) in state.input_meters.iter_mut().enumerate() {
                 m.step(in_levels.get(i).copied().unwrap_or(0.0));
             }
-            let pb_levels = state.device.playback_meters();
+            // Mock owns its playback levels; every real backend reads
+            // the host mixer's sink monitor through `pw_meter`.
+            let (tap_levels, tap_channels) = state.playback_tap.drain();
+            state.playback_tap_channels = tap_channels;
+            let pb_levels = if state.device.is_mock() {
+                state.device.playback_meters()
+            } else {
+                tap_levels.to_vec()
+            };
             for (i, m) in state.playback_meters.iter_mut().enumerate() {
                 m.step(pb_levels.get(i).copied().unwrap_or(0.0));
             }
@@ -2685,6 +2709,18 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
         .into()
 }
 
+/// Whether playback channel `idx` has a real level. Mock has its own
+/// generated meters; real backends get them from the PipeWire monitor,
+/// whose channel count depends on the card profile (2 = PB1 only, 12 =
+/// all six pairs). See `pw_meter`.
+fn playback_meter_available(state: &TuxMix, idx: usize) -> bool {
+    if state.device.is_mock() {
+        state.device.has_playback_meters()
+    } else {
+        idx < state.playback_tap_channels
+    }
+}
+
 /// Builds the full `StripParams` for any channel — the field-by-field
 /// logic (which meter buffer, which overrides, which default level, pan
 /// vs. no-pan for outputs) used to be duplicated once per channel kind
@@ -2812,7 +2848,7 @@ fn strip_params<'a>(
                     .get(i)
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
-                meter_available: state.device.has_playback_meters(),
+                meter_available: playback_meter_available(state, i),
                 has_split: true,
                 split: ch.split,
                 stereo_linked: state.device.playback_linked(i / 2),
@@ -3501,7 +3537,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                     params.name = pair_bus_label(&params.name, &right.name);
                 }
                 params.meter2 = state.playback_meters.get(l + 1).map(MeterAnim::frame);
-                params.meter2_available = state.device.has_playback_meters();
+                params.meter2_available = playback_meter_available(state, l + 1);
             }
             let strip_widget = strip::strip(params);
             let mut item_width = rendered_strip_width(state, cid);

@@ -14,6 +14,7 @@ mod icon;
 mod layouts;
 mod matrix;
 mod osc;
+pub mod pw_meter;
 mod scenes;
 mod sidebar;
 mod theme;
