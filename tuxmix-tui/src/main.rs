@@ -310,7 +310,7 @@ impl DeviceHandle {
             DeviceHandle::Mock(d) => (0..n).map(|i| d.input_meter(i)).collect(),
             DeviceHandle::Usb(d) => d.meters().unwrap_or_else(|| vec![0.0; n]),
             #[cfg(feature = "alsa")]
-            DeviceHandle::Real(_) => vec![0.0; n],
+            DeviceHandle::Real(d) => d.meters().unwrap_or_else(|| vec![0.0; n]),
         }
     }
     fn playback_meters(&self) -> Vec<f32> {
@@ -323,16 +323,28 @@ impl DeviceHandle {
             DeviceHandle::Usb(_) => vec![0.0; n],
         }
     }
-    /// Whether `input_meters()` is a real per-session reading — see
-    /// `tuxmix-gui`'s identical method for the full reasoning (shared
-    /// `PROTOCOL.md` conclusion: the device has no meter registers, only
-    /// host-side computation from the ISO streams, which only the USB
-    /// backend captures).
+    /// Whether `input_meters()` is real across *every* input — see
+    /// `tuxmix-gui`'s identical method. Mock and USB always have it; the
+    /// ALSA backend meters ten of the twelve inputs (all but AS1/2), so
+    /// this stays false there for the host-computed output meters.
     fn has_input_meters(&self) -> bool {
         match self {
             DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
             #[cfg(feature = "alsa")]
             DeviceHandle::Real(_) => false,
+        }
+    }
+    /// Per-channel version: the ALSA backend has real levels for every
+    /// input in its capture stream (AN1-AN4 and ADAT3-8); AS1/2 is not
+    /// in that stream. See `tuxmix-gui`'s identical method and
+    /// `tuxmix-core`'s `capture_meter` module for the live mapping.
+    fn has_input_meter(&self, idx: usize) -> bool {
+        match self {
+            DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
+            #[cfg(feature = "alsa")]
+            DeviceHandle::Real(d) => {
+                d.meters_available() && (idx < 4 || (6..=11).contains(&idx))
+            }
         }
     }
     /// Whether `playback_meters()` is real — true only for Mock; see
@@ -342,20 +354,18 @@ impl DeviceHandle {
     fn has_playback_meters(&self) -> bool {
         matches!(self, DeviceHandle::Mock(_))
     }
-    /// Output meters, computed host-side like TotalMix: each output's
-    /// level is the power sum of every routed source (inputs + playbacks)
-    /// scaled by that source's fader into the output. See
-    /// `power_sum_output_meters`'s own doc comment for the actual math —
-    /// pulled out as a free function so it's testable with deterministic
-    /// inputs (`tuxmix-gui`'s identical fix, ported here: this file has
-    /// its own independent copy of the same `DeviceHandle`/meter logic,
-    /// not a shared one, so the same bug needed fixing twice).
-    fn output_meters(&self) -> Vec<f32> {
+    /// Output meters, computed host-side like TotalMix from levels the
+    /// caller already drained this draw. Passing them in matters:
+    /// `input_meters()`/`playback_meters()` drain on the USB and ALSA
+    /// backends, and the old `output_meters()` called them a second time,
+    /// so the sum used a near-empty second drain. See
+    /// `power_sum_output_meters`'s own doc comment for the math.
+    fn output_meters_from(&self, input_meters: &[f32], playback_meters: &[f32]) -> Vec<f32> {
         power_sum_output_meters(
             &self.inputs().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
-            &self.input_meters(),
+            input_meters,
             &self.playbacks().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
-            &self.playback_meters(),
+            playback_meters,
             self.outputs().len(),
         )
     }
@@ -364,7 +374,7 @@ impl DeviceHandle {
     }
 }
 
-/// The actual math behind `DeviceHandle::output_meters` — see
+/// The actual math behind `DeviceHandle::output_meters_from` — see
 /// `tuxmix-gui`'s identical function for the full reasoning (both
 /// crates had their own independent copy of the same buggy logic:
 /// `input_volumes`/`playback_volumes` are indexed by *output pair*
@@ -661,7 +671,7 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
         // Meters are draining on the USB backend — fetch once per draw.
         let in_meters = dev.input_meters();
         let pb_meters = dev.playback_meters();
-        let out_meters = dev.output_meters();
+        let out_meters = dev.output_meters_from(&in_meters, &pb_meters);
         term.draw(|f| {
             ui(
                 f,
@@ -1298,7 +1308,7 @@ fn ui(
                     label.push_str(" [Ø]");
                 }
                 label.push_str(&format!(" {}", pan_text(ch.pans[sel_out])));
-                (label, m, has_in_meters)
+                (label, m, dev.has_input_meter(ch_idx))
             },
         );
         let pb_items = playback_items(dev);

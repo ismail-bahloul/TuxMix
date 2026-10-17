@@ -3167,3 +3167,21 @@ en pointillés, et un ton bouclé sur ADAT3/4 qui allume bien le meter
 ADAT3/4 dans le GUI. Loopbacks remis à off et scène auto non modifiée.
 Reste ouvert : AS1/2 (driver), playback (PipeWire), sorties (N/A tant
 que toutes les sources ne sont pas mesurées), parité TUI.
+
+## 2026-10-17 (suite 8) : la TUI reçoit les mêmes meters
+
+La TUI avait sa propre copie du `DeviceHandle` et n'appelait jamais
+`RmeDevice::meters` sur le backend ALSA : tous les strips restaient en
+`n/a`. Elle utilise maintenant `d.meters()` comme le GUI, et un
+`has_input_meter` par canal (0-3 et 6-11, refus de 4/5) remplace le
+booléen global pour la disponibilité des strips d'entrée. La closure de
+`render_strips` acceptait déjà un booléen par strip, donc le rendu
+n'avait pas besoin de changer.
+
+Le double drain des meters de sortie, corrigé côté GUI, l'est aussi ici :
+`output_meters_from` prend les niveaux déjà relevés dans le draw au lieu
+de rappeler `input_meters()`/`playback_meters()`.
+
+Vérifié : 190 tests, lancement réel sous `script` (pty 120x40), 13 `n/a`
+(AS1/2 + 6 PB + 6 sorties) et 5 strips d'entrée réels, aucun panic.
+Release TUI reconstruit.
