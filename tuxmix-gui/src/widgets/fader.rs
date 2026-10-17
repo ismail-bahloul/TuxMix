@@ -603,7 +603,7 @@ const FILL_ALPHA: f32 = 0.55;
 /// progressively from green toward red above `HOT_THRESHOLD`, plus a
 /// separate clip "LED" above the track that lights up near 0 dBFS.
 /// `available` is a per-session backend capability (see `DeviceHandle::
-/// has_input_meters`/`has_playback_meters`), not a per-tick reading —
+/// has_input_meter`/`has_playback_meters`), not a per-tick reading —
 /// when `false`, the channel has no real level data on this backend
 /// (e.g. playback meters on every real backend today; input meters too
 /// on the ALSA/kernel-driver backend, see `PROTOCOL.md`'s "VU meters:

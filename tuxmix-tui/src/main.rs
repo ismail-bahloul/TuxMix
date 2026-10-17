@@ -323,30 +323,16 @@ impl DeviceHandle {
             DeviceHandle::Usb(_) => vec![0.0; n],
         }
     }
-    /// Whether every source of the host-computed output meters is real
-    /// (all inputs plus every playback channel) — see `tuxmix-gui`'s
-    /// identical method. Mock and USB answer for themselves; the ALSA
-    /// backend now meters all twelve inputs, but playback levels depend
-    /// on the PipeWire monitor, so a full output sum is not guaranteed
-    /// there. The input strips use the per-channel `has_input_meter`.
-    fn has_input_meters(&self) -> bool {
-        match self {
-            DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
-            #[cfg(feature = "alsa")]
-            DeviceHandle::Real(_) => false,
-        }
-    }
     /// Per-channel availability for the input strips: the ALSA backend
     /// has real levels for all twelve inputs with the updated driver
     /// (AS1/2 is at capture 10/11). See `tuxmix-gui`'s identical method
     /// and `tuxmix-core`'s `capture_meter` module for the live mapping.
     fn has_input_meter(&self, idx: usize) -> bool {
         match self {
-            DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
+            DeviceHandle::Mock(_) => true,
+            DeviceHandle::Usb(_) => idx < 4,
             #[cfg(feature = "alsa")]
-            DeviceHandle::Real(d) => {
-                idx < d.inputs().len() && d.meters_available()
-            }
+            DeviceHandle::Real(d) => idx < d.inputs().len() && d.meters_available(),
         }
     }
     /// Whether `playback_meters()` is real — true only for Mock; see
@@ -374,6 +360,23 @@ impl DeviceHandle {
     fn is_mock(&self) -> bool {
         matches!(self, DeviceHandle::Mock(_))
     }
+}
+
+/// Whether an output's host-computed meter is complete. The TUI has no
+/// PipeWire playback tap, so any nonzero playback crosspoint keeps the
+/// output N/A; inputs are real per `has_input_meter`. See `tuxmix-gui`'s
+/// `output_meter_available` for the GUI version, which does have
+/// playback meters.
+fn output_meter_available(dev: &DeviceHandle, out_idx: usize) -> bool {
+    let one_per_pair = dev.outputs().len() == dev.output_pair_count();
+    let pair = if one_per_pair { out_idx } else { out_idx / 2 };
+    let inputs_ok = dev.inputs().iter().enumerate().all(|(i, ch)| {
+        ch.volumes.get(pair).copied().unwrap_or(0.0) == 0.0 || dev.has_input_meter(i)
+    });
+    let playbacks_ok = dev.playbacks().iter().all(|ch| {
+        ch.volumes.get(pair).copied().unwrap_or(0.0) == 0.0 || dev.has_playback_meters()
+    });
+    inputs_ok && playbacks_ok
 }
 
 /// The actual math behind `DeviceHandle::output_meters_from` — see
@@ -1253,7 +1256,6 @@ fn ui(
     } else if show_matrix {
         render_matrix(f, "Matrix Mixer", matrix_area, dev, matrix_col);
     } else {
-        let has_in_meters = dev.has_input_meters();
         let has_pb_meters = dev.has_playback_meters();
         // All three sections grouped by pair, TotalMix-style: a linked
         // pair (the default) shows as ONE entry driving both channels; a
@@ -1388,7 +1390,7 @@ fn ui(
                 (
                     label,
                     out_meters.get(ch_idx).copied().unwrap_or(0.0),
-                    has_in_meters || has_pb_meters,
+                    output_meter_available(dev, ch_idx),
                 )
             },
         );
@@ -1480,7 +1482,7 @@ fn render_strips(
             1,
         );
         // `meter_available` is a per-session backend capability, not a
-        // per-frame reading (see `DeviceHandle::has_input_meters`/
+        // per-frame reading (see `DeviceHandle::has_input_meter`/
         // `has_playback_meters`) — a flat 0% gauge would claim "silence"
         // where the real state is "not measured on this backend", so an
         // unavailable meter renders as a dim dashed track instead.
@@ -1993,6 +1995,14 @@ mod tests {
         assert_eq!(selected_channel_id(&dev, 1, 2), ChannelId::Playback(4));
         // Item 5 (0-indexed) is the pair starting at channel 10 (ADAT7/8).
         assert_eq!(selected_channel_id(&dev, 2, 5), ChannelId::Output(10));
+    }
+
+    #[test]
+    fn mock_output_meters_are_available_when_every_source_is_metered() {
+        let dev = DeviceHandle::open_mock();
+        // The mock has real input and playback meters, so even a fully
+        // routed output can be summed without guessing.
+        assert!(output_meter_available(&dev, 0));
     }
 
     #[test]

@@ -3258,3 +3258,37 @@ jour.
 Vérifié : 196 tests workspace, loopback AS1/2 qui allume le strip AS1/2
 dans le GUI (et rien sans loopback), ADAT3/4 toujours sur ch4/5, AN1/2
 sur ch0/1, PB1 via PipeWire en même temps. Release GUI reconstruit.
+
+## 2026-10-17 (suite 11) : les meters de sortie, honnêtement
+
+Les sorties étaient toutes en N/A : un booléen global
+(`has_input_meters || has_playback_meters`) décidait pour toutes, sans
+regarder le routage. La règle est maintenant par sortie :
+`output_meter_available` parcourt les crosspoints non nuls du couple et
+exige un meter réel pour chaque source routée. Toutes les entrées le
+sont avec le driver à jour ; les PB dépendent du tap PipeWire (2 canaux
+en stéréo, 12 en Pro Audio). Si une seule source routée n'est pas
+mesurée, la sortie reste N/A au lieu d'afficher une somme partielle.
+
+Conséquence assumée : en profil stéréo, le scène par défaut route PB2-6
+à 25 %, donc les sorties restent N/A même avec un ton sur PB1. En Pro
+Audio (12 canaux), elles deviennent réelles : vérifié en Quick view, la
+destination PH3/4 s'allume avec le ton en Pro Audio et reste hachurée
+en stéréo. La TUI utilise la même règle, mais sans tap PB : toute sortie
+avec un crosspoint playback reste N/A là-bas.
+
+Deux corrections attrapées pendant ce test :
+
+- Le tap PB visait le sink par son nom ; quand le sink Pro Audio était
+  suspendu, `pw-record` retombait silencieusement sur le sink par
+  défaut (les haut-parleurs du laptop). Il découvre maintenant
+  `pactl --format=json list sinks` et passe l'index du sink à
+  `--target`, ce qui reste fiable même suspendu.
+- Le backend USB annonçait des meters réels pour les 12 entrées alors
+  que son flux ISO n'en mesure que 4 (`input_peaks()` rend quatre
+  canaux). Les entrées 4-11 sont maintenant N/A, et les sorties qui les
+  utilisent aussi.
+
+Vérifié : 197 tests workspace (le test TUI des sorties mock en plus),
+destination réelle en Pro Audio, N/A en stéréo, release GUI et TUI
+reconstruits.

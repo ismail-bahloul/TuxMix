@@ -409,37 +409,23 @@ impl DeviceHandle {
             DeviceHandle::Usb(_) => vec![0.0; n],
         }
     }
-    /// Whether every source of the host-computed output meters is real
-    /// (all inputs plus every playback channel) — see `draw_meter`'s doc
-    /// comment in `widgets/fader.rs`. Mock and USB answer for
-    /// themselves; the ALSA backend now meters all twelve inputs, but
-    /// playback levels depend on the PipeWire monitor and the card
-    /// profile (see `pw_meter`), so a full output sum is not guaranteed
-    /// there. The input strips use the per-channel `has_input_meter`.
-    pub fn has_input_meters(&self) -> bool {
-        match self {
-            DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
-            #[cfg(feature = "alsa")]
-            DeviceHandle::Real(_) => false,
-        }
-    }
-    /// Per-channel availability for the input strips: all twelve
-    /// inputs are real on every backend here. On the ALSA/kernel-driver
-    /// backend that means AN1-AN4, ADAT3-8 and AS1/2 (the last at app
-    /// capture channels 10/11 in the 2026-10-17 driver map, see
-    /// `capture_meter`'s module doc comment), provided the PCM opened
-    /// (`BabyfacePro::meters_available`). An older driver exposes the
-    /// playback echo tap on 10/11 instead, so AS1/2 needs the updated
-    /// driver. Each capture pair is also the matching output pair's
-    /// record bus, so enabling that output's loopback makes the input
-    /// meter read the output bus too.
+    /// Per-channel availability for the input strips. Mock is real
+    /// everywhere; the USB backend's ISO IN stream meters AN1-4 only
+    /// (`tuxmix-usb`'s `input_peaks()` returns four channels); the
+    /// ALSA/kernel-driver backend meters all twelve inputs (AN1-AN4,
+    /// ADAT3-8 and AS1/2 at capture channels 10/11 in the 2026-10-17
+    /// driver map, see `capture_meter`'s module doc comment), provided
+    /// the PCM opened (`BabyfacePro::meters_available`). An older
+    /// driver exposes the playback echo tap on 10/11 instead, so AS1/2
+    /// needs the updated driver. Each capture pair is also the matching
+    /// output pair's record bus, so enabling that output's loopback
+    /// makes the input meter read the output bus too.
     pub fn has_input_meter(&self, idx: usize) -> bool {
         match self {
-            DeviceHandle::Mock(_) | DeviceHandle::Usb(_) => true,
+            DeviceHandle::Mock(_) => true,
+            DeviceHandle::Usb(_) => idx < 4,
             #[cfg(feature = "alsa")]
-            DeviceHandle::Real(d) => {
-                idx < d.inputs().len() && d.meters_available()
-            }
+            DeviceHandle::Real(d) => idx < d.inputs().len() && d.meters_available(),
         }
     }
     /// Whether `playback_meters()` is real — true only for Mock. The USB
@@ -2721,6 +2707,34 @@ fn playback_meter_available(state: &TuxMix, idx: usize) -> bool {
     }
 }
 
+/// Whether an output's host-computed meter is complete: every source
+/// routed into that output pair must itself have a real meter. Inputs
+/// are all real with the updated ALSA driver; playbacks depend on the
+/// PipeWire tap's channel count (2 = PB1 only, 12 = all six pairs). An
+/// output with an unmetered nonzero crosspoint stays N/A instead of
+/// showing a partial sum.
+fn output_meter_available(state: &TuxMix, out_idx: usize) -> bool {
+    let pair = if state.device.outputs_one_per_pair() {
+        out_idx
+    } else {
+        out_idx / 2
+    };
+    let inputs_ok = state.device.inputs().iter().enumerate().all(|(i, ch)| {
+        ch.volumes.get(pair).copied().unwrap_or(0.0) == 0.0
+            || state.device.has_input_meter(i)
+    });
+    let playbacks_ok = state
+        .device
+        .playbacks()
+        .iter()
+        .enumerate()
+        .all(|(i, ch)| {
+            ch.volumes.get(pair).copied().unwrap_or(0.0) == 0.0
+                || playback_meter_available(state, i)
+        });
+    inputs_ok && playbacks_ok
+}
+
 /// Builds the full `StripParams` for any channel — the field-by-field
 /// logic (which meter buffer, which overrides, which default level, pan
 /// vs. no-pan for outputs) used to be duplicated once per channel kind
@@ -2870,11 +2884,10 @@ fn strip_params<'a>(
                     .get(i)
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
-                // Host-computed from routed sources — only as real as
-                // whichever of input/playback meters feed it (see
-                // `DeviceHandle::output_meters`).
-                meter_available: state.device.has_input_meters()
-                    || state.device.has_playback_meters(),
+                // Host-computed from routed sources: available only
+                // when every nonzero crosspoint feeding this pair has
+                // a real meter (see `output_meter_available`).
+                meter_available: output_meter_available(state, i),
                 loopback: ch.loopback,
                 stereo_linked: state.device.output_linked(i / 2),
                 mute: ch.mute,
@@ -3586,8 +3599,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                     params.name = pair_bus_label(&params.name, &right.name);
                 }
                 params.meter2 = state.output_meters.get(l + 1).map(MeterAnim::frame);
-                params.meter2_available =
-                    state.device.has_input_meters() || state.device.has_playback_meters();
+                params.meter2_available = output_meter_available(state, l + 1);
             }
             let strip_widget = strip::strip(params);
             let mut item_width = rendered_strip_width(state, cid);

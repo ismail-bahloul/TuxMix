@@ -11,15 +11,15 @@
 //!
 //! `pw-record` is the capture child: it ships with PipeWire, needs no
 //! build dependency, and can write raw S32LE to stdout. The sink is
-//! discovered through `pactl --format=json list sources` (PipeWire's
+//! discovered through `pactl --format=json list sinks` (PipeWire's
 //! Pulse compatibility, present wherever `pactl` is), and the child is
 //! told to capture the sink itself (`stream.capture.sink=true`), which
-//! links it to that sink's monitor ports. Targeting the monitor *name*
-//! directly does not work: PipeWire silently falls back to the default
-//! source instead (caught live: `pw-record --target <monitor>` linked
-//! to the laptop microphone). If either tool or the Babyface sink is
-//! missing, the meters simply stay unavailable and the rest of the app
-//! is unaffected.
+//! links it to that sink's monitor ports. The target is the sink's
+//! Pulse index, not its name: with a name, a suspended target silently
+//! falls back to the default sink instead (caught live: the Pro Audio
+//! record linked to the laptop speakers while the Babyface was
+//! suspended). If either tool or the Babyface sink is missing, the
+//! meters simply stay unavailable and the rest of the app is unaffected.
 //!
 //! The tap is disabled in mock mode: the mock generates its own playback
 //! levels and must not depend on the host's audio server.
@@ -41,11 +41,12 @@ const PERIOD_FRAMES: usize = 1024;
 /// or after the capture child exits (profile switch, unplug, etc.).
 const RETRY: Duration = Duration::from_secs(2);
 
-/// A captured PipeWire sink: its Pulse/PipeWire node name (the target
-/// for `pw-record`), plus the monitor's rate and channel count.
+/// A captured PipeWire sink: its Pulse name and index (the index is the
+/// `pw-record` target), plus the monitor's rate and channel count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Monitor {
-    target: String,
+    name: String,
+    index: u32,
     rate: u32,
     channels: usize,
 }
@@ -251,7 +252,7 @@ fn watch_monitor(
 /// like `"s32le 12ch 48000Hz"`.
 fn discover_monitor() -> Option<Monitor> {
     let output = Command::new("pactl")
-        .args(["--format=json", "list", "sources"])
+        .args(["--format=json", "list", "sinks"])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -263,17 +264,17 @@ fn discover_monitor() -> Option<Monitor> {
 }
 
 fn parse_monitor(json: &[u8]) -> Option<Monitor> {
-    let sources: serde_json::Value = serde_json::from_slice(json).ok()?;
-    let sources = sources.as_array()?;
+    let sinks: serde_json::Value = serde_json::from_slice(json).ok()?;
+    let sinks = sinks.as_array()?;
     let mut best: Option<Monitor> = None;
-    for source in sources {
-        let Some(name) = source.get("name").and_then(|v| v.as_str()) else {
+    for sink in sinks {
+        let Some(name) = sink.get("name").and_then(|v| v.as_str()) else {
             continue;
         };
-        if !name.contains("Babyface") || !name.ends_with(".monitor") {
+        if !name.contains("Babyface") {
             continue;
         }
-        let Some(spec) = source.get("sample_specification").and_then(|v| v.as_str()) else {
+        let Some(spec) = sink.get("sample_specification").and_then(|v| v.as_str()) else {
             continue;
         };
         let Some((rate, channels)) = parse_spec(spec) else {
@@ -282,11 +283,12 @@ fn parse_monitor(json: &[u8]) -> Option<Monitor> {
         if channels == 0 || channels > MAX_CHANNELS {
             continue;
         }
-        let Some(target) = name.strip_suffix(".monitor") else {
+        let Some(index) = sink.get("index").and_then(|v| v.as_u64()) else {
             continue;
         };
         let candidate = Monitor {
-            target: target.to_owned(),
+            name: name.to_owned(),
+            index: index as u32,
             rate,
             channels,
         };
@@ -318,8 +320,11 @@ fn parse_spec(spec: &str) -> Option<(u32, usize)> {
 fn spawn_record(monitor: &Monitor) -> Option<Child> {
     Command::new("pw-record")
         .arg("--target")
-        .arg(&monitor.target)
-        // Without this, `--target <sink>` still records a source; the
+        // The index (PipeWire's Pulse object serial) is the reliable
+        // target while the sink is suspended; a name falls back to the
+        // default sink, which may be an entirely different card.
+        .arg(monitor.index.to_string())
+        // Without this, the target would still record a source; the
         // property is what links the stream to the sink's monitor ports.
         .arg("--properties")
         .arg("stream.capture.sink=true")
@@ -429,28 +434,28 @@ mod tests {
     use super::{add_peaks, parse_monitor, parse_spec, MAX_CHANNELS};
 
     #[test]
-    fn picks_the_widest_babyface_monitor() {
+    fn picks_the_widest_babyface_sink() {
         let json = br#"[
-            {"name":"alsa_output.usb-RME_Babyface_Pro__x.stereo-fallback.monitor",
+            {"index":11,"name":"alsa_output.pci-0.HiFi",
              "sample_specification":"s32le 2ch 48000Hz"},
-            {"name":"alsa_input.usb-RME_Babyface_Pro__x.stereo-fallback",
+            {"index":2628,"name":"alsa_output.usb-RME_Babyface_Pro__x.stereo-fallback",
              "sample_specification":"s32le 2ch 48000Hz"},
-            {"name":"alsa_output.usb-RME_Babyface_Pro__x.pro-output-0.monitor",
+            {"index":2629,"name":"alsa_output.usb-RME_Babyface_Pro__x.pro-output-0",
              "sample_specification":"s32le 12ch 48000Hz"}
         ]"#;
-        let monitor = parse_monitor(json).expect("a Babyface monitor");
+        let monitor = parse_monitor(json).expect("a Babyface sink");
+        assert_eq!(monitor.index, 2629);
         assert_eq!(monitor.channels, 12);
         assert_eq!(monitor.rate, 48_000);
-        assert!(monitor.target.ends_with("pro-output-0"));
-        assert!(!monitor.target.ends_with(".monitor"));
+        assert!(monitor.name.ends_with("pro-output-0"));
     }
 
     #[test]
-    fn ignores_sources_that_are_not_babyface_monitors() {
+    fn ignores_sinks_that_are_not_babyface() {
         let json = br#"[
-            {"name":"alsa_output.pci-0.HiFi.monitor",
+            {"index":11,"name":"alsa_output.pci-0.HiFi",
              "sample_specification":"s32le 2ch 48000Hz"},
-            {"name":"alsa_input.usb-RME_Babyface_Pro__x",
+            {"index":12,"name":"alsa_output.usb-Other",
              "sample_specification":"s32le 12ch 48000Hz"}
         ]"#;
         assert!(parse_monitor(json).is_none());
