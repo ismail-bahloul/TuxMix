@@ -1,6 +1,6 @@
 [package]
 name = "tuxmix-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Core library for controlling RME audio interfaces (ALSA and proprietary USB backends)"
 license = "MIT"
@@ -13,7 +13,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 strum = { version = "0.26", features = ["derive"] }
 alsa = { version = "0.9", optional = true }
-tuxmix-usb = { version = "0.1.0", path = "../tuxmix-usb", optional = true }
+tuxmix-usb = { version = "0.2.0", path = "../tuxmix-usb", optional = true }
 
 [features]
 default = ["alsa"]
