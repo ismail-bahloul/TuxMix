@@ -63,6 +63,16 @@ Two ways to get sound from the Babyface Pro FS:
   `cargo run --example panel-watch` prints what the backend sees.
 - See the sibling driver repo for the kernel-side status.
 
+## Install
+
+Arch and CachyOS users can install the released package from the AUR:
+
+```sh
+paru -S tuxmix
+```
+
+On other distributions, build from source (see [Build](#build)).
+
 ## Build
 
 ```sh
