@@ -70,11 +70,10 @@ const ICON_BTN_H: f32 = 14.0;
 /// reference design), not a fixed constant — see `FlyoutKind`.
 pub(crate) const FLYOUT_W: f32 = 140.0;
 
-/// Width (at `scale == 1.0`) of the EQ flyout — wide enough for 3 knobs
-/// (freq/Q/gain) side by side per band (`knob()`'s own intrinsic width is
-/// `DIAMETER + 2*MARGIN` from `widgets/knob.rs`, roughly 56px at scale 1),
-/// unlike Settings which matches the strip's own (much narrower) width.
-pub(crate) const EQ_FLYOUT_W: f32 = 220.0;
+/// Width (at `scale == 1.0`) of the EQ flyout — wide enough for the
+/// three-column band matrix (type/gain/freq/Q) plus its row labels, and
+/// the response plot above it.
+pub(crate) const EQ_FLYOUT_W: f32 = 248.0;
 
 /// Which flyout (at most one, and only one per strip) is open — the gear
 /// icon opens `Settings` (48V/PAD/Sensitivity, moved out of the strip's

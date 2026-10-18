@@ -50,6 +50,10 @@ pub const GCONN: Color = Color::from_rgb8(0x3d, 0xd6, 0x8c);
 /// chip, solo, warnings that are not failures.
 pub const YSIM: Color = Color::from_rgb8(0xf0, 0xb4, 0x29);
 pub const MUTE_COLOR: Color = Color::from_rgb8(0x3d, 0x9d, 0xf6);
+/// Band identity in the EQ panel, matching the three columns and their
+/// handles in the response plot. These reuse the palette's red/green/
+/// azure, but inside the EQ they mean band 1/2/3, not clip/signal/mute.
+pub const EQ_BAND: [Color; 3] = [MRED, MGREEN, MUTE_COLOR];
 pub const SOLO_COLOR: Color = Color::from_rgb8(0xf0, 0xb4, 0x29);
 /// Text on an engaged (white) toggle and on the active nav pill: the
 /// near-black of the tile behind the mark.

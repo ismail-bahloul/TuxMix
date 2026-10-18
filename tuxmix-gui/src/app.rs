@@ -3214,16 +3214,13 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Messa
         .into()
 }
 
-/// The EQ flyout's content: enable toggle, 3 parametric bands (type/freq/
-/// Q/gain), and the low-cut filter (freq/slope) — analog inputs only
-/// (`ch.eq: Some(_)`, see `InputChannel::eq`). Same "pushes the row"
-/// shape as `settings_popover`, just wider (`strip::EQ_FLYOUT_W`) to fit
-/// 3 knobs per band row.
+/// The EQ flyout's content: the interactive response plot, then a
+/// three-column band matrix (one column per band) with type, gain,
+/// frequency and Q rows, and the low-cut slope/frequency row below.
+/// Laid out like TotalMix's own EQ panel, with TuxMix's knobs and
+/// palette. Analog inputs only (`ch.eq: Some(_)`).
 ///
-/// Frequency knobs are linear over 20-20000 Hz for now, not log-scaled —
-/// a real audio frequency control wants log, but that's a `Knob` widget
-/// enhancement (visual polish), not part of this pass, which is about
-/// making the control reachable at all.
+/// The frequency knobs are log-scaled, matching the plot's axis.
 fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message> {
     let scale = state.ui_scale;
     let ChannelId::Input(idx) = cid else {
@@ -3233,6 +3230,8 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
         return container(iced::widget::Space::new()).into();
     };
     let modifiers = state.modifiers;
+    let label_w = 42.0 * scale;
+    let gap = theme::SPACE_TIGHT;
 
     let mut col = column![].spacing(theme::SPACE_SM * scale);
 
@@ -3259,110 +3258,181 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
         },
     ));
 
+    // One shared label column keeps the three band controls aligned with
+    // the plot handles above them, like the reference EQ panel.
+    let label = |content: &'static str| {
+        container(
+            text(content)
+                .size(theme::TEXT_XS * scale)
+                .color(theme::TEXT_SEC),
+        )
+        .width(Length::Fixed(label_w))
+    };
+
+    let mut band_row = row![label("band")]
+        .spacing(gap)
+        .align_y(iced::Alignment::Center);
     for band in 0..3 {
-        let b = eq.bands[band];
-        let type_label = match b.band_type {
-            EqBandType::Off => "Off",
-            EqBandType::Bell => "Bell",
-            EqBandType::LowShelf => "Low Shelf",
-            EqBandType::HighShelf => "High Shelf",
-        };
-        let next_type = match b.band_type {
-            EqBandType::Off => EqBandType::Bell,
-            EqBandType::Bell => EqBandType::LowShelf,
-            EqBandType::LowShelf => EqBandType::HighShelf,
-            EqBandType::HighShelf => EqBandType::Off,
-        };
-        col = col.push(
-            row![
-                text(format!("Band {}", band + 1))
+        band_row = band_row.push(
+            container(
+                text(format!("{}", band + 1))
                     .size(theme::TEXT_SM * scale)
-                    .color(theme::TEXT_SEC),
-                button(text(type_label).size(theme::TEXT_XS * scale))
-                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
-                    .style(theme::plain_button)
-                    .on_press(Message::EqBandType(idx, band, next_type)),
-            ]
-            .spacing(theme::SPACE_TIGHT)
-            .align_y(iced::Alignment::Center)
-            .width(Length::Fill),
-        );
-        col = col.push(
-            row![
-                container(hint(
-                    knob(Knob {
-                        value: b.freq_hz as f32,
-                        range: (20.0, 20_000.0),
-                        label: format!("{}Hz", b.freq_hz),
-                        arc_from_center: false,
-                        interactive: true,
-                        log_scale: true,
-                        modifiers,
-                        scale,
-                        on_change: Box::new(move |v| {
-                            Message::EqBandFreq(idx, band, v.round().clamp(20.0, 20_000.0) as u16)
-                        }),
-                        on_reset: Box::new(move || Message::EqBandFreq(idx, band, 1000)),
-                    }),
-                    "Band frequency",
-                    scale,
-                ))
-                .width(Length::Fill)
-                .center_x(Length::Fill),
-                container(hint(
-                    knob(Knob {
-                        value: b.q,
-                        range: (0.05, 10.0),
-                        label: format!("{:.2}", b.q),
-                        arc_from_center: false,
-                        interactive: true,
-                        log_scale: false,
-                        modifiers,
-                        scale,
-                        on_change: Box::new(move |v| Message::EqBandQ(
-                            idx,
-                            band,
-                            v.clamp(0.05, 10.0)
-                        )),
-                        on_reset: Box::new(move || Message::EqBandQ(idx, band, 0.7)),
-                    }),
-                    "Band Q",
-                    scale,
-                ))
-                .width(Length::Fill)
-                .center_x(Length::Fill),
-                container(hint(
-                    knob(Knob {
-                        value: b.gain_db,
-                        range: (-24.0, 24.0),
-                        label: format!("{:+.1}", b.gain_db),
-                        arc_from_center: true,
-                        interactive: true,
-                        log_scale: false,
-                        modifiers,
-                        scale,
-                        on_change: Box::new(move |v| {
-                            Message::EqBandGain(idx, band, v.clamp(-24.0, 24.0))
-                        }),
-                        on_reset: Box::new(move || Message::EqBandGain(idx, band, 0.0)),
-                    }),
-                    "Band gain",
-                    scale,
-                ))
-                .width(Length::Fill)
-                .center_x(Length::Fill),
-            ]
-            .spacing(theme::SPACE_TIGHT)
-            .width(Length::Fill),
+                    .color(theme::EQ_BAND[band]),
+            )
+            .width(Length::Fill)
+            .center_x(Length::Fill),
         );
     }
+    col = col.push(band_row);
 
-    col = col.push(
-        text("Low Cut")
-            .size(theme::TEXT_SM * scale)
+    let mut type_row = row![label("type")]
+        .spacing(gap)
+        .align_y(iced::Alignment::Center);
+    for band in 0..3 {
+        let b = eq.bands[band];
+        let (short, full, next_type) = match b.band_type {
+            EqBandType::Off => ("Off", "Off (click for Bell)", EqBandType::Bell),
+            EqBandType::Bell => ("Bell", "Bell (click for Low Shelf)", EqBandType::LowShelf),
+            EqBandType::LowShelf => (
+                "Low",
+                "Low Shelf (click for High Shelf)",
+                EqBandType::HighShelf,
+            ),
+            EqBandType::HighShelf => ("High", "High Shelf (click for Off)", EqBandType::Off),
+        };
+        type_row = type_row.push(
+            container(hint(
+                button(text(short).size(theme::TEXT_XS * scale))
+                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
+                    .width(Length::Fill)
+                    .style(theme::toggle_button(
+                        b.band_type != EqBandType::Off,
+                        theme::EQ_BAND[band],
+                    ))
+                    .on_press(Message::EqBandType(idx, band, next_type)),
+                full,
+                scale,
+            ))
+            .width(Length::Fill)
+            .center_x(Length::Fill),
+        );
+    }
+    col = col.push(type_row);
+
+    let mut gain_row = row![label("gain dB")]
+        .spacing(gap)
+        .align_y(iced::Alignment::Center);
+    for band in 0..3 {
+        let b = eq.bands[band];
+        gain_row = gain_row.push(
+            container(hint(
+                knob(Knob {
+                    value: b.gain_db,
+                    range: (-24.0, 24.0),
+                    label: format!("{:+.1}", b.gain_db),
+                    arc_from_center: true,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers,
+                    scale,
+                    on_change: Box::new(move |v| {
+                        Message::EqBandGain(idx, band, v.clamp(-24.0, 24.0))
+                    }),
+                    on_reset: Box::new(move || Message::EqBandGain(idx, band, 0.0)),
+                }),
+                "Band gain",
+                scale,
+            ))
+            .width(Length::Fill)
+            .center_x(Length::Fill),
+        );
+    }
+    col = col.push(gain_row);
+
+    let mut freq_row = row![label("freq Hz")]
+        .spacing(gap)
+        .align_y(iced::Alignment::Center);
+    for band in 0..3 {
+        let b = eq.bands[band];
+        freq_row = freq_row.push(
+            container(hint(
+                knob(Knob {
+                    value: b.freq_hz as f32,
+                    range: (20.0, 20_000.0),
+                    label: format!("{}Hz", b.freq_hz),
+                    arc_from_center: false,
+                    interactive: true,
+                    log_scale: true,
+                    modifiers,
+                    scale,
+                    on_change: Box::new(move |v| {
+                        Message::EqBandFreq(idx, band, v.round().clamp(20.0, 20_000.0) as u16)
+                    }),
+                    on_reset: Box::new(move || Message::EqBandFreq(idx, band, 1000)),
+                }),
+                "Band frequency",
+                scale,
+            ))
+            .width(Length::Fill)
+            .center_x(Length::Fill),
+        );
+    }
+    col = col.push(freq_row);
+
+    let mut q_row = row![label("Q")]
+        .spacing(gap)
+        .align_y(iced::Alignment::Center);
+    for band in 0..3 {
+        let b = eq.bands[band];
+        q_row = q_row.push(
+            container(hint(
+                knob(Knob {
+                    value: b.q,
+                    range: (0.05, 10.0),
+                    label: format!("{:.2}", b.q),
+                    arc_from_center: false,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers,
+                    scale,
+                    on_change: Box::new(move |v| {
+                        Message::EqBandQ(idx, band, v.clamp(0.05, 10.0))
+                    }),
+                    on_reset: Box::new(move || Message::EqBandQ(idx, band, 0.7)),
+                }),
+                "Band Q",
+                scale,
+            ))
+            .width(Length::Fill)
+            .center_x(Length::Fill),
+        );
+    }
+    col = col.push(q_row);
+
+    let mut slope_row = row![].spacing(gap).width(Length::Fill);
+    for slope in [6u8, 12, 18, 24] {
+        slope_row = slope_row.push(
+            button(text(format!("{slope}")).size(theme::TEXT_XS * scale))
+                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
+                .width(Length::Fill)
+                .style(theme::toggle_button(
+                    eq.low_cut_slope_db_oct == slope,
+                    theme::ACCENT,
+                ))
+                .on_press(Message::EqLowCutSlope(idx, slope)),
+        );
+    }
+    let slope_col = column![
+        slope_row,
+        text("dB/oct")
+            .size(theme::TEXT_MICRO * scale)
             .color(theme::TEXT_SEC),
-    );
-    col = col.push(
+    ]
+    .spacing(theme::SPACE_TIGHT)
+    .width(Length::Fill)
+    .align_x(iced::Alignment::Center);
+
+    let freq_col = column![
         container(hint(
             knob(Knob {
                 value: eq.low_cut_freq_hz as f32,
@@ -3383,21 +3453,19 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
         ))
         .width(Length::Fill)
         .center_x(Length::Fill),
+        text("freq")
+            .size(theme::TEXT_MICRO * scale)
+            .color(theme::TEXT_SEC),
+    ]
+    .spacing(theme::SPACE_TIGHT)
+    .width(Length::Fill)
+    .align_x(iced::Alignment::Center);
+
+    col = col.push(
+        row![label("low cut"), slope_col, freq_col]
+            .spacing(gap)
+            .align_y(iced::Alignment::Center),
     );
-    let mut slope_row = row![].spacing(theme::SPACE_TIGHT).width(Length::Fill);
-    for slope in [6u8, 12, 18, 24] {
-        slope_row = slope_row.push(
-            button(text(format!("{slope}")).size(theme::TEXT_XS * scale))
-                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
-                .width(Length::Fill)
-                .style(theme::toggle_button(
-                    eq.low_cut_slope_db_oct == slope,
-                    theme::ACCENT,
-                ))
-                .on_press(Message::EqLowCutSlope(idx, slope)),
-        );
-    }
-    col = col.push(slope_row);
 
     container(col)
         .padding(theme::SPACE_SM * scale)
@@ -3545,10 +3613,11 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else if state.flyout_open.contains(&(cid, strip::FlyoutKind::Eq)) {
-                // Unlike Settings, sized to fit 3 knobs per band row rather
-                // than matching the (much narrower) strip width — see
-                // `strip::EQ_FLYOUT_W`'s doc comment.
-                let panel_w = strip::EQ_FLYOUT_W;
+                // Unlike Settings, sized to fit the three-column band
+                // matrix rather than matching the (much narrower) strip
+                // width. `EQ_FLYOUT_W` is the width at scale 1.0, so the
+                // manual zoom scales the panel with its contents.
+                let panel_w = strip::EQ_FLYOUT_W * state.ui_scale;
                 input_strips = input_strips.push(
                     row![strip_widget, eq_popover(state, cid, panel_w)].spacing(theme::SPACE_MD),
                 );

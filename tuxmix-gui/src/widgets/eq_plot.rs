@@ -370,6 +370,14 @@ impl<Message> canvas::Program<Message> for EqPlot<Message> {
                     .with_color(handle_color)
                     .with_width(if active { 1.8 } else { 1.3 } * scale),
             );
+            if active {
+                frame.stroke(
+                    &Path::circle(point, radius + 2.0 * scale),
+                    Stroke::default()
+                        .with_color(theme::ACCENT)
+                        .with_width(scale),
+                );
+            }
             frame.fill_text(Text {
                 content: (i + 1).to_string(),
                 position: point,
@@ -430,7 +438,7 @@ impl<Message> canvas::Program<Message> for EqPlot<Message> {
                 );
             }
             if let Some(target) = state.drag {
-                let (content, x) = match target {
+                let (content, x, color) = match target {
                     Drag::Band(band) => {
                         let b = self.eq.bands[band];
                         (
@@ -442,17 +450,19 @@ impl<Message> canvas::Program<Message> for EqPlot<Message> {
                                 b.q
                             ),
                             plot.x + 4.0 * scale,
+                            theme::EQ_BAND[band.min(theme::EQ_BAND.len() - 1)],
                         )
                     }
                     Drag::LowCut => (
                         format!("LC  {}", freq_label(self.eq.low_cut_freq_hz as f32)),
                         plot.x + 4.0 * scale,
+                        theme::ACCENT,
                     ),
                 };
                 frame.fill_text(Text {
                     content,
                     position: Point::new(x, plot.y + 3.0 * scale),
-                    color: theme::ACCENT,
+                    color,
                     size: (theme::TEXT_MICRO * scale).into(),
                     align_x: advanced_text::Alignment::Left,
                     align_y: iced::alignment::Vertical::Top,
@@ -485,12 +495,8 @@ impl<Message> canvas::Program<Message> for EqPlot<Message> {
 }
 
 impl<Message> EqPlot<Message> {
-    fn handle_color(&self, state: &State, band: usize) -> Color {
-        if state.drag == Some(Drag::Band(band)) {
-            theme::ACCENT
-        } else {
-            theme::FADER
-        }
+    fn handle_color(&self, _state: &State, band: usize) -> Color {
+        theme::EQ_BAND[band.min(theme::EQ_BAND.len() - 1)]
     }
 }
 
