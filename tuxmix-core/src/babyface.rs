@@ -646,8 +646,9 @@ impl BabyfacePro {
     /// comment listed Sample Clock Source and per-input Sensitivity as
     /// permanently missing; both were added to `snd-usb-babyface-pro`
     /// on 2026-09-06 — as "Sample Clock Source" and "Instrument Ref
-    /// Level" — and are matched below. IEC958/SPDIF is still driver-side
-    /// missing, and exists only in Class Compliant mode.)
+    /// Level" — and are matched below. The proprietary driver also
+    /// exposes "Optical Out Format" (ADAT / S/PDIF) since 2026-10-18;
+    /// the IEC958 controls remain Class Compliant only.)
     ///
     /// That tolerance is why [`RmeDevice::open`] has to check for a few
     /// sentinel controls *before* getting here: absent the guard, a card
@@ -675,6 +676,14 @@ impl BabyfacePro {
                     self.settings.clock_sources = (0..count)
                         .filter_map(|i| selem.get_enum_item_name(i).ok())
                         .collect();
+                }
+                continue;
+            }
+            if name == "Optical Out Format" {
+                if let Ok(item) = selem.get_enum_item(mono) {
+                    if let Ok(item_name) = selem.get_enum_item_name(item) {
+                        self.settings.optical_out_spdif = item_name == "S/PDIF";
+                    }
                 }
                 continue;
             }
@@ -2090,6 +2099,24 @@ impl RmeDevice for BabyfacePro {
     }
 
 
+
+    fn set_optical_out_format(&mut self, spdif: bool) -> Result<(), Error> {
+        self.require_proprietary("optical out format")?;
+        let wanted = if spdif { "S/PDIF" } else { "ADAT" };
+        let selem = self
+            .mixer
+            .find_selem("Optical Out Format", 0)
+            .ok_or_else(|| Error::InvalidChannel("No Optical Out Format control".into()))?;
+        let count = selem.get_enum_items()?;
+        let item = (0..count)
+            .find(|i| selem.get_enum_item_name(*i).is_ok_and(|n| n == wanted))
+            .ok_or_else(|| {
+                Error::InvalidChannel(format!("Optical Out Format has no {wanted} setting"))
+            })?;
+        selem.set_enum_item(SelemChannelId::mono(), item)?;
+        self.settings.optical_out_spdif = spdif;
+        Ok(())
+    }
 
     fn set_clock_source(&mut self, source: &str) -> Result<(), Error> {
         let selem = self
