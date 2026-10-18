@@ -1,6 +1,6 @@
 [package]
 name = "tuxmix-sys"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "C ABI for the TuxMix Babyface Pro FS proprietary audio driver (ALSA plugin backend)"
 license = "GPL-3.0"

@@ -1,6 +1,6 @@
 [package]
 name = "tuxmix-usb"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Proprietary USB protocol backend for the RME Babyface Pro FS (TotalMix-class control)"
 license = "GPL-3.0-or-later"
