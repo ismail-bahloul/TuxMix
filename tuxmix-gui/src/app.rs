@@ -23,6 +23,7 @@ use tuxmix_core::pw_meter;
 use crate::scenes::{load_scene_file, save_scene_file};
 use crate::sidebar::{self, Group};
 use crate::theme;
+use crate::widgets::eq_plot::{eq_plot, EqPlotActions};
 use crate::widgets::fader;
 use crate::widgets::knob::{knob, Knob};
 use crate::widgets::strip::{self, hint};
@@ -622,6 +623,11 @@ pub enum Message {
     EqBandFreq(usize, usize, u16),
     EqBandQ(usize, usize, f32),
     EqBandGain(usize, usize, f32),
+    /// A drag in the EQ plot: frequency and gain move together, so the
+    /// device gets one update instead of two.
+    EqBandPoint(usize, usize, u16, f32),
+    /// Double-click on a band handle: back to 1 kHz, Q 0.7, 0 dB.
+    EqBandReset(usize, usize),
     EqLowCutFreq(usize, u16),
     EqLowCutSlope(usize, u8),
 
@@ -1498,6 +1504,8 @@ fn needs_protocol_features(message: &Message) -> bool {
             | Message::EqBandFreq(..)
             | Message::EqBandQ(..)
             | Message::EqBandGain(..)
+            | Message::EqBandPoint(..)
+            | Message::EqBandReset(..)
             | Message::EqLowCutFreq(..)
             | Message::EqLowCutSlope(..)
     )
@@ -1783,6 +1791,15 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         }
         Message::EqBandGain(idx, band, gain) => {
             let _ = state.device.set_eq_band_gain(idx, band, gain);
+        }
+        Message::EqBandPoint(idx, band, freq, gain) => {
+            let _ = state.device.set_eq_band_freq(idx, band, freq);
+            let _ = state.device.set_eq_band_gain(idx, band, gain);
+        }
+        Message::EqBandReset(idx, band) => {
+            let _ = state.device.set_eq_band_freq(idx, band, 1000);
+            let _ = state.device.set_eq_band_q(idx, band, 0.7);
+            let _ = state.device.set_eq_band_gain(idx, band, 0.0);
         }
         Message::EqLowCutFreq(idx, freq) => {
             let _ = state.device.set_eq_low_cut_freq(idx, freq);
@@ -3227,10 +3244,19 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
             .on_press(Message::EqEnabled(idx, !eq.enabled)),
     );
 
-    col = col.push(crate::widgets::eq_plot::eq_plot(
+    col = col.push(eq_plot(
         eq,
         state.device.settings().sample_rate,
         scale,
+        modifiers,
+        EqPlotActions {
+            on_band: Box::new(move |band, freq, gain| {
+                Message::EqBandPoint(idx, band, freq, gain)
+            }),
+            on_band_reset: Box::new(move |band| Message::EqBandReset(idx, band)),
+            on_band_q: Box::new(move |band, q| Message::EqBandQ(idx, band, q)),
+            on_low_cut: Box::new(move |freq| Message::EqLowCutFreq(idx, freq)),
+        },
     ));
 
     for band in 0..3 {
@@ -4247,6 +4273,27 @@ mod tests {
             state.undo_stack.is_empty(),
             "resizing the sidebar is UI chrome, not a device change"
         );
+    }
+
+    #[test]
+    fn eq_plot_drag_updates_frequency_and_gain_together() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::EqBandPoint(0, 0, 2_500, 6.5));
+        let eq = state.device.inputs()[0].eq.unwrap();
+        assert_eq!(eq.bands[0].freq_hz, 2_500);
+        assert!((eq.bands[0].gain_db - 6.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn eq_plot_double_click_resets_the_band() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::EqBandPoint(0, 0, 2_500, 6.5));
+        let _ = update(&mut state, Message::EqBandQ(0, 0, 3.0));
+        let _ = update(&mut state, Message::EqBandReset(0, 0));
+        let eq = state.device.inputs()[0].eq.unwrap();
+        assert_eq!(eq.bands[0].freq_hz, 1_000);
+        assert!(eq.bands[0].gain_db.abs() < 0.01);
+        assert!((eq.bands[0].q - 0.7).abs() < 0.01);
     }
 
     #[test]
