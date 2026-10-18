@@ -3235,15 +3235,25 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
     let modifiers = state.modifiers;
     let label_w = 42.0 * scale;
     let gap = theme::SPACE_TIGHT;
+    // The EQ matrix has to fit inside one strip's height. Smaller knobs
+    // here (the strip's own gain/pan knobs keep their full size) are what
+    // makes the three control rows and the low cut fit without scrolling.
+    let eq_scale = scale * 0.9;
 
-    let mut col = column![].spacing(theme::SPACE_TIGHT);
+    let mut col = column![].spacing(gap);
 
     col = col.push(
-        button(text("EQ Enabled").size(theme::TEXT_SM * scale))
-            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
-            .width(Length::Fill)
-            .style(theme::toggle_button(eq.enabled, theme::ACCENT))
-            .on_press(Message::EqEnabled(idx, !eq.enabled)),
+        row![
+            button(text("EQ").size(theme::TEXT_XS * scale))
+                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+                .style(theme::toggle_button(eq.enabled, theme::ACCENT))
+                .on_press(Message::EqEnabled(idx, !eq.enabled)),
+            text(if eq.enabled { "enabled" } else { "bypassed" })
+                .size(theme::TEXT_XS * scale)
+                .color(theme::TEXT_SEC),
+        ]
+        .spacing(theme::SPACE_SM * scale)
+        .align_y(iced::Alignment::Center),
     );
 
     col = col.push(eq_plot(
@@ -3261,8 +3271,6 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
         },
     ));
 
-    // One shared label column keeps the three band controls aligned with
-    // the plot handles above them, like the reference EQ panel.
     let label = |content: &'static str| {
         container(
             text(content)
@@ -3271,22 +3279,6 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
         )
         .width(Length::Fixed(label_w))
     };
-
-    let mut band_row = row![label("band")]
-        .spacing(gap)
-        .align_y(iced::Alignment::Center);
-    for band in 0..3 {
-        band_row = band_row.push(
-            container(
-                text(format!("{}", band + 1))
-                    .size(theme::TEXT_SM * scale)
-                    .color(theme::EQ_BAND[band]),
-            )
-            .width(Length::Fill)
-            .center_x(Length::Fill),
-        );
-    }
-    col = col.push(band_row);
 
     let mut type_row = row![label("type")]
         .spacing(gap)
@@ -3303,16 +3295,30 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
             ),
             EqBandType::HighShelf => ("High", "High Shelf (click for Off)", EqBandType::Off),
         };
+        let number_color = if b.band_type == EqBandType::Off {
+            theme::EQ_BAND[band]
+        } else {
+            theme::ON_ACTIVE
+        };
         type_row = type_row.push(
             container(hint(
-                button(text(short).size(theme::TEXT_XS * scale))
-                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
-                    .width(Length::Fill)
-                    .style(theme::toggle_button(
-                        b.band_type != EqBandType::Off,
-                        theme::EQ_BAND[band],
-                    ))
-                    .on_press(Message::EqBandType(idx, band, next_type)),
+                button(
+                    row![
+                        text(format!("{}", band + 1))
+                            .size(theme::TEXT_XS * scale)
+                            .color(number_color),
+                        text(short).size(theme::TEXT_XS * scale),
+                    ]
+                    .spacing(theme::SPACE_TIGHT)
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
+                .width(Length::Fill)
+                .style(theme::toggle_button(
+                    b.band_type != EqBandType::Off,
+                    theme::EQ_BAND[band],
+                ))
+                .on_press(Message::EqBandType(idx, band, next_type)),
                 full,
                 scale,
             ))
@@ -3337,7 +3343,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
                     interactive: true,
                     log_scale: false,
                     modifiers,
-                    scale,
+                    scale: eq_scale,
                     on_change: Box::new(move |v| {
                         Message::EqBandGain(idx, band, v.clamp(-24.0, 24.0))
                     }),
@@ -3367,7 +3373,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
                     interactive: true,
                     log_scale: true,
                     modifiers,
-                    scale,
+                    scale: eq_scale,
                     on_change: Box::new(move |v| {
                         Message::EqBandFreq(idx, band, v.round().clamp(20.0, 20_000.0) as u16)
                     }),
@@ -3397,7 +3403,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
                     interactive: true,
                     log_scale: false,
                     modifiers,
-                    scale,
+                    scale: eq_scale,
                     on_change: Box::new(move |v| {
                         Message::EqBandQ(idx, band, v.clamp(0.05, 10.0))
                     }),
@@ -3435,34 +3441,26 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
     .width(Length::Fill)
     .align_x(iced::Alignment::Center);
 
-    let freq_col = column![
-        container(hint(
-            knob(Knob {
-                value: eq.low_cut_freq_hz as f32,
-                range: (20.0, 20_000.0),
-                label: format!("{}Hz", eq.low_cut_freq_hz),
-                arc_from_center: false,
-                interactive: true,
-                log_scale: true,
-                modifiers,
-                scale,
-                on_change: Box::new(move |v| {
-                    Message::EqLowCutFreq(idx, v.round().clamp(20.0, 20_000.0) as u16)
-                }),
-                on_reset: Box::new(move || Message::EqLowCutFreq(idx, 20)),
+    let freq_col = container(hint(
+        knob(Knob {
+            value: eq.low_cut_freq_hz as f32,
+            range: (20.0, 20_000.0),
+            label: format!("{}Hz", eq.low_cut_freq_hz),
+            arc_from_center: false,
+            interactive: true,
+            log_scale: true,
+            modifiers,
+            scale: eq_scale,
+            on_change: Box::new(move |v| {
+                Message::EqLowCutFreq(idx, v.round().clamp(20.0, 20_000.0) as u16)
             }),
-            "Low-cut frequency",
-            scale,
-        ))
-        .width(Length::Fill)
-        .center_x(Length::Fill),
-        text("freq")
-            .size(theme::TEXT_MICRO * scale)
-            .color(theme::TEXT_SEC),
-    ]
-    .spacing(theme::SPACE_TIGHT)
+            on_reset: Box::new(move || Message::EqLowCutFreq(idx, 20)),
+        }),
+        "Low-cut frequency",
+        scale,
+    ))
     .width(Length::Fill)
-    .align_x(iced::Alignment::Center);
+    .center_x(Length::Fill);
 
     col = col.push(
         row![label("low cut"), slope_col, freq_col]

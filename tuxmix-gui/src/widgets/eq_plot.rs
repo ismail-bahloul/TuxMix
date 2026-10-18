@@ -26,7 +26,7 @@ use super::fader::{DOUBLE_CLICK, SCROLL_IDLE};
 use crate::theme;
 
 /// Plot height at scale 1.
-const PLOT_H: f32 = 72.0;
+const PLOT_H: f32 = 64.0;
 const MARGIN_LEFT: f32 = 26.0;
 const MARGIN_RIGHT: f32 = 6.0;
 const MARGIN_TOP: f32 = 6.0;
