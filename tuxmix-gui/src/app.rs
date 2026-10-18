@@ -560,6 +560,9 @@ pub enum Message {
     QuickChannelSelected(ChannelId),
     SelectOutput(usize),
     ModifiersChanged(keyboard::Modifiers),
+    /// F11: toggle the window between windowed and fullscreen. The id
+    /// comes from the global event handler, the only place that has it.
+    ToggleFullscreen(window::Id),
     TabPressed,
     EscapePressed,
     /// The OS window was resized (or just opened) — tracks the current
@@ -824,6 +827,10 @@ pub struct TuxMix {
     /// to window size, so resizing never rescales anything — strips keep
     /// fixed geometry and rows/pages scroll. `SCALE_DEFAULT` is the default.
     pub ui_scale: f32,
+    /// F11 state: the window is currently fullscreen. Kept in sync with
+    /// `Message::ToggleFullscreen`; the WM can still change the mode on
+    /// its own, in which case this only affects the next F11 toggle.
+    pub fullscreen: bool,
     /// Current window width in logical pixels, kept in sync via
     /// `Message::WindowResized` — lets `mixer_view` decide whether a
     /// strip row fits without scrolling (see `responsive_row`).
@@ -1072,6 +1079,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         collapse_anim: HashMap::new(),
         flyout_open: HashSet::new(),
         ui_scale: theme::SCALE_DEFAULT,
+        fullscreen: false,
         // Matches `window::Settings::size` in main.rs — updated for real
         // as soon as the first `Opened`/`Resized` event arrives.
         window_width: 1280.0,
@@ -1513,6 +1521,15 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         state.redo_stack.clear();
     }
     match message {
+        Message::ToggleFullscreen(id) => {
+            state.fullscreen = !state.fullscreen;
+            let mode = if state.fullscreen {
+                window::Mode::Fullscreen
+            } else {
+                window::Mode::Windowed
+            };
+            return iced::window::set_mode(id, mode);
+        }
         Message::Tick => {
             // Resize coalescing: if the last `Resized` of a drag landed
             // inside the throttle window, flush it here so the width always
@@ -2155,7 +2172,7 @@ pub fn subscription(state: &TuxMix) -> Subscription<Message> {
 fn handle_global_event(
     event: iced::Event,
     _status: iced::event::Status,
-    _id: window::Id,
+    id: window::Id,
 ) -> Option<Message> {
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
@@ -2175,6 +2192,9 @@ fn handle_global_event(
                 }
             }
             match key {
+                Key::Named(keyboard::key::Named::F11) => {
+                    Some(Message::ToggleFullscreen(id))
+                }
                 Key::Named(keyboard::key::Named::Tab) => Some(Message::TabPressed),
                 Key::Named(keyboard::key::Named::Escape) => Some(Message::EscapePressed),
                 _ => None,
@@ -3206,6 +3226,12 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
             .style(theme::toggle_button(eq.enabled, theme::ACCENT))
             .on_press(Message::EqEnabled(idx, !eq.enabled)),
     );
+
+    col = col.push(crate::widgets::eq_plot::eq_plot(
+        eq,
+        state.device.settings().sample_rate,
+        scale,
+    ));
 
     for band in 0..3 {
         let b = eq.bands[band];

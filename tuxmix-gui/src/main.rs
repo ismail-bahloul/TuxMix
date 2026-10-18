@@ -6,6 +6,7 @@
 //! cargo run -p tuxmix-gui -- --mock --osc   # + OSC control surface
 //! cargo run -p tuxmix-gui -- --backend usb  # force libusb over the kernel driver
 //! cargo run -p tuxmix-gui -- --view mixer  # open straight on the Mixer page
+//! cargo run -p tuxmix-gui -- --fullscreen  # start fullscreen (F11 toggles)
 //! ```
 
 mod about;
@@ -100,6 +101,7 @@ fn main() -> iced::Result {
     });
 
     let start_view = parse_view(&args);
+    let start_fullscreen = args.iter().any(|a| a == "--fullscreen");
 
     iced::application(
         move || {
@@ -107,6 +109,7 @@ fn main() -> iced::Result {
             if let Some(view) = start_view {
                 state.view = view;
             }
+            state.fullscreen = start_fullscreen;
             state
         },
         app::update,
@@ -119,6 +122,7 @@ fn main() -> iced::Result {
     .default_font(Font::with_name("Inter"))
     .window(window::Settings {
         size: Size::new(1280.0, 800.0),
+        fullscreen: start_fullscreen,
         icon: window_icon(),
         platform_specific: window::settings::PlatformSpecific {
             application_id: APP_ID.to_owned(),
