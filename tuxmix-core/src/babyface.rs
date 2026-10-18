@@ -401,6 +401,15 @@ impl BabyfacePro {
         self.capture_meter.is_some()
     }
 
+    /// How many times the input capture meter has reopened its PCM
+    /// after a stream error (a PipeWire profile change, a re-probe).
+    /// Diagnostic only; the meter recovers on its own.
+    pub fn meter_reconnects(&self) -> usize {
+        self.capture_meter
+            .as_ref()
+            .map_or(0, |cm| cm.reconnects())
+    }
+
     /// Look up a crosspoint's ALSA element: `BF_SOURCES[src]` at
     /// `.index = output*14 + src`, exactly `mixer.c`'s
     /// `babyface_create_xpoints` layout.
@@ -2228,11 +2237,15 @@ impl RmeDevice for BabyfacePro {
     /// Real for every hardware input (AN1-AN4, AS1/2, ADAT3-8) via
     /// `capture_meter`; the GUI gates a failed capture open back to
     /// "N/A" through `DeviceHandle::has_input_meter`. `None` when the
-    /// capture PCM could not be opened at all, matching the trait's own
-    /// contract. See `capture_meter`'s module doc comment for the live
-    /// mapping behind `INPUT_FOR_CAPTURE`.
+    /// capture PCM could not be opened at all, or while the reader thread
+    /// is reopening it after a PipeWire profile change, matching the
+    /// trait's own contract. See `capture_meter`'s module doc comment for
+    /// the live mapping behind `INPUT_FOR_CAPTURE`.
     fn meters(&self) -> Option<Vec<f32>> {
         let cm = self.capture_meter.as_ref()?;
+        if !cm.is_connected() {
+            return None;
+        }
         let peaks = cm.drain();
         crate::capture_meter::CaptureMeter::debug_log(&peaks);
         let mut levels = vec![0.0; self.inputs.len()];

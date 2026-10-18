@@ -3313,3 +3313,19 @@ en Pro Audio).
 Vérifié : 197 tests workspace, TUI en stéréo avec PB1 à 0 % et PB2-6 en
 n/a, sorties n/a ; TUI en Pro Audio avec les six PB et les six sorties
 réelles à 0 %. Release GUI et TUI reconstruits.
+
+## 2026-10-18 : le capture meter d'entrée se rouvre tout seul
+
+Le `CaptureMeter` ne récupérait que les xruns et les états suspendus ;
+toute autre erreur laissait le PCM mort jusqu'au redémarrage de l'app.
+Le thread ferme maintenant le PCM, le rouvre avec un backoff (100 ms
+jusqu'à 2 s), et expose `is_connected()` / `reconnects()` pour ne pas
+afficher de pics périmés.
+
+Vérifié en live en débindant/rebindant l'unité USB deux fois pendant que
+le meter tournait : `None`, puis deux reconnexions (`reconnects=2`) et
+retour des niveaux. En revanche, la limite documentée plus haut sur le
+changement de profil PipeWire ne s'est pas reproduite avec le module
+DKMS 0.1.0 : les passages stéréo → Pro Audio → `off` → stéréo ont laissé
+le PCM vivant, sans aucune reconnexion. À re-tester si le symptôme
+revient.
