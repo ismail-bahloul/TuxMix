@@ -3220,7 +3220,10 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Messa
 /// Laid out like TotalMix's own EQ panel, with TuxMix's knobs and
 /// palette. Analog inputs only (`ch.eq: Some(_)`).
 ///
-/// The frequency knobs are log-scaled, matching the plot's axis.
+/// The panel is height-constrained to the strip so opening it does not
+/// stretch the row; its controls scroll when the window is too short to
+/// show them all. The frequency knobs are log-scaled, matching the plot's
+/// axis.
 fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message> {
     let scale = state.ui_scale;
     let ChannelId::Input(idx) = cid else {
@@ -3233,7 +3236,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
     let label_w = 42.0 * scale;
     let gap = theme::SPACE_TIGHT;
 
-    let mut col = column![].spacing(theme::SPACE_SM * scale);
+    let mut col = column![].spacing(theme::SPACE_TIGHT);
 
     col = col.push(
         button(text("EQ Enabled").size(theme::TEXT_SM * scale))
@@ -3467,12 +3470,19 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
             .align_y(iced::Alignment::Center),
     );
 
-    container(col)
-        .padding(theme::SPACE_SM * scale)
-        .width(Length::Fixed(width))
-        .style(theme::top_bar)
-        .clip(true)
-        .into()
+    container(
+        scrollable(col)
+            .direction(scrollable::Direction::Vertical(theme::thin_scrollbar()))
+            .style(theme::scrollable)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .padding(theme::SPACE_SM * scale)
+    .width(Length::Fixed(width))
+    .height(Length::Fill)
+    .style(theme::top_bar)
+    .clip(true)
+    .into()
 }
 
 /// Layers the open route flyout on top of a strip row, positioned by

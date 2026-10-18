@@ -26,7 +26,7 @@ use super::fader::{DOUBLE_CLICK, SCROLL_IDLE};
 use crate::theme;
 
 /// Plot height at scale 1.
-const PLOT_H: f32 = 132.0;
+const PLOT_H: f32 = 72.0;
 const MARGIN_LEFT: f32 = 26.0;
 const MARGIN_RIGHT: f32 = 6.0;
 const MARGIN_TOP: f32 = 6.0;
@@ -432,9 +432,12 @@ impl<Message> canvas::Program<Message> for EqPlot<Message> {
             if !self.eq.enabled {
                 label(
                     "BYPASS".into(),
-                    Point::new(plot.x + plot.width - 2.0 * scale, plot.y + 2.0 * scale),
+                    Point::new(
+                        plot.x + plot.width - 2.0 * scale,
+                        plot.y + plot.height - 2.0 * scale,
+                    ),
                     advanced_text::Alignment::Right,
-                    iced::alignment::Vertical::Top,
+                    iced::alignment::Vertical::Bottom,
                 );
             }
             if let Some(target) = state.drag {
