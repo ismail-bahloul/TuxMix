@@ -217,6 +217,10 @@ pub struct StripParams<'a> {
     pub default_vol: f32,
     pub editing: bool,
     pub edit_buf: &'a str,
+    /// The name field is open for typing (`Message::RenameStart`), with
+    /// what has been typed so far. Set by `app::finish_params`.
+    pub renaming: bool,
+    pub rename_buf: &'a str,
     pub drag_range: Option<(f32, f32)>,
     pub modifiers: Modifiers,
     pub collapsed: bool,
@@ -333,11 +337,33 @@ fn rotated_label<'a, Msg: 'a + Clone>(text: String, size: f32, scale: f32) -> El
 /// (see the reference design: no icons in the header at rest). See
 /// `collapsed_header_row` for the collapsed strip's own header, which
 /// still needs its chevron.
+///
+/// Double-clicking the name renames the strip (`Message::RenameStart`):
+/// while `renaming`, the name is a text field, Enter keeps the typed name
+/// and Escape drops it. The name's own `mouse_area` captures its clicks
+/// (iced's `mouse_area` captures every press once it has a double-click
+/// handler), so it forwards single clicks as `StripClicked` itself; that
+/// keeps Ctrl/Shift-click selection working on the name, and stops a
+/// double-click there from also collapsing the strip.
 fn header_row<'a>(
+    cid: ChannelId,
     name: &str,
     type_tag: Option<(&'static str, Color)>,
+    renaming: bool,
+    rename_buf: &'a str,
     scale: f32,
 ) -> Element<'a, Message> {
+    if renaming {
+        return text_input(short_label(name), rename_buf)
+            .id(crate::app::RENAME_INPUT_ID)
+            .on_input(Message::RenameChanged)
+            .on_submit(Message::RenameCommit)
+            .style(theme::text_input)
+            .size(theme::TEXT_SM * scale)
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+            .width(Length::Fill)
+            .into();
+    }
     // `.wrapping(Wrapping::None)` — without it, a long name ("Instr. 3/4",
     // "ADAT7/8") wraps to two lines partway through the collapse/expand
     // width animation, once the shrinking card gets narrower than the
@@ -361,7 +387,11 @@ fn header_row<'a>(
                 .wrapping(advanced_text::Wrapping::None),
         );
     }
-    container(header)
+    let header = mouse_area(header)
+        .on_press(Message::StripClicked(cid))
+        .on_double_click(Message::RenameStart(cid))
+        .interaction(mouse::Interaction::Text);
+    container(hint(header, "Double-click to rename", scale))
         .width(Length::Fill)
         .center_x(Length::Fill)
         .align_y(iced::Alignment::Center)
@@ -500,7 +530,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // (see `app.rs::settings_popover`) — 48V/PAD/Sensitivity/Gain are
     // just the input-only additions to the same panel.
     let has_settings = true;
-    let header = header_row(&p.name, p.type_tag, scale);
+    let header = header_row(cid, &p.name, p.type_tag, p.renaming, p.rename_buf, scale);
 
     let mute_btn = hint(
         button(centered_label("M", theme::TEXT_SM * scale))

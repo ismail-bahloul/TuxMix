@@ -542,7 +542,7 @@ fn power_sum_output_meters(
 /// strips, for the podcaster/streamer/remote-work case that never touches
 /// the full matrix. `Mixer`/`Matrix` are the existing dense views for
 /// users who need them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum View {
     Quick,
     Mixer,
@@ -767,7 +767,18 @@ pub enum Message {
     /// `LayoutStore` will save into.
     LayoutClicked(u8),
     LayoutStore,
+    /// Double-click on a strip's name: start typing a new one for `cid`.
+    RenameStart(ChannelId),
+    RenameChanged(String),
+    /// Enter: keep the typed name (an empty one restores the original).
+    RenameCommit,
+    /// The Options panel's "names" row, TotalMix's "Show Names": show the
+    /// original channel names even where the user renamed one.
+    SetShowOriginalNames(bool),
 }
+
+/// The strip-rename field's widget id, so `RenameStart` can focus it.
+pub(crate) const RENAME_INPUT_ID: &str = "strip-rename";
 
 // ── App state ────────────────────────────────────────────────────
 
@@ -958,6 +969,21 @@ pub struct TuxMix {
     /// clamped to `sidebar::MIN_WIDTH`/`MAX_WIDTH`. Like `sidebar_open`
     /// and `sidebar_panels_open`, session state: nothing persists it.
     pub sidebar_width: f32,
+    /// User channel names, by the strip they were typed on (see
+    /// `Message::RenameStart`). A GUI label only: the device model, OSC
+    /// addresses and scenes keep the hardware names.
+    pub labels: HashMap<ChannelId, String>,
+    /// See `Message::SetShowOriginalNames`.
+    pub show_original_names: bool,
+    /// The strip whose name is being edited, and the text typed so far.
+    pub renaming: Option<ChannelId>,
+    pub rename_buf: String,
+    /// Where `prefs::Prefs` is written. Set by `main` only, so tests (which
+    /// build state through `new`) never touch the user's config.
+    pub prefs_path: Option<std::path::PathBuf>,
+    /// A preference changed since the last write; flushed on `Tick` and
+    /// on window close (`SaveNow`).
+    pub prefs_dirty: bool,
 }
 
 /// Matches the "Max lines" default in oscmix's own OSC debug log — enough
@@ -1126,7 +1152,123 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         sidebar_panels_open: sidebar::PanelsOpen::default(),
         sidebar_open: true,
         sidebar_width: sidebar::DEFAULT_WIDTH,
+        labels: HashMap::new(),
+        show_original_names: false,
+        renaming: None,
+        rename_buf: String::new(),
+        prefs_path: None,
+        prefs_dirty: false,
     }
+}
+
+/// The persisted subset of `state` (see `prefs.rs`).
+pub fn prefs_of(state: &TuxMix) -> crate::prefs::Prefs {
+    let p = &state.sidebar_panels_open;
+    let mut labels: Vec<(ChannelId, String)> =
+        state.labels.iter().map(|(c, l)| (*c, l.clone())).collect();
+    // Stable order, so an unchanged state writes an unchanged file.
+    labels.sort_by_key(|(c, _)| format!("{c:?}"));
+    crate::prefs::Prefs {
+        view: Some(state.view),
+        sidebar_open: Some(state.sidebar_open),
+        sidebar_width: Some(state.sidebar_width),
+        panels_open: Some([p.options, p.snapshots, p.groups, p.layout]),
+        two_row: Some(state.two_row),
+        ui_scale: Some(state.ui_scale),
+        labels,
+        show_original_names: state.show_original_names,
+    }
+}
+
+/// Restores what `prefs_of` saved. Values are clamped to the same bounds
+/// the live controls use, so a hand-edited file cannot open the app in a
+/// state the UI could never reach.
+pub fn apply_prefs(state: &mut TuxMix, prefs: crate::prefs::Prefs) {
+    if let Some(v) = prefs.view {
+        state.view = v;
+    }
+    if let Some(open) = prefs.sidebar_open {
+        state.sidebar_open = open;
+    }
+    if let Some(w) = prefs.sidebar_width {
+        state.sidebar_width = w.clamp(sidebar::MIN_WIDTH, sidebar::MAX_WIDTH);
+    }
+    if let Some([options, snapshots, groups, layout]) = prefs.panels_open {
+        state.sidebar_panels_open = sidebar::PanelsOpen {
+            options,
+            snapshots,
+            groups,
+            layout,
+        };
+    }
+    if let Some(two) = prefs.two_row {
+        state.two_row = two;
+    }
+    if let Some(z) = prefs.ui_scale {
+        state.ui_scale = z.clamp(theme::SCALE_MIN, theme::SCALE_MAX);
+    }
+    state.labels = prefs
+        .labels
+        .into_iter()
+        .filter(|(_, l)| !l.trim().is_empty())
+        .collect();
+    state.show_original_names = prefs.show_original_names;
+}
+
+/// Writes the preferences if something changed (and a path is set).
+fn flush_prefs(state: &mut TuxMix) {
+    if !state.prefs_dirty {
+        return;
+    }
+    state.prefs_dirty = false;
+    if let Some(path) = state.prefs_path.clone() {
+        if let Err(e) = crate::prefs::save(&path, &prefs_of(state)) {
+            log::warn!("Failed to save GUI preferences: {e}");
+        }
+    }
+}
+
+/// Whether `message` changes something `prefs_of` persists.
+fn changes_prefs(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::SetView(_)
+            | Message::TabPressed
+            | Message::ToggleSidebar
+            | Message::SidebarResize(_)
+            | Message::ToggleSidebarPanel(_)
+            | Message::SetTwoRow(_)
+            | Message::WheelZoom(_)
+            | Message::ZoomIn
+            | Message::ZoomOut
+            | Message::ZoomReset
+            | Message::RenameCommit
+            | Message::SetShowOriginalNames(_)
+    )
+}
+
+/// The user's name for `cid`'s strip, unless "show original names" is on.
+/// Keyed by the strip's own channel (a linked pair's left channel), which
+/// is also what the Quick picker and the Matrix row groups look up.
+pub(crate) fn user_label(state: &TuxMix, cid: ChannelId) -> Option<&str> {
+    if state.show_original_names {
+        return None;
+    }
+    state.labels.get(&cid).map(String::as_str)
+}
+
+/// The name a strip shows: the user's label unless "show original names"
+/// is on, else the hardware-derived one the caller built. Also hands the
+/// strip its rename-field state. Every `strip::strip` call goes through
+/// this, after any pair-label joining, so a label replaces the whole
+/// strip name ("AN1/2" -> "Vocals"), not one half of it.
+fn finish_params<'a>(state: &'a TuxMix, mut p: strip::StripParams<'a>) -> strip::StripParams<'a> {
+    if let Some(label) = user_label(state, p.cid) {
+        p.name = label.to_string();
+    }
+    p.renaming = state.renaming == Some(p.cid);
+    p.rename_buf = &state.rename_buf;
+    p
 }
 
 pub fn title(state: &TuxMix) -> String {
@@ -1474,6 +1616,10 @@ fn is_undoable(message: &Message) -> bool {
             | Message::SidebarResize(_)
             | Message::SetTwoRow(_)
             | Message::DimToggle
+            | Message::RenameStart(_)
+            | Message::RenameChanged(_)
+            | Message::RenameCommit
+            | Message::SetShowOriginalNames(_)
             | Message::SnapshotStore
             | Message::GroupEditToggle
             | Message::GroupLinkToggle(..)
@@ -1544,6 +1690,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
     if changes_mix(&message) {
         state.snapshot_dirty = true;
     }
+    if changes_prefs(&message) {
+        state.prefs_dirty = true;
+    }
     if is_undoable(&message) {
         let scene = state.device.capture_scene();
         state.undo_stack.push(scene);
@@ -1563,6 +1712,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             return iced::window::set_mode(id, mode);
         }
         Message::Tick => {
+            flush_prefs(state);
             // Resize coalescing: if the last `Resized` of a drag landed
             // inside the throttle window, flush it here so the width always
             // settles (even if no further `Resized` arrives). 50 ms is well
@@ -1666,6 +1816,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         // (see the 3 s auto-save in `Message::Tick`). The mock never
         // persists (same reasoning as the auto-save).
         Message::SaveNow => {
+            flush_prefs(state);
             if !state.device.is_mock() {
                 if let Some(their) = tuxmix_core::scene::auto_scene_written_by_other(
                     state.last_saved_json.as_deref(),
@@ -1726,6 +1877,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 state.show_about = false;
             } else if state.show_device_panel {
                 state.show_device_panel = false;
+            } else if state.renaming.is_some() {
+                state.renaming = None;
+                state.rename_buf.clear();
             } else if state.editing.is_some() {
                 state.editing = None;
             }
@@ -2124,6 +2278,27 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 (state.sidebar_width - dx).clamp(sidebar::MIN_WIDTH, sidebar::MAX_WIDTH);
         }
         Message::SetTwoRow(on) => state.two_row = on,
+        Message::RenameStart(cid) => {
+            state.rename_buf = state.labels.get(&cid).cloned().unwrap_or_default();
+            state.renaming = Some(cid);
+            return Task::batch([
+                iced::widget::operation::focus(RENAME_INPUT_ID),
+                iced::widget::operation::select_all(RENAME_INPUT_ID),
+            ]);
+        }
+        Message::RenameChanged(s) => state.rename_buf = s,
+        Message::RenameCommit => {
+            if let Some(cid) = state.renaming.take() {
+                let label = state.rename_buf.trim().to_string();
+                if label.is_empty() {
+                    state.labels.remove(&cid);
+                } else {
+                    state.labels.insert(cid, label);
+                }
+                state.rename_buf.clear();
+            }
+        }
+        Message::SetShowOriginalNames(on) => state.show_original_names = on,
         Message::DimToggle => {
             let on = !state.device.settings().dim;
             if let Err(e) = state.device.set_dim(on) {
@@ -2948,6 +3123,8 @@ fn strip_params<'a>(
         default_vol: 1.0,
         editing: state.editing == Some(cid),
         edit_buf: &state.edit_buf,
+        renaming: false,
+        rename_buf: "",
         drag_range,
         modifiers: state.modifiers,
         collapsed: state.collapsed.contains(&cid),
@@ -3707,7 +3884,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 params.meter2 = state.input_meters.get(l + 1).map(MeterAnim::frame);
                 params.meter2_available = state.device.has_input_meter(l + 1);
             }
-            let strip_widget = strip::strip(params);
+            let strip_widget = strip::strip(finish_params(state, params));
             let mut item_width = rendered_strip_width(state, cid);
             // Settings/EQ push the row instead of overlaying it (see
             // `with_flyout`'s doc comment for why) — done here, by
@@ -3788,7 +3965,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 params.meter2 = state.playback_meters.get(l + 1).map(MeterAnim::frame);
                 params.meter2_available = playback_meter_available(state, l + 1);
             }
-            let strip_widget = strip::strip(params);
+            let strip_widget = strip::strip(finish_params(state, params));
             let mut item_width = rendered_strip_width(state, cid);
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
                 let panel_w = item_width;
@@ -3837,7 +4014,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 params.meter2 = state.output_meters.get(l + 1).map(MeterAnim::frame);
                 params.meter2_available = output_meter_available(state, l + 1);
             }
-            let strip_widget = strip::strip(params);
+            let strip_widget = strip::strip(finish_params(state, params));
             let mut item_width = rendered_strip_width(state, cid);
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
                 let panel_w = item_width;
@@ -3959,16 +4136,14 @@ fn matrix_view(state: &TuxMix) -> Element<'_, Message> {
 fn quick_channel_options(state: &TuxMix) -> Vec<(ChannelId, String)> {
     let mut opts = Vec::new();
     for (i, ch) in state.device.inputs().iter().enumerate() {
-        opts.push((
-            ChannelId::Input(i),
-            format!("{} · IN", short_label(&ch.name)),
-        ));
+        let cid = ChannelId::Input(i);
+        let name = user_label(state, cid).unwrap_or(short_label(&ch.name));
+        opts.push((cid, format!("{name} · IN")));
     }
     for (i, ch) in state.device.playbacks().iter().enumerate() {
-        opts.push((
-            ChannelId::Playback(i),
-            format!("{} · PB", short_label(&ch.name)),
-        ));
+        let cid = ChannelId::Playback(i);
+        let name = user_label(state, cid).unwrap_or(short_label(&ch.name));
+        opts.push((cid, format!("{name} · PB")));
     }
     opts
 }
@@ -4014,13 +4189,34 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
     // (the centered form needs the available size, which a `Length::Fill`
     // cannot provide inside the page's scrollable), so it only captures
     // owned or copyable data and clones what it needs per call.
+    // The destination picker lists the submix buses by the same names the
+    // rest of the UI uses for them (a user label on an output strip
+    // included), and selecting one is exactly the top bar's Submix field.
+    let dest_labels: Vec<String> = (0..OUT_LABELS.len())
+        .map(|i| {
+            user_label(state, ChannelId::Output(i * 2))
+                .unwrap_or(OUT_LABELS[i])
+                .to_string()
+        })
+        .collect();
+
     let build_content = move || -> Element<'_, Message> {
         let labels_for_pick = labels.clone();
         let cids = cids.clone();
-        let source_picker = row![
-            text("Source")
-                .color(theme::TEXT_SEC)
-                .size(theme::TEXT_XS * scale),
+        let strip_w = strip::STRIP_W * big_scale;
+        fn styled<'p>(
+            p: iced::widget::PickList<'p, String, Vec<String>, String, Message>,
+            scale: f32,
+            width: f32,
+        ) -> iced::widget::PickList<'p, String, Vec<String>, String, Message> {
+            p.style(theme::pick_list)
+                .menu_style(theme::menu)
+                .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+                .text_size(theme::TEXT_MD * scale)
+                .width(Length::Fixed(width))
+        }
+        let picker_style = |p| styled(p, scale, strip_w);
+        let source_picker = picker_style(
             pick_list(labels.clone(), current.clone(), move |label| {
                 let idx = labels_for_pick
                     .iter()
@@ -4028,13 +4224,17 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
                     .unwrap_or(0);
                 Message::QuickChannelSelected(cids[idx])
             })
-            .placeholder("select...")
-            .style(theme::pick_list)
-            .menu_style(theme::menu)
-            .text_size(theme::TEXT_MD * scale),
-        ]
-        .spacing(theme::SPACE_MD)
-        .align_y(iced::Alignment::Center);
+            .placeholder("select..."),
+        );
+        let dest_for_pick = dest_labels.clone();
+        let dest_picker = picker_style(pick_list(
+            dest_labels.clone(),
+            dest_labels.get(sel_out).cloned(),
+            move |label| {
+                let idx = dest_for_pick.iter().position(|l| *l == label).unwrap_or(0);
+                Message::SelectOutput(idx)
+            },
+        ));
 
         // `sel_out` indexes the 6 *submix pairs* (`OUT_LABELS`), but
         // `device.outputs()` is a flat list of individual physical
@@ -4045,28 +4245,42 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
         source_params.scale = big_scale;
         let mut dest_params = strip_params(state, dest_cid, sel_out);
         dest_params.scale = big_scale;
+        // Named and metered as the Mixer's output strip is: a linked pair
+        // is one "AN1/2" bus with both channels' meters, not its left half.
+        if state.device.output_linked(sel_out) {
+            let l = sel_out * 2;
+            if let Some(right) = state.device.outputs().get(l + 1) {
+                dest_params.name = pair_bus_label(&dest_params.name, &right.name);
+            }
+            dest_params.meter2 = state.output_meters.get(l + 1).map(MeterAnim::frame);
+            dest_params.meter2_available = output_meter_available(state, l + 1);
+        }
 
-        // Captions and a connector turn the two blocks into one readable
-        // sentence: this source, into this destination. Both columns carry
-        // the same structure (caption, then strip), so the strips line up.
-        let caption = |label: String| {
+        // Each block is caption, picker, strip: the picker sits on the
+        // strip it chooses, so the two columns read as one sentence (this
+        // source, into this destination) and the destination no longer
+        // has to be changed from the top bar.
+        let caption = |label: &'static str| {
             text(label)
                 .color(theme::TEXT_SEC)
                 .size(theme::TEXT_XS * scale)
         };
-
-        let source_block = column![caption("SOURCE".to_owned()), strip::strip(source_params)]
-            .spacing(theme::SPACE_MD * scale)
-            .align_x(iced::Alignment::Center);
-
+        let source_block = column![
+            caption("SOURCE"),
+            source_picker,
+            strip::strip(finish_params(state, source_params)),
+        ]
+        .spacing(theme::SPACE_MD * scale)
+        .align_x(iced::Alignment::Center);
         let dest_block = column![
-            caption(format!("DESTINATION · {}", OUT_LABELS[sel_out])),
-            strip::strip(dest_params),
+            caption("DESTINATION"),
+            dest_picker,
+            strip::strip(finish_params(state, dest_params)),
         ]
         .spacing(theme::SPACE_MD * scale)
         .align_x(iced::Alignment::Center);
 
-        let connector = text("→")
+        let connector = text("\u{2192}")
             .color(theme::TEXT_SEC)
             .size(theme::TEXT_XL * scale);
 
@@ -4076,10 +4290,9 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
 
         column![
             section_header("QUICK CONTROL", scale),
-            text("Pick a source, adjust how loud it is in the destination - no routing, no matrix. Tab for Mixer")
+            text("Choose a source and a destination, then set how loud the source is there. Tab switches to the Mixer.")
                 .color(theme::TEXT_SEC)
                 .size(theme::TEXT_XS * scale),
-            source_picker,
             blocks,
         ]
         .spacing(theme::SPACE_LG)
@@ -4127,11 +4340,12 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use super::{
-        all_channel_ids, any_channel_muted, any_channel_soloed, apply_pending_resize,
-        channel_is_muted, channel_is_soloed, is_undoable, new, power_sum_output_meters,
-        update, zoom, ChannelId, MeterAnim, Message, ZOOM_STEP,
+        any_channel_muted, any_channel_soloed, apply_pending_resize,
+        apply_prefs, channel_is_muted, channel_is_soloed, is_undoable, new, prefs_of,
+        power_sum_output_meters, update, zoom, ChannelId, MeterAnim, Message, View, ZOOM_STEP,
     };
     use crate::sidebar;
+    use crate::theme;
     use crate::widgets::strip;
     use std::collections::HashSet;
     use tuxmix_core::RmeDevice;
@@ -4775,6 +4989,86 @@ mod tests {
         assert!(!state.snapshot_dirty, "recalling the slot clears it");
         let _ = update(&mut state, Message::ToggleSidebar);
         assert!(!state.snapshot_dirty, "UI-only messages do not count");
+    }
+
+    #[test]
+    fn renaming_a_strip_sets_then_clears_its_label() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(0);
+        let _ = update(&mut state, Message::RenameStart(cid));
+        assert_eq!(state.renaming, Some(cid));
+        let _ = update(&mut state, Message::RenameChanged("  Vocal  ".into()));
+        let _ = update(&mut state, Message::RenameCommit);
+        assert_eq!(state.renaming, None);
+        assert_eq!(state.labels.get(&cid).map(String::as_str), Some("Vocal"));
+        assert!(state.undo_stack.is_empty(), "a label is not part of the mix");
+
+        // Editing starts from the current label; an empty commit restores
+        // the hardware name.
+        let _ = update(&mut state, Message::RenameStart(cid));
+        assert_eq!(state.rename_buf, "Vocal");
+        let _ = update(&mut state, Message::RenameChanged(String::new()));
+        let _ = update(&mut state, Message::RenameCommit);
+        assert!(state.labels.get(&cid).is_none());
+    }
+
+    #[test]
+    fn escape_cancels_a_rename_without_touching_the_label() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Playback(0);
+        state.labels.insert(cid, "DAW".into());
+        let _ = update(&mut state, Message::RenameStart(cid));
+        let _ = update(&mut state, Message::RenameChanged("oops".into()));
+        let _ = update(&mut state, Message::EscapePressed);
+        assert_eq!(state.renaming, None);
+        assert_eq!(state.labels.get(&cid).map(String::as_str), Some("DAW"));
+    }
+
+    #[test]
+    fn prefs_round_trip_through_the_state() {
+        let mut state = new(true, None, None);
+        state.view = View::Matrix;
+        state.sidebar_open = false;
+        state.sidebar_width = 300.0;
+        state.two_row = true;
+        state.ui_scale = 1.25;
+        state.sidebar_panels_open.groups = false;
+        state.show_original_names = true;
+        state.labels.insert(ChannelId::Output(2), "Monitors".into());
+        let saved = prefs_of(&state);
+
+        let mut fresh = new(true, None, None);
+        apply_prefs(&mut fresh, saved.clone());
+        assert_eq!(prefs_of(&fresh), saved);
+    }
+
+    #[test]
+    fn hand_edited_prefs_are_clamped_to_reachable_values() {
+        let mut state = new(true, None, None);
+        apply_prefs(
+            &mut state,
+            crate::prefs::Prefs {
+                sidebar_width: Some(10_000.0),
+                ui_scale: Some(9.0),
+                labels: vec![(ChannelId::Input(0), "   ".into())],
+                ..Default::default()
+            },
+        );
+        assert_eq!(state.sidebar_width, sidebar::MAX_WIDTH);
+        assert_eq!(state.ui_scale, theme::SCALE_MAX);
+        assert!(state.labels.is_empty(), "a blank label is no label");
+    }
+
+    #[test]
+    fn layout_changes_mark_prefs_dirty_and_mix_changes_do_not() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::Mute(ChannelId::Input(0), true));
+        assert!(!state.prefs_dirty);
+        let _ = update(&mut state, Message::SetTwoRow(true));
+        assert!(state.prefs_dirty);
+        // No `prefs_path` in tests, so the flush writes nothing.
+        let _ = update(&mut state, Message::Tick);
+        assert!(!state.prefs_dirty);
     }
 
     #[test]

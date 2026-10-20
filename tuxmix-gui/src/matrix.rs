@@ -176,6 +176,9 @@ fn input_row_groups(state: &TuxMix) -> Vec<RowGroup> {
         } else {
             (inputs[i].name.clone(), 1)
         };
+        let label = crate::app::user_label(state, ChannelId::Input(i))
+            .map(str::to_string)
+            .unwrap_or(label);
         groups.push(RowGroup {
             label,
             color: crate::app::type_tag(ty).1,
@@ -196,7 +199,10 @@ fn playback_row_groups(state: &TuxMix) -> Vec<RowGroup> {
     let n = state.device.playbacks().len();
     (0..n / 2)
         .map(|pair| RowGroup {
-            label: OUT_LABELS.get(pair).map(|s| s.to_string()).unwrap_or_default(),
+            label: crate::app::user_label(state, ChannelId::Playback(pair * 2))
+                .map(str::to_string)
+                .or_else(|| OUT_LABELS.get(pair).map(|s| s.to_string()))
+                .unwrap_or_default(),
             color: crate::app::PB_TAG,
             first_idx: pair * 2,
             count: 2,
@@ -404,7 +410,9 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
     ]
     .spacing(theme::SPACE_HAIRLINE);
     for pair in 0..(n_outputs / 2) {
-        let label = OUT_LABELS.get(pair).copied().unwrap_or_default().to_string();
+        let label = crate::app::user_label(state, ChannelId::Output(pair * 2))
+            .unwrap_or(OUT_LABELS.get(pair).copied().unwrap_or_default())
+            .to_string();
         footer = footer.push(header_cell(
             label,
             pair == state.sel_out,

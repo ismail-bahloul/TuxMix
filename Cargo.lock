@@ -3814,6 +3814,7 @@ dependencies = [
  "log",
  "png",
  "rosc",
+ "serde",
  "serde_json",
  "tokio",
  "tuxmix-core",

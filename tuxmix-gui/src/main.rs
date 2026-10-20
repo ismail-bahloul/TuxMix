@@ -15,6 +15,7 @@ mod icon;
 mod layouts;
 mod matrix;
 mod osc;
+mod prefs;
 mod scenes;
 mod sidebar;
 mod theme;
@@ -106,6 +107,12 @@ fn main() -> iced::Result {
     iced::application(
         move || {
             let mut state = app::new(mock, osc_config.clone(), backend.clone());
+            // Restore the window's own layout (view, sidebar, rows, zoom,
+            // channel names) before the command line overrides any of it.
+            if let Some(path) = prefs::path() {
+                app::apply_prefs(&mut state, prefs::load(&path));
+                state.prefs_path = Some(path);
+            }
             if let Some(view) = start_view {
                 state.view = view;
             }

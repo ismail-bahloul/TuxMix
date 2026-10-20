@@ -679,11 +679,11 @@ fn store_row(on_press: Message, scale: f32) -> Element<'static, Message> {
 }
 
 /// TotalMix's Options panel, cut to what this app can actually do. The
-/// mixer row count ("2 Row" in TotalMix) is real (`Message::SetTwoRow`).
+/// mixer row count ("2 Row" in TotalMix, `Message::SetTwoRow`) and "names"
+/// (TotalMix's "Show Names", `Message::SetShowOriginalNames`) are real.
 /// The rest of TotalMix's panel was dropped rather than shown as dead
 /// switches: "routing: free" (editing several submixes at once) and
-/// "show: trim" have no counterpart here, "show: names" needs channel
-/// renaming, which does not exist, "meters: post FX" is moot without an FX
+/// "show: trim" have no counterpart here, "meters: post FX" is moot without an FX
 /// engine and "RMS" needs a numeric level readout the strips do not have.
 fn options_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let header = panel_header(
@@ -710,6 +710,21 @@ fn options_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
             !state.two_row,
             Some(Message::SetTwoRow(false)),
             Some(Message::SetTwoRow(true)),
+            scale,
+        ),
+        scale,
+    ));
+
+    // TotalMix's "Show Names": the hardware names, even where a strip was
+    // renamed (double-click a strip's name to rename it).
+    body = body.push(options_row(
+        Some("names"),
+        segmented_row(
+            "custom",
+            "original",
+            !state.show_original_names,
+            Some(Message::SetShowOriginalNames(false)),
+            Some(Message::SetShowOriginalNames(true)),
             scale,
         ),
         scale,

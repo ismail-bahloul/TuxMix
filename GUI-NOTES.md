@@ -3470,3 +3470,48 @@ Verified in Xvfb with real clicks: 2 rows lays the whole mixer out
 without scrolling at 1920x1080; DIM lights; a fader move puts the dot on
 Mix 1; Ctrl-clicking two strips lights F and F clears it; muting one
 strip lights M and M clears it. `cargo test --workspace`: 206 passed.
+
+## 2026-10-20 (cont. 3): GUI preferences, channel names, Quick destination picker
+
+**Preferences persist** (`tuxmix-gui/src/prefs.rs`). The window's own
+layout, as opposed to the mix (which stays in the shared auto-saved
+scene), is written to `$XDG_CONFIG_HOME/tuxmix/gui.json` (else
+`~/.config/tuxmix/gui.json`): view, sidebar open/width, which sidebar
+panels are open, 2-row mixer, zoom, channel names, "show original
+names". Every field is optional on read, a file that does not parse is
+ignored, values are clamped to what the UI itself can reach
+(`apply_prefs`), and writes go through a temp file + rename. A change
+marks `prefs_dirty` (`changes_prefs`), flushed on the next 50 ms `Tick`
+and on window close, so a sidebar drag writes once per tick at most.
+`prefs_path` is set by `main` only: tests build state through `app::new`
+and never touch the user's config. `--view` still overrides the saved
+view. The Xvfb test script points `XDG_CONFIG_HOME` at a throwaway
+directory for the same reason.
+
+**Channel names.** Double-click a strip's name to rename it: the name
+becomes a focused, pre-selected text field; Enter keeps it, an empty name
+restores the hardware one, Escape cancels. The name's `mouse_area`
+forwards single clicks as `StripClicked` (iced's `mouse_area` captures
+every press once it has a double-click handler), so Ctrl/Shift-click
+selection still works on the name and a double-click there no longer
+also collapses the strip. A name is a GUI label keyed by the strip's
+channel (a linked pair's left channel), never written to the device
+model, so OSC addresses, scenes and the TUI keep the hardware names. It
+shows on the strip (`finish_params`, applied after pair-name joining so
+"Vocals" replaces "AN1/2" whole), in the Quick pickers and in the Matrix
+row groups and output footer (`user_label`). The Options panel gains
+TotalMix's "Show Names" as "names: custom / original".
+
+**Quick view.** The destination could only be changed from the top bar's
+Submix field. Each block is now caption, picker, strip: a Source picker
+over the source strip and a Destination picker over the destination
+strip (the same `SelectOutput` as the Submix field, so both stay in
+sync), both strip-wide. The destination strip is named and metered like
+the Mixer's output strip ("AN1/2" with both channels' meters for a linked
+pair, it showed "AN1" and one bar).
+
+Verified in Xvfb: renaming AN1/2 to "Vocal" (strip stays expanded, file
+written), switching to 2 rows and folding the sidebar, then restarting
+without `--view`: Mixer, 2 rows, folded sidebar and "Vocal" all come
+back. Destination picker to PH3/4 moves the top bar's Submix too.
+`cargo test --workspace`: 214 passed.
