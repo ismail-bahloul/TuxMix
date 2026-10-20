@@ -3578,3 +3578,17 @@ changed. `cargo test --workspace`: 226 passed.
 
 Testing note: a `git worktree` build of an older commit that shares
 `target/` overwrites `target/debug/tuxmix-gui`; rebuild before testing.
+
+## 2026-10-20 (cont. 5): the Options switches must always do what they show
+
+User report: the Options panel "does not work". Reproduced at a 1410 px
+window. "2 rows" only applied when the input and playback blocks fit side
+by side, and silently kept the stacked layout otherwise, so the switch lit
+and nothing changed. It is now always honored, and the side-by-side row
+scrolls sideways when it is wider than the window (`responsive_row`, like
+any other over-wide strip row). "names: custom / original" had nothing to
+switch until a strip was renamed; it is now inert and dimmed until then,
+with a tooltip saying how to rename (`segment_cell` dims a side that has
+no `on_press`). Verified in Xvfb at 1410 px: 2 rows lays out side by side
+with a sideways scroll; names is dim with its hint, becomes live after a
+rename, and "original" shows the hardware name again.

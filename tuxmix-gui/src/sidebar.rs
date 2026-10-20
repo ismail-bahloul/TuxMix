@@ -716,17 +716,25 @@ fn options_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     ));
 
     // TotalMix's "Show Names": the hardware names, even where a strip was
-    // renamed (double-click a strip's name to rename it).
+    // renamed. With nothing renamed there is nothing to switch, so the row
+    // is inert and says how to rename instead of lighting up and doing
+    // nothing.
+    let has_labels = !state.labels.is_empty();
+    let names = segmented_row(
+        "custom",
+        "original",
+        !state.show_original_names || !has_labels,
+        has_labels.then_some(Message::SetShowOriginalNames(false)),
+        has_labels.then_some(Message::SetShowOriginalNames(true)),
+        scale,
+    );
     body = body.push(options_row(
         Some("names"),
-        segmented_row(
-            "custom",
-            "original",
-            !state.show_original_names,
-            Some(Message::SetShowOriginalNames(false)),
-            Some(Message::SetShowOriginalNames(true)),
-            scale,
-        ),
+        if has_labels {
+            names
+        } else {
+            hint(names, "Double-click a strip's name to rename it", scale)
+        },
         scale,
     ));
 

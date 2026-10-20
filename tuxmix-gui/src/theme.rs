@@ -501,7 +501,14 @@ pub fn segment_cell(active: bool) -> impl Fn(&iced::Theme, button::Status) -> bu
             } else {
                 background
             })),
-            text_color: if active { TEXT_PRIMARY } else { TEXT_SEC },
+            // A side with no `on_press` is inert: dimmed like every other
+            // disabled control, so a switch that cannot act does not look
+            // like one that just did nothing.
+            text_color: match (status, active) {
+                (button::Status::Disabled, _) => Color { a: 0.4, ..TEXT_SEC },
+                (_, true) => TEXT_PRIMARY,
+                (_, false) => TEXT_SEC,
+            },
             border: Border {
                 color: if active { BORDER } else { Color::TRANSPARENT },
                 width: 1.0,

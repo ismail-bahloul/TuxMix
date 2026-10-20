@@ -4146,14 +4146,15 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
         .size(theme::TEXT_XS * scale)
     };
     // TotalMix's "2 Row" (Options panel): inputs and playbacks side by
-    // side, outputs underneath, so the whole mixer fits in two rows of
-    // strips. Only taken when both rows really fit next to each other;
-    // otherwise the stacked layout (which scrolls each row on its own)
-    // is the honest fallback, rather than squeezing one of them.
+    // side, outputs underneath. Always honored once chosen: when the two
+    // blocks are wider than the window, the top row scrolls sideways like
+    // any other over-wide strip row. (It used to fall back to the stacked
+    // layout instead, so on a narrower window the switch lit up and
+    // nothing changed.)
     let side_gap = theme::SPACE_XXL * scale;
-    let fits_side_by_side = input_width + side_gap + pb_width <= available_width;
-    let sources: Element<'_, Message> = if state.two_row && fits_side_by_side {
-        row![
+    let side_by_side_width = input_width + side_gap + pb_width;
+    let sources: Element<'_, Message> = if state.two_row {
+        let side_by_side = row![
             column![
                 section_header("HARDWARE INPUTS", scale),
                 submix_hint(),
@@ -4171,8 +4172,8 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             .spacing(theme::SPACE_LG)
             .width(Length::Fixed(pb_width)),
         ]
-        .spacing(side_gap)
-        .into()
+        .spacing(side_gap);
+        responsive_row(side_by_side.into(), side_by_side_width, available_width)
     } else {
         column![
             section_header("HARDWARE INPUTS", scale),
