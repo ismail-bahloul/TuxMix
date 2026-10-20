@@ -1,3 +1,4 @@
+pub mod crosspoint;
 pub mod eq_plot;
 pub mod fader;
 pub mod knob;

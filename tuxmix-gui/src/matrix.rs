@@ -8,14 +8,20 @@
 //! backwards and used a fader-per-cell instead of TotalMix's bare
 //! numeric cells.
 //!
-//! Cells are click-drag interactive (a hidden `Fader`, see
-//! `Fader::show_track`/`label`) — vertical drag adjusts the crosspoint,
-//! same feel as every other fader in the app, just with no visible
-//! track/cap so the bare number stays the only thing drawn. Only the
-//! side of an output pair a channel can actually reach is interactive;
-//! the other side (for every source except the 4 true-mono AN1-4
-//! inputs) is a plain static cell, since the hardware itself has no
-//! way to route there (see `push_channel_rows`'s own doc comment).
+//! Interaction and colors follow RME's own Matrix documentation
+//! (docs.rme-audio.com, "The Matrix"), see `widgets::crosspoint`: drag a
+//! cell up/down for its gain, Ctrl+click toggles it between off and 0 dB,
+//! double-click resets it, the wheel scrolls the grid. Pointing at a cell
+//! lights its row and column labels ("the outer labels light up ...
+//! according to the mouse position") and the view's caption reads it out.
+//! The column header, the output masters and the bus labels stay put
+//! while the source rows scroll under them (TotalMix: "the labels are
+//! floating. They won't leave the visible area when scrolling").
+//!
+//! Only the side of an output pair a channel can actually reach is
+//! interactive; the other side (for every source except the 4 true-mono
+//! AN1-4 inputs) is an inert cell, since the hardware itself has no way
+//! to route there (see `push_channel_rows`'s own doc comment).
 
 use iced::keyboard::Modifiers;
 use iced::widget::{column, container, row, scrollable, text};
@@ -23,111 +29,72 @@ use iced::{Color, Element, Length};
 
 use tuxmix_core::{ChannelId, ChannelType, RmeDevice};
 
-use crate::app::{pair_bus_label, Message, TuxMix, OUT_LABELS};
+use crate::app::{pair_bus_label, short_label, Message, TuxMix, OUT_LABELS};
 use crate::theme;
-use crate::widgets::fader::{fader, Fader, MeterFrame};
+use crate::widgets::crosspoint::{cell_text, crosspoint, Crosspoint};
 
-/// Column width / row height at `scale == 1.0` — sized for a 2-3
-/// character dB value, not a fader track.
-const CELL_W: f32 = 40.0;
+/// Column width / row height at `scale == 1.0` — sized for a signed,
+/// one-decimal dB value.
+const CELL_W: f32 = 42.0;
 const CELL_H: f32 = 20.0;
 /// Row-group label column ("AN1", "IN3/4", "AS1/2", ...).
-const GROUP_LABEL_W: f32 = 56.0;
+const GROUP_LABEL_W: f32 = 64.0;
 /// Per-row sequential label column ("In 1", "Pb 12", ...).
 const IDX_LABEL_W: f32 = 40.0;
 /// Matches `strip.rs`'s own "recall a sane starting point" reset value
-/// (see `Message::Reset`) — dragged crosspoints double-click back to
-/// this, not to full unity.
+/// (see `Message::Reset`) — a double-clicked crosspoint goes back to
+/// this, not to full unity (Ctrl+click is the 0 dB toggle).
 const RESET_VOLUME: f32 = 0.75;
-
-/// Bare "-9.8"-style cell text (no " dB" suffix, unlike `app::db_text`
-/// — TotalMix's own matrix cells are bare numbers) — `None` for an
-/// effectively-silent crosspoint, which TotalMix leaves blank rather
-/// than printing "-inf" into every unrouted cell.
-fn cell_text(vol: f32) -> Option<String> {
-    (vol > f32::EPSILON).then(|| format!("{:.1}", 20.0 * vol.log10()))
-}
 
 /// Extra space after each output pair's two columns (and between source
 /// groups' rows), on top of the grid's hairline: without it twelve equal
 /// columns read as one undifferentiated wall of numbers.
 const PAIR_GAP: f32 = theme::SPACE_SM;
 
-/// A plain, non-interactive cell — used for the side of an output pair
-/// a channel has no hardware path to (see the module doc comment).
-fn cell(in_sel: bool, scale: f32) -> Element<'static, Message> {
-    container(iced::widget::Space::new())
-        .width(Length::Fixed(CELL_W * scale))
-        .height(Length::Fixed(CELL_H * scale))
-        .style(theme::matrix_cell(None, in_sel))
-        .into()
-}
-
-/// A real crosspoint cell: a `Fader` with `show_track: false` and its
-/// bare dB value as `label` — a fully working vertical drag hidden
-/// behind the number, not a second visible control. `on_press`/
-/// `on_drag` write straight to `Message::VolumeChanged`, matching this
-/// view's own pre-existing (undo-exempt) convention rather than
-/// `strip.rs`'s `FaderPressed` — Matrix edits have never fed the undo
-/// stack, and changing that is a separate decision from rebuilding the
-/// grid itself.
-fn interactive_cell(
-    vol: f32,
+/// One grid cell. `cid`/`pair` say what a gesture writes
+/// (`Message::VolumeChanged(cid, pair, _)`), `col` is the physical output
+/// column, for the hover crosshair.
+#[allow(clippy::too_many_arguments)]
+fn cell(
+    state: &TuxMix,
     cid: ChannelId,
     pair: usize,
-    in_sel: bool,
-    modifiers: Modifiers,
-    scale: f32,
+    col: usize,
+    value: f32,
+    shown: f32,
+    interactive: bool,
+    muted: bool,
+    phase: bool,
 ) -> Element<'static, Message> {
-    let active = vol > f32::EPSILON;
-    let f = fader(Fader {
-        value: vol,
-        range: (0.0, 2.0),
-        default_value: 1.0,
-        meter: MeterFrame::still(0.0),
-        meter_available: false,
-        meter2: None,
-        meter2_available: false,
-        height: CELL_H * scale,
-        show_meter: false,
-        reserved_right: 0.0,
-        modifiers,
-        scale,
-        show_track: false,
-        label: Some(cell_text(vol).unwrap_or_default()),
-        label_color: if active { theme::TEXT_PRIMARY } else { theme::TEXT_SEC },
-        // The canvas itself is the full cell width, not just the
-        // fader's own narrower track — the whole visual cell is the
-        // real click/drag hit area, not just its inner ~26px (see
-        // `Fader::compact_width`'s own doc comment for why that used
-        // to be a real, if small, gap between "looks clickable" and
-        // "is clickable").
-        compact_width: CELL_W,
-        on_press: Box::new(move |v, _| Message::VolumeChanged(cid, pair, v)),
-        on_drag: Box::new(move |v| Message::VolumeChanged(cid, pair, v)),
-        on_release: Box::new(move || Message::RangeCleared(cid)),
-        on_reset: Box::new(move || Message::VolumeChanged(cid, pair, RESET_VOLUME)),
-    });
-    // The canvas now already matches the cell's own size exactly (see
-    // `compact_width` above) — this container's width/height are
-    // therefore redundant with the canvas's own, kept anyway for the
-    // border/background styling that matches `cell()`'s static
-    // neighbor, not for sizing.
-    container(f)
-        .width(Length::Fixed(CELL_W * scale))
-        .height(Length::Fixed(CELL_H * scale))
-        .align_x(iced::Alignment::Center)
-        .align_y(iced::Alignment::Center)
-        .style(theme::matrix_cell(active.then_some(vol), in_sel))
-        .into()
+    let scale = state.ui_scale;
+    let modifiers: Modifiers = state.modifiers;
+    crosspoint(
+        Crosspoint {
+            value,
+            shown,
+            interactive,
+            muted,
+            phase,
+            in_sel: col / 2 == state.sel_out,
+            hovered: state.matrix_hover == Some((cid, col)),
+            modifiers,
+            scale,
+            reset_value: RESET_VOLUME,
+            on_change: Box::new(move |v| Message::VolumeChanged(cid, pair, v)),
+            on_release: Message::RangeCleared(cid),
+            on_hover: Box::new(move |over| Message::MatrixHover(cid, col, over)),
+        },
+        CELL_W * scale,
+        CELL_H * scale,
+    )
 }
 
-fn header_cell(label: String, active: bool, width: f32, scale: f32) -> Element<'static, Message> {
-    container(
-        text(label)
-            .size(theme::TEXT_MICRO * scale)
-            .color(if active { theme::ACCENT } else { theme::TEXT_SEC }),
-    )
+fn header_cell(label: String, lit: bool, width: f32, scale: f32) -> Element<'static, Message> {
+    container(text(label).size(theme::TEXT_MICRO * scale).color(if lit {
+        theme::ACCENT
+    } else {
+        theme::TEXT_SEC
+    }))
     .width(Length::Fixed(width * scale))
     .height(Length::Fixed(CELL_H * scale))
     .align_x(iced::Alignment::Center)
@@ -136,12 +103,18 @@ fn header_cell(label: String, active: bool, width: f32, scale: f32) -> Element<'
 }
 
 fn label_cell(label: String, width: f32, color: Color, scale: f32) -> Element<'static, Message> {
-    container(text(label).size(theme::TEXT_MICRO * scale).color(color))
-        .width(Length::Fixed(width * scale))
-        .height(Length::Fixed(CELL_H * scale))
-        .align_x(iced::Alignment::Start)
-        .align_y(iced::Alignment::Center)
-        .into()
+    container(
+        text(label)
+            .size(theme::TEXT_MICRO * scale)
+            .color(color)
+            .wrapping(iced::advanced::text::Wrapping::None),
+    )
+    .width(Length::Fixed(width * scale))
+    .height(Length::Fixed(CELL_H * scale))
+    .align_x(iced::Alignment::Start)
+    .align_y(iced::Alignment::Center)
+    .clip(true)
+    .into()
 }
 
 /// One row-group's worth of rows: a shared label ("AN1", "IN3/4", ...),
@@ -210,11 +183,63 @@ fn playback_row_groups(state: &TuxMix) -> Vec<RowGroup> {
         .collect()
 }
 
+/// A mono source's (volume, pan) decoded into what reaches the left and
+/// right outputs of a pair.
+fn mono_sides(vol: f32, pan: i8) -> (f32, f32) {
+    let pf = pan as f32 / 100.0;
+    if pan == 0 {
+        (vol, vol)
+    } else if pf < 0.0 {
+        (vol, vol * (1.0 + pf))
+    } else {
+        (vol * (1.0 - pf), vol)
+    }
+}
+
+/// What one source row needs from the device model.
+struct RowSource {
+    volumes: Vec<f32>,
+    /// `Some` for the true-mono sources (AN1-4), which reach both sides
+    /// of every pair through their pan.
+    pans: Option<Vec<i8>>,
+    muted: bool,
+    phase: bool,
+}
+
+fn row_source(state: &TuxMix, cid: ChannelId) -> Option<RowSource> {
+    match cid {
+        ChannelId::Input(i) => state.device.inputs().get(i).map(|ch| RowSource {
+            volumes: ch.volumes.clone(),
+            pans: (i < 4).then(|| ch.pans.clone()),
+            muted: ch.mute,
+            phase: ch.phase,
+        }),
+        ChannelId::Playback(i) => state.device.playbacks().get(i).map(|ch| RowSource {
+            volumes: ch.volumes.clone(),
+            pans: None,
+            muted: ch.mute,
+            phase: false,
+        }),
+        ChannelId::Output(_) => None,
+    }
+}
+
+/// The gain a source row sends to physical output column `col`, as the
+/// cell shows it (`None` = the hardware has no path there).
+fn shown_gain(src: &RowSource, idx: usize, col: usize) -> Option<f32> {
+    let pair = col / 2;
+    let vol = *src.volumes.get(pair)?;
+    match &src.pans {
+        Some(pans) => {
+            let (l, r) = mono_sides(vol, pans.get(pair).copied().unwrap_or(0));
+            Some(if col % 2 == 0 { l } else { r })
+        }
+        None => (col % 2 == idx % 2).then_some(vol),
+    }
+}
+
 /// Builds every data row for one section (inputs or playbacks) and
-/// appends them to `rows`. `volumes_of`/`pans_of` read straight off
-/// `state`, so they're plain closures rather than a borrowed slice —
-/// keeps this generic over `InputChannel`/`PlaybackChannel` without a
-/// shared trait between the two.
+/// appends them to `rows`.
 ///
 /// **Which columns are interactive**: our own per-channel model stores
 /// one volume *per output pair*, not per individual physical output
@@ -224,25 +249,20 @@ fn playback_row_groups(state: &TuxMix) -> Vec<RowGroup> {
 /// one value is editable through whichever single column (left/right)
 /// this channel naturally feeds (`idx % 2`, the same convention
 /// `set_channel_volume` already uses everywhere); the other column of
-/// that pair is a plain, non-interactive blank — there's nothing real
-/// on this hardware to drag. The 4 true-mono sources (AN1-4) are the
-/// one genuine exception: both columns show independent (volume, pan)-
-/// decoded values, and both are interactive, dragging the *same*
-/// underlying `volumes[pair]` — this view edits level, not pan, so
-/// either column moving the one real stored value (rather than solving
-/// a new pan split per drag) is the correct, simpler answer.
-#[allow(clippy::too_many_arguments)]
-fn push_channel_rows(
-    mut rows: iced::widget::Column<'static, Message>,
+/// that pair is inert — there's nothing real on this hardware to drag.
+/// The 4 true-mono sources (AN1-4) are the one genuine exception: both
+/// columns show their pan-decoded values and both are interactive,
+/// moving the *same* underlying `volumes[pair]` (this view edits level,
+/// not pan).
+fn push_channel_rows<'a>(
+    state: &'a TuxMix,
+    mut rows: iced::widget::Column<'a, Message>,
     groups: &[RowGroup],
     row_prefix: &'static str,
-    sel_out: usize,
-    scale: f32,
-    modifiers: Modifiers,
     cid_of: impl Fn(usize) -> ChannelId,
-    volumes_of: impl Fn(usize) -> Vec<f32>,
-    pans_of: impl Fn(usize) -> Option<Vec<i8>>,
-) -> iced::widget::Column<'static, Message> {
+) -> iced::widget::Column<'a, Message> {
+    let scale = state.ui_scale;
+    let hovered_row = state.matrix_hover.map(|(c, _)| c);
     for (gi, g) in groups.iter().enumerate() {
         if gi > 0 {
             rows = rows.push(iced::widget::Space::new().height(PAIR_GAP * scale));
@@ -250,45 +270,42 @@ fn push_channel_rows(
         for local in 0..g.count {
             let idx = g.first_idx + local;
             let cid = cid_of(idx);
+            let Some(src) = row_source(state, cid) else {
+                continue;
+            };
+            let lit = hovered_row == Some(cid);
             let mut r = row![
                 label_cell(
-                    if local == 0 { g.label.clone() } else { String::new() },
+                    if local == 0 {
+                        g.label.clone()
+                    } else {
+                        String::new()
+                    },
                     GROUP_LABEL_W,
-                    g.color,
+                    if lit { theme::ACCENT } else { g.color },
                     scale
                 ),
-                label_cell(format!("{row_prefix} {}", idx + 1), IDX_LABEL_W, theme::TEXT_SEC, scale),
+                label_cell(
+                    format!("{row_prefix} {}", idx + 1),
+                    IDX_LABEL_W,
+                    if lit { theme::ACCENT } else { theme::TEXT_SEC },
+                    scale
+                ),
             ]
             .spacing(theme::SPACE_HAIRLINE);
 
-            let vols = volumes_of(idx);
-            let pans = pans_of(idx);
-            let is_mono = pans.is_some();
-            let natural_side = idx % 2; // 0 = left, 1 = right
-            for (pair, &vol) in vols.iter().enumerate() {
-                let in_sel = pair == sel_out;
-                if is_mono {
-                    let pan = pans.as_ref().unwrap()[pair];
-                    let (left_val, right_val) = if pan == 0 {
-                        (vol, vol)
-                    } else {
-                        let pf = pan as f32 / 100.0;
-                        if pf <= 0.0 {
-                            (vol, vol * (1.0 + pf))
-                        } else {
-                            (vol * (1.0 - pf), vol)
-                        }
-                    };
-                    r = r.push(interactive_cell(left_val, cid, pair, in_sel, modifiers, scale));
-                    r = r.push(interactive_cell(right_val, cid, pair, in_sel, modifiers, scale));
-                } else if natural_side == 0 {
-                    r = r.push(interactive_cell(vol, cid, pair, in_sel, modifiers, scale));
-                    r = r.push(cell(in_sel, scale));
-                } else {
-                    r = r.push(cell(in_sel, scale));
-                    r = r.push(interactive_cell(vol, cid, pair, in_sel, modifiers, scale));
+            for col in 0..src.volumes.len() * 2 {
+                let pair = col / 2;
+                let stored = src.volumes[pair];
+                r = r.push(match shown_gain(&src, idx, col) {
+                    Some(shown) => cell(
+                        state, cid, pair, col, stored, shown, true, src.muted, src.phase,
+                    ),
+                    None => cell(state, cid, pair, col, 0.0, 0.0, false, false, false),
+                });
+                if col % 2 == 1 {
+                    r = r.push(pair_gap(scale));
                 }
-                r = r.push(pair_gap(scale));
             }
             rows = rows.push(r);
         }
@@ -317,14 +334,73 @@ fn pair_gap(scale: f32) -> Element<'static, Message> {
     iced::widget::Space::new().width(PAIR_GAP * scale).into()
 }
 
+fn hairline() -> Element<'static, Message> {
+    container(iced::widget::Space::new().width(Length::Fill).height(1))
+        .style(|_theme: &iced::Theme| container::Style {
+            background: Some(iced::Background::Color(theme::BORDER)),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The hovered cell, spelled out for the view's caption:
+/// "AN1 -> Out 3 (PH3/4 L): -6.0 dB". `None` when nothing is hovered.
+pub fn hover_readout(state: &TuxMix) -> Option<String> {
+    let (cid, col) = state.matrix_hover?;
+    let pair = col / 2;
+    let bus = crate::app::user_label(state, ChannelId::Output(pair * 2))
+        .unwrap_or(OUT_LABELS.get(pair).copied().unwrap_or_default())
+        .to_string();
+    let side = if col % 2 == 0 { "L" } else { "R" };
+    let (source, gain) = match cid {
+        ChannelId::Output(i) => {
+            let out = state.device.outputs().get(i)?;
+            ("Output master".to_string(), Some(out.volume))
+        }
+        ChannelId::Input(i) | ChannelId::Playback(i) => {
+            let name = crate::app::user_label(state, cid)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    match cid {
+                        ChannelId::Input(_) => state.device.inputs().get(i).map(|c| c.name.clone()),
+                        _ => state
+                            .device
+                            .playbacks()
+                            .get(i)
+                            .map(|c| short_label(&c.name).to_string()),
+                    }
+                    .unwrap_or_default()
+                });
+            let src = row_source(state, cid)?;
+            (name, shown_gain(&src, i, col))
+        }
+    };
+    let level = match gain {
+        None => "no hardware path".to_string(),
+        Some(v) => match cell_text(v) {
+            Some(db) => format!("{db} dB"),
+            None => "off".to_string(),
+        },
+    };
+    Some(format!(
+        "{source} \u{2192} Out {} ({bus} {side}): {level}",
+        col + 1
+    ))
+}
+
 pub fn view(state: &TuxMix) -> Element<'_, Message> {
+    iced::widget::responsive(move |size| grid_view(state, size)).into()
+}
+
+/// The whole grid for a panel of `size` (see the frozen-panes note below
+/// for why the size matters).
+fn grid_view(state: &TuxMix, size: iced::Size) -> Element<'_, Message> {
     let scale = state.ui_scale;
-    let modifiers = state.modifiers;
     let n_outputs = state.device.outputs().len();
+    let hovered_col = state.matrix_hover.map(|(_, c)| c);
 
     // ── Column header: individual output channels ("Out 1".."Out 12"),
-    // active (accent) when it's the pair currently selected in the
-    // Submix picker.
+    // lit for the selected submix's pair and for the hovered column.
     let mut header = row![
         label_cell(String::new(), GROUP_LABEL_W, theme::TEXT_SEC, scale),
         label_cell(String::new(), IDX_LABEL_W, theme::TEXT_SEC, scale),
@@ -333,7 +409,7 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
     for out in 0..n_outputs {
         header = header.push(header_cell(
             format!("Out {}", out + 1),
-            out / 2 == state.sel_out,
+            out / 2 == state.sel_out || hovered_col == Some(out),
             CELL_W,
             scale,
         ));
@@ -342,68 +418,61 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
         }
     }
 
-    let mut rows = column![header].spacing(theme::SPACE_HAIRLINE);
-
-    rows = rows.push(section_caption("Hardware inputs", scale));
-    rows = push_channel_rows(
-        rows,
+    let mut sources =
+        column![section_caption("Hardware inputs", scale)].spacing(theme::SPACE_HAIRLINE);
+    sources = push_channel_rows(
+        state,
+        sources,
         &input_row_groups(state),
         "In",
-        state.sel_out,
-        scale,
-        modifiers,
         ChannelId::Input,
-        |idx| state.device.inputs()[idx].volumes.clone(),
-        |idx| (idx < 4).then(|| state.device.inputs()[idx].pans.clone()),
     );
-    rows = rows.push(iced::widget::Space::new().height(PAIR_GAP * scale));
-    rows = rows.push(section_caption("Software playback", scale));
-    rows = push_channel_rows(
-        rows,
+    sources = sources.push(iced::widget::Space::new().height(PAIR_GAP * scale));
+    sources = sources.push(section_caption("Software playback", scale));
+    sources = push_channel_rows(
+        state,
+        sources,
         &playback_row_groups(state),
         "Pb",
-        state.sel_out,
-        scale,
-        modifiers,
         ChannelId::Playback,
-        |idx| state.device.playbacks()[idx].volumes.clone(),
-        |_| None,
     );
 
     // ── Master "Outputs" row: each output channel's own master volume,
-    // distinct from (and separated by a divider from) the crosspoint
-    // matrix above it — also a real, interactive fader-behind-a-number,
-    // same as every crosspoint cell.
+    // distinct from (and separated by a divider from) the crosspoints.
+    let out_lit = matches!(state.matrix_hover, Some((ChannelId::Output(_), _)));
     let mut out_row = row![
-        label_cell("Outputs".into(), GROUP_LABEL_W, theme::TEXT_PRIMARY, scale),
+        label_cell(
+            "Outputs".into(),
+            GROUP_LABEL_W,
+            if out_lit {
+                theme::ACCENT
+            } else {
+                theme::TEXT_PRIMARY
+            },
+            scale
+        ),
         label_cell(String::new(), IDX_LABEL_W, theme::TEXT_SEC, scale),
     ]
     .spacing(theme::SPACE_HAIRLINE);
     for (idx, out) in state.device.outputs()[..n_outputs].iter().enumerate() {
-        out_row = out_row.push(interactive_cell(
-            out.volume,
+        out_row = out_row.push(cell(
+            state,
             ChannelId::Output(idx),
             0,
-            idx / 2 == state.sel_out,
-            modifiers,
-            scale,
+            idx,
+            out.volume,
+            out.volume,
+            true,
+            out.mute,
+            false,
         ));
         if idx % 2 == 1 {
             out_row = out_row.push(pair_gap(scale));
         }
     }
-    rows = rows.push(iced::widget::Space::new().height(PAIR_GAP * scale));
-    rows = rows.push(container(iced::widget::Space::new().width(Length::Fill).height(1)).style(
-        |_theme: &iced::Theme| container::Style {
-            background: Some(iced::Background::Color(theme::BORDER)),
-            ..container::Style::default()
-        },
-    ));
-    rows = rows.push(out_row);
 
-    // ── Column-group footer: each output pair's bus label
-    // (`OUT_LABELS`), one label spanning both its columns (it used to be
-    // printed twice, once under each).
+    // ── Column-group footer: each output pair's bus label, one label
+    // spanning both its columns.
     let mut footer = row![
         label_cell(String::new(), GROUP_LABEL_W, theme::TEXT_SEC, scale),
         label_cell(String::new(), IDX_LABEL_W, theme::TEXT_SEC, scale),
@@ -415,23 +484,99 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
             .to_string();
         footer = footer.push(header_cell(
             label,
-            pair == state.sel_out,
+            pair == state.sel_out || hovered_col.is_some_and(|c| c / 2 == pair),
             2.0 * CELL_W + theme::SPACE_HAIRLINE / scale,
             scale,
         ));
         footer = footer.push(pair_gap(scale));
     }
-    rows = rows.push(footer);
 
-    let scroller = scrollable(rows)
-        .direction(scrollable::Direction::Both {
-            horizontal: theme::thin_scrollbar(),
-            vertical: theme::thin_scrollbar(),
-        })
+    // Frozen panes: only the source rows scroll vertically, under a fixed
+    // header and above the fixed output row and bus labels; the whole grid
+    // scrolls sideways as one, so the columns never drift from their
+    // labels. The source area gets a fixed height only when its rows do
+    // not fit: a column lays its children out in order, so a scrollable
+    // left to size itself takes all the room before the output row is
+    // placed, and pushes it off the panel.
+    let n_inputs = state.device.inputs().len();
+    let n_playbacks = state.device.playbacks().len();
+    let group_gaps = input_row_groups(state).len().saturating_sub(1)
+        + playback_row_groups(state).len().saturating_sub(1);
+    let source_elements = n_inputs + n_playbacks + 2 + group_gaps + 1;
+    let sources_h = (n_inputs + n_playbacks + 2) as f32 * CELL_H * scale
+        + (group_gaps + 1) as f32 * PAIR_GAP * scale
+        + source_elements.saturating_sub(1) as f32 * theme::SPACE_HAIRLINE;
+    let fixed_h = 3.0 * CELL_H * scale + PAIR_GAP * scale + 1.0 + 5.0 * theme::SPACE_HAIRLINE;
+    let grid_w = (GROUP_LABEL_W + IDX_LABEL_W) * scale
+        + n_outputs as f32 * CELL_W * scale
+        + (n_outputs / 2) as f32 * PAIR_GAP * scale
+        + (n_outputs + 2) as f32 * theme::SPACE_HAIRLINE;
+    let pad = theme::SPACE_LG;
+
+    let sideways_bar = if grid_w > size.width - 2.0 * pad {
+        10.0
+    } else {
+        0.0
+    };
+    let room = size.height - 2.0 * pad - fixed_h - sideways_bar;
+    let body_h = if sources_h <= room {
+        Length::Shrink
+    } else {
+        Length::Fixed(room.max(3.0 * CELL_H * scale))
+    };
+    let body = scrollable(sources)
+        .direction(scrollable::Direction::Vertical(theme::thin_scrollbar()))
+        .height(body_h)
         .style(theme::scrollable);
-
-    container(scroller)
-        .style(theme::panel)
-        .padding(theme::SPACE_LG)
+    let grid = column![
+        header,
+        body,
+        iced::widget::Space::new().height(PAIR_GAP * scale),
+        hairline(),
+        out_row,
+        footer,
+    ]
+    .spacing(theme::SPACE_HAIRLINE);
+    let sideways = scrollable(grid)
+        .direction(scrollable::Direction::Horizontal(theme::thin_scrollbar()))
+        .style(theme::scrollable);
+    container(container(sideways).style(theme::panel).padding(pad))
+        .width(Length::Fill)
+        .height(Length::Fill)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mono_sides, shown_gain, RowSource};
+
+    #[test]
+    fn a_stereo_source_reaches_only_its_own_side() {
+        let src = RowSource {
+            volumes: vec![0.5, 1.0],
+            pans: None,
+            muted: false,
+            phase: false,
+        };
+        // An odd channel (right of its pair) reaches the odd columns.
+        assert_eq!(shown_gain(&src, 1, 0), None);
+        assert_eq!(shown_gain(&src, 1, 1), Some(0.5));
+        assert_eq!(shown_gain(&src, 1, 3), Some(1.0));
+    }
+
+    #[test]
+    fn a_mono_source_is_split_by_its_pan() {
+        assert_eq!(mono_sides(1.0, 0), (1.0, 1.0));
+        let (l, r) = mono_sides(1.0, -50);
+        assert_eq!(l, 1.0);
+        assert!((r - 0.5).abs() < 1e-6);
+        let src = RowSource {
+            volumes: vec![1.0],
+            pans: Some(vec![100]),
+            muted: false,
+            phase: false,
+        };
+        assert_eq!(shown_gain(&src, 0, 0), Some(0.0));
+        assert_eq!(shown_gain(&src, 0, 1), Some(1.0));
+    }
 }

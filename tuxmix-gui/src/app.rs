@@ -775,6 +775,10 @@ pub enum Message {
     /// The Options panel's "names" row, TotalMix's "Show Names": show the
     /// original channel names even where the user renamed one.
     SetShowOriginalNames(bool),
+    /// The pointer entered (`true`) or left a Matrix cell: the source row,
+    /// and the physical output column. Drives the crosshair labels and
+    /// the view's readout.
+    MatrixHover(ChannelId, usize, bool),
 }
 
 /// The strip-rename field's widget id, so `RenameStart` can focus it.
@@ -984,6 +988,52 @@ pub struct TuxMix {
     /// A preference changed since the last write; flushed on `Tick` and
     /// on window close (`SaveNow`).
     pub prefs_dirty: bool,
+    /// The Matrix cell under the pointer (see `Message::MatrixHover`).
+    pub matrix_hover: Option<(ChannelId, usize)>,
+    /// The continuous edit the last undo step was opened for, and when it
+    /// last moved (see `undo_gesture`).
+    pub undo_gesture: Option<(UndoGesture, Instant)>,
+}
+
+/// What a continuous control is editing. A drag, a wheel spin or a knob
+/// turn sends many messages; all of them on the same control, without a
+/// pause longer than `UNDO_COALESCE`, are one undo step instead of one
+/// per message (a knob turn used to need dozens of undos, and fader wheel
+/// spins and Matrix edits, sent as `VolumeChanged`, were never undoable at
+/// all).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UndoGesture {
+    Volume(ChannelId, usize),
+    Pan(ChannelId, usize),
+    Gain(usize),
+    Trim(usize),
+    EqBand(usize, usize),
+    LowCut(usize),
+    Pitch,
+    Width,
+}
+
+/// See `UndoGesture`. Long enough to bridge the gaps inside one wheel spin
+/// or knob turn, short enough that two deliberate edits stay two steps.
+const UNDO_COALESCE: Duration = Duration::from_millis(700);
+
+fn undo_gesture(message: &Message) -> Option<UndoGesture> {
+    Some(match message {
+        Message::VolumeChanged(cid, out, _) | Message::FaderPressed(cid, out, ..) => {
+            UndoGesture::Volume(*cid, *out)
+        }
+        Message::PanChanged(cid, out, _) => UndoGesture::Pan(*cid, *out),
+        Message::Gain(idx, _) => UndoGesture::Gain(*idx),
+        Message::TrimChanged(idx, _) => UndoGesture::Trim(*idx),
+        Message::EqBandFreq(idx, band, _)
+        | Message::EqBandQ(idx, band, _)
+        | Message::EqBandGain(idx, band, _)
+        | Message::EqBandPoint(idx, band, ..) => UndoGesture::EqBand(*idx, *band),
+        Message::EqLowCutFreq(idx, _) => UndoGesture::LowCut(*idx),
+        Message::PitchChanged(_) => UndoGesture::Pitch,
+        Message::WidthChanged(_) => UndoGesture::Width,
+        _ => return None,
+    })
 }
 
 /// Matches the "Max lines" default in oscmix's own OSC debug log — enough
@@ -1158,6 +1208,8 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         rename_buf: String::new(),
         prefs_path: None,
         prefs_dirty: false,
+        matrix_hover: None,
+        undo_gesture: None,
     }
 }
 
@@ -1589,7 +1641,6 @@ fn is_undoable(message: &Message) -> bool {
             | Message::ZoomIn
             | Message::ZoomOut
             | Message::ZoomReset
-            | Message::VolumeChanged(..)
             | Message::RangeCleared(_)
             | Message::ToggleCollapse(_)
             | Message::ToggleFlyout(..)
@@ -1616,6 +1667,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::SidebarResize(_)
             | Message::SetTwoRow(_)
             | Message::DimToggle
+            | Message::MatrixHover(..)
             | Message::RenameStart(_)
             | Message::RenameChanged(_)
             | Message::RenameCommit
@@ -1694,12 +1746,22 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         state.prefs_dirty = true;
     }
     if is_undoable(&message) {
-        let scene = state.device.capture_scene();
-        state.undo_stack.push(scene);
-        if state.undo_stack.len() > UNDO_STACK_CAP {
-            state.undo_stack.remove(0);
+        // A continuous edit opens one undo step for the whole gesture.
+        let now = Instant::now();
+        let gesture = undo_gesture(&message);
+        let continues = matches!(
+            (gesture, state.undo_gesture),
+            (Some(g), Some((last, at))) if g == last && now.duration_since(at) < UNDO_COALESCE
+        );
+        state.undo_gesture = gesture.map(|g| (g, now));
+        if !continues {
+            let scene = state.device.capture_scene();
+            state.undo_stack.push(scene);
+            if state.undo_stack.len() > UNDO_STACK_CAP {
+                state.undo_stack.remove(0);
+            }
+            state.redo_stack.clear();
         }
-        state.redo_stack.clear();
     }
     match message {
         Message::ToggleFullscreen(id) => {
@@ -1841,7 +1903,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 View::Matrix => View::Quick,
             };
         }
-        Message::SetView(v) => state.view = v,
+        Message::SetView(v) => {
+            state.view = v;
+            state.matrix_hover = None;
+        }
         Message::WheelZoom(y) => {
             // Only zoom on Ctrl+wheel; plain wheel keeps scrolling the
             // hovered scrollable (which iced handles on its own).
@@ -2048,6 +2113,8 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             apply_grouped_volume(state, cid, out, v);
         }
         Message::RangeCleared(cid) => {
+            // Letting go ends the gesture: the next drag is its own step.
+            state.undo_gesture = None;
             if state.drag_range.is_some_and(|(dc, _, _)| dc == cid) {
                 state.drag_range = None;
             }
@@ -2256,6 +2323,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
 
         // ── Right sidebar ────────────────────────────────────────────
         Message::Undo => {
+            state.undo_gesture = None;
             if let Some(scene) = state.undo_stack.pop() {
                 state.redo_stack.push(state.device.capture_scene());
                 if let Err(e) = state.device.apply_scene(&scene) {
@@ -2264,6 +2332,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::Redo => {
+            state.undo_gesture = None;
             if let Some(scene) = state.redo_stack.pop() {
                 state.undo_stack.push(state.device.capture_scene());
                 if let Err(e) = state.device.apply_scene(&scene) {
@@ -2299,6 +2368,15 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::SetShowOriginalNames(on) => state.show_original_names = on,
+        Message::MatrixHover(cid, col, over) => {
+            if over {
+                state.matrix_hover = Some((cid, col));
+            } else if state.matrix_hover == Some((cid, col)) {
+                // Only the cell that is hovered may clear it: moving from
+                // one cell to the next can deliver the new enter first.
+                state.matrix_hover = None;
+            }
+        }
         Message::DimToggle => {
             let on = !state.device.settings().dim;
             if let Err(e) = state.device.set_dim(on) {
@@ -2398,11 +2476,23 @@ pub fn subscription(state: &TuxMix) -> Subscription<Message> {
 
 fn handle_global_event(
     event: iced::Event,
-    _status: iced::event::Status,
+    status: iced::event::Status,
     id: window::Id,
 ) -> Option<Message> {
     match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) => {
+            // Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y. Left to a focused text field
+            // (a rename or a typed dB value), which has its own undo.
+            if modifiers.command() && status == iced::event::Status::Ignored {
+                if let Key::Character(c) = &key {
+                    match c.to_lowercase().as_str() {
+                        "z" if modifiers.shift() => return Some(Message::Redo),
+                        "z" => return Some(Message::Undo),
+                        "y" => return Some(Message::Redo),
+                        _ => {}
+                    }
+                }
+            }
             // Ctrl+= / Ctrl+- / Ctrl+0 — manual zoom. Accept "=" and "+"
             // (shifted/unshifted) and "0"; requires Ctrl.
             if modifiers.contains(keyboard::Modifiers::CTRL) {
@@ -4115,17 +4205,37 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
 
 fn matrix_view(state: &TuxMix) -> Element<'_, Message> {
     let scale = state.ui_scale;
+    // The caption reads out the cell under the pointer, and is the how-to
+    // the rest of the time (the gestures are not discoverable otherwise).
+    let caption = match matrix::hover_readout(state) {
+        Some(readout) => text(readout).color(theme::TEXT_PRIMARY),
+        None => text(
+            "Drag a cell up or down to set its gain (Shift: fine) \u{00b7} \
+             Ctrl+click: 0 dB / off \u{00b7} double-click: reset \u{00b7} Tab for Quick",
+        )
+        .color(theme::TEXT_SEC),
+    }
+    .size(theme::TEXT_XS * scale);
     let body = column![
         section_header("MATRIX MIXER", scale),
-        text("Volume per input per output - Tab for Quick")
-            .color(theme::TEXT_SEC)
-            .size(theme::TEXT_XS * scale),
+        caption,
         matrix::view(state),
     ]
     .spacing(theme::SPACE_LG)
-    .width(Length::Fill);
+    .width(Length::Fill)
+    .height(Length::Fill);
 
-    page(body)
+    // Not `page()`: the grid scrolls inside itself, under a fixed header
+    // (see `matrix::view`), which a page-wide scrollable would defeat.
+    mouse_area(
+        container(body)
+            .style(theme::root)
+            .padding([theme::SPACE_LG, theme::SPACE_XL])
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .on_press(Message::ClearSelection)
+    .into()
 }
 
 /// Every channel selectable as a Quick Control source, in display order —
@@ -5069,6 +5179,91 @@ mod tests {
         // No `prefs_path` in tests, so the flush writes nothing.
         let _ = update(&mut state, Message::Tick);
         assert!(!state.prefs_dirty);
+    }
+
+    #[test]
+    fn a_wheel_spin_or_matrix_drag_is_one_undo_step() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(4);
+        let before = state.device.inputs()[4].volumes[0];
+        // A burst of `VolumeChanged` with no press: a wheel spin, or a
+        // Matrix cell drag.
+        for v in [0.9, 0.8, 0.7, 0.6] {
+            let _ = update(&mut state, Message::VolumeChanged(cid, 0, v));
+        }
+        assert_eq!(state.undo_stack.len(), 1, "one step for the whole gesture");
+        let _ = update(&mut state, Message::Undo);
+        assert!((state.device.inputs()[4].volumes[0] - before).abs() < 1e-6);
+    }
+
+    #[test]
+    fn matrix_drag_then_toggle_undoes_step_by_step() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(4);
+        for v in [0.9, 0.7, 0.5] {
+            let _ = update(&mut state, Message::VolumeChanged(cid, 1, v));
+        }
+        let _ = update(&mut state, Message::RangeCleared(cid));
+        let _ = update(&mut state, Message::VolumeChanged(cid, 1, 0.0));
+        let _ = update(&mut state, Message::RangeCleared(cid));
+        let _ = update(&mut state, Message::Undo);
+        assert!((state.device.inputs()[4].volumes[1] - 0.5).abs() < 1e-6);
+        let _ = update(&mut state, Message::Undo);
+        assert!((state.device.inputs()[4].volumes[1] - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn hovering_the_matrix_is_not_an_edit() {
+        // It once was: every cell the pointer crossed pushed an empty undo
+        // step, so Undo "undid" hovers and seemed to do nothing.
+        let mut state = new(true, None, None);
+        state.active_snapshot = Some(1);
+        for col in 0..4 {
+            let _ = update(&mut state, Message::MatrixHover(ChannelId::Input(0), col, true));
+            let _ = update(&mut state, Message::MatrixHover(ChannelId::Input(0), col, false));
+        }
+        assert!(state.undo_stack.is_empty());
+        assert!(!state.snapshot_dirty);
+        assert!(!state.prefs_dirty);
+    }
+
+    #[test]
+    fn a_late_exit_does_not_clear_the_next_cells_hover() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let _ = update(&mut state, Message::MatrixHover(a, 0, true));
+        let _ = update(&mut state, Message::MatrixHover(a, 1, true));
+        let _ = update(&mut state, Message::MatrixHover(a, 0, false));
+        assert_eq!(state.matrix_hover, Some((a, 1)));
+    }
+
+    #[test]
+    fn a_knob_turn_is_one_undo_step() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Playback(0);
+        for p in [10, 20, 30, 40, 50] {
+            let _ = update(&mut state, Message::PanChanged(cid, 0, p));
+        }
+        assert_eq!(state.undo_stack.len(), 1);
+    }
+
+    #[test]
+    fn letting_go_ends_the_gesture() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(4);
+        let _ = update(&mut state, Message::VolumeChanged(cid, 0, 0.5));
+        let _ = update(&mut state, Message::RangeCleared(cid));
+        let _ = update(&mut state, Message::VolumeChanged(cid, 0, 0.4));
+        assert_eq!(state.undo_stack.len(), 2, "two drags, two steps");
+    }
+
+    #[test]
+    fn a_different_control_starts_a_new_step() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::VolumeChanged(ChannelId::Input(4), 0, 0.5));
+        let _ = update(&mut state, Message::VolumeChanged(ChannelId::Input(5), 0, 0.5));
+        let _ = update(&mut state, Message::Mute(ChannelId::Input(0), true));
+        assert_eq!(state.undo_stack.len(), 3);
     }
 
     #[test]

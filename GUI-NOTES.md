@@ -3515,3 +3515,66 @@ written), switching to 2 rows and folding the sidebar, then restarting
 without `--view`: Mixer, 2 rows, folded sidebar and "Vocal" all come
 back. Destination picker to PH3/4 moves the top bar's Submix too.
 `cargo test --workspace`: 214 passed.
+
+## 2026-10-20 (cont. 4): undo that covers every edit, and a production Matrix
+
+**Undo/Redo, reported as not working.** The stack itself was sound
+(`Undo`/`Redo` swap scenes correctly, the tests prove it); what fed it was
+not:
+
+- Fader wheel spins and every Matrix edit arrive as `VolumeChanged`,
+  which `is_undoable` excluded (only a fader *press* opened a step). None
+  of them could be undone.
+- Knob turns (pan, gain, trim, EQ, pitch, width) pushed one step per
+  movement message, so undoing one turn took dozens of presses.
+- A bug of this same day: `Message::MatrixHover` landed in
+  `changes_prefs` instead of the `is_undoable` exclusions, so every
+  Matrix cell the pointer crossed pushed an empty step, and Undo
+  "undid" hovers. Regression test: `hovering_the_matrix_is_not_an_edit`.
+- No keyboard shortcuts at all.
+
+Now a continuous control is one step per gesture (`UndoGesture`,
+`undo_gesture`): messages on the same control without a pause longer
+than `UNDO_COALESCE` (700 ms) share the step, letting go
+(`RangeCleared`) or undo/redo ends it, and a different control starts a
+new one. `VolumeChanged` is undoable again on that basis. Ctrl+Z,
+Ctrl+Shift+Z and Ctrl+Y work, unless a focused text field took the key
+(`event::Status::Captured`), which keeps its own undo.
+
+**Matrix.** Rebuilt against RME's own Matrix documentation
+(docs.rme-audio.com, "The Matrix"):
+
+- Cells are a dedicated widget (`widgets/crosspoint.rs`) instead of
+  hidden faders. The hidden fader took every wheel event (scrolling the
+  grid rewrote crosspoints instead) and mapped the whole -inf..+6 dB
+  range onto the cell's 20 px. Now: the drag is relative (a press never
+  moves the value, `DRAG_TRAVEL` = 150 px sweeps the range, Shift is
+  fine), Ctrl+click toggles off / 0 dB as in TotalMix, double-click
+  resets, and the wheel scrolls.
+- TotalMix's colors: green = 0 dB, raised grey + number = other gain,
+  blue = the source is muted, red = its phase is inverted, dark well = no
+  routing. Values are signed above unity ("+3.0").
+- Hover crosshair: the cell's row and column labels (and bus label) light
+  up, and the caption reads the cell out ("AS1 -> Out 3 (PH3/4 L):
+  -14.6 dB"); with nothing hovered it lists the gestures. Hover truth
+  lives in the app (`matrix_hover`), not in each cell: during a drag the
+  pointer crosses other cells, and a per-cell flag went stale.
+- Frozen panes, TotalMix's "floating" labels: the Out 1-12 header, the
+  output masters row and the bus labels stay put while the source rows
+  scroll. The source area only gets a fixed height when it does not fit
+  (`responsive`): a column lays its children out in order, so a
+  self-sizing scrollable took the room before the output row and pushed
+  it off the panel.
+- Mono sources (AN1-4) show their pan-decoded value per side, but a drag
+  moves the stored gain from where it is (`Crosspoint::value` vs `shown`),
+  so it does not jump.
+
+Verified in Xvfb with real input: hover readout and crosshair; a 40 px
+drag lands at -14.6 dB (not the full range); mid-drag the readout stays
+on the dragged cell; Ctrl+click turns it off; Ctrl+Z twice returns to
+-14.6 then 0.0, Ctrl+Shift+Z back to -14.6; at a 600 px window the wheel
+scrolls the sources with the header and output rows fixed and no value
+changed. `cargo test --workspace`: 226 passed.
+
+Testing note: a `git worktree` build of an older commit that shares
+`target/` overwrites `target/debug/tuxmix-gui`; rebuild before testing.

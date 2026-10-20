@@ -268,40 +268,6 @@ pub fn strip_panel(
     }
 }
 
-/// One Matrix crosspoint tile. `level` is the crosspoint's linear gain
-/// (`None` = unrouted, or a side the hardware cannot reach): routed
-/// tiles fill toward the signal green in proportion to their dB level, so
-/// the routing reads as a heat map before any number is read, and
-/// unrouted ones recede to a faint well. `in_sel` lifts the columns of
-/// the output pair picked in the top bar's Submix field.
-pub fn matrix_cell(level: Option<f32>, in_sel: bool) -> impl Fn(&iced::Theme) -> container::Style {
-    move |_theme| {
-        let base = if in_sel {
-            SURFACE_HI
-        } else {
-            blend(BG_DEEP, SURFACE, 0.6)
-        };
-        let background = match level {
-            Some(vol) => {
-                let db = 20.0 * vol.max(1e-6).log10();
-                let t = ((db + 60.0) / 66.0).clamp(0.0, 1.0);
-                blend(base, MGREEN, 0.10 + 0.30 * t)
-            }
-            None => base,
-        };
-        container::Style {
-            background: Some(Background::Color(background)),
-            border: Border {
-                color: if in_sel { BORDER } else { Color::TRANSPARENT },
-                width: 1.0,
-                radius: RADIUS_XS.into(),
-            },
-            text_color: Some(TEXT_PRIMARY),
-            ..container::Style::default()
-        }
-    }
-}
-
 /// A flat `BG_DEEP` read as an undifferentiated slab under the strip
 /// cards. A barely-there top-to-bottom falloff (a few percent of white
 /// blended in at the top, gone entirely by the bottom) reads as soft

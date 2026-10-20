@@ -138,7 +138,7 @@ fn t_to_db(t: f32) -> f32 {
     (TOP_DB + x * (FLOOR_DB - TOP_DB)).clamp(FLOOR_DB, TOP_DB)
 }
 
-fn vol_to_t(vol: f32) -> f32 {
+pub(crate) fn vol_to_t(vol: f32) -> f32 {
     if vol <= 0.0 {
         0.0
     } else {
@@ -146,7 +146,7 @@ fn vol_to_t(vol: f32) -> f32 {
     }
 }
 
-fn t_to_vol(t: f32) -> f32 {
+pub(crate) fn t_to_vol(t: f32) -> f32 {
     if t <= 0.0 {
         0.0
     } else {
