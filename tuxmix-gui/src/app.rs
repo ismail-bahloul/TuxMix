@@ -1344,6 +1344,8 @@ fn finish_params<'a>(state: &'a TuxMix, mut p: strip::StripParams<'a>) -> strip:
         p.name = label.to_string();
     }
     p.renaming = state.renaming == Some(p.cid);
+    p.mute_armed = mute_armed(state, p.cid);
+    p.solo_armed = solo_armed(state, p.cid);
     p.rename_buf = &state.rename_buf;
     p
 }
@@ -1466,6 +1468,23 @@ fn all_channel_ids(state: &TuxMix) -> Vec<ChannelId> {
 /// reads this too, hence `pub(crate)`).
 pub(crate) fn any_channel_muted(state: &TuxMix) -> bool {
     all_channel_ids(state).into_iter().any(|cid| channel_is_muted(state, cid))
+}
+
+/// Whether `cid`'s mute is held off by the Mute master: the master's last
+/// press cleared it, and nothing has been muted since (a new mute makes the
+/// master's next press clear that one instead, so the old set is no longer
+/// what it would bring back).
+pub(crate) fn mute_armed(state: &TuxMix, cid: ChannelId) -> bool {
+    state.last_cleared_mutes.contains(&cid)
+        && !channel_is_muted(state, cid)
+        && !any_channel_muted(state)
+}
+
+/// The same for the Solo master and `cid`'s solo.
+pub(crate) fn solo_armed(state: &TuxMix, cid: ChannelId) -> bool {
+    state.last_cleared_solos.contains(&cid)
+        && !channel_is_soloed(state, cid)
+        && !any_channel_soloed(state)
 }
 
 /// Whether at least one channel is currently soloed — drives the
@@ -3282,6 +3301,8 @@ fn strip_params<'a>(
             .map(|(_, k)| *k),
         mute: false,
         solo: false,
+        mute_armed: false,
+        solo_armed: false,
         has_cue: false,
         cue: false,
         default_vol: 1.0,
@@ -4527,7 +4548,7 @@ mod tests {
     use super::{
         any_channel_muted, any_channel_soloed, apply_pending_resize,
         apply_prefs, channel_is_muted, channel_is_soloed, is_undoable, new, prefs_of,
-        power_sum_output_meters, update, zoom, ChannelId, EditField, MeterAnim, Message, View, ZOOM_STEP,
+        mute_armed, power_sum_output_meters, update, zoom, ChannelId, EditField, MeterAnim, Message, View, ZOOM_STEP,
     };
     use crate::sidebar;
     use crate::theme;
@@ -5088,6 +5109,22 @@ mod tests {
             state.flyout_open.contains(&(a, strip::FlyoutKind::Eq)),
             "a's EQ flyout must survive b's Route opening"
         );
+    }
+
+    #[test]
+    fn channels_held_by_the_mute_master_show_as_armed() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let other = ChannelId::Playback(0);
+        let _ = update(&mut state, Message::Mute(a, true));
+        assert!(!mute_armed(&state, a), "muted, not armed");
+        let _ = update(&mut state, Message::GlobalMuteToggle);
+        assert!(mute_armed(&state, a), "held off by the master");
+        assert!(!mute_armed(&state, other), "never muted, never armed");
+        // A fresh mute makes the master's next press clear that one, so the
+        // old set is no longer shown as coming back.
+        let _ = update(&mut state, Message::Mute(other, true));
+        assert!(!mute_armed(&state, a));
     }
 
     #[test]

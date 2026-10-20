@@ -3613,3 +3613,20 @@ Verified in Xvfb: typing, clicking inside the field and typing on keeps
 it open; a click away accepts the name; a double-click on a dB value,
 "-10", a click away sets the fader to -10.0 dB. `cargo test --workspace`
 green.
+
+## 2026-10-20 (cont. 7): channels held by the M/S masters stay marked
+
+User request: once the sidebar's Mute master has switched the mutes off,
+the channels it will bring back should still show, dimmed. That is what
+TotalMix does too. New `theme::armed_toggle_button(active, armed, color)`
+(`toggle_button` is now its `armed: false` case): armed and not active
+draws the button's own color as a dimmed outline and tint instead of a
+fill. A strip's M is armed when `mute_armed(state, cid)`: the master's
+last press cleared it (`last_cleared_mutes`), it is not muted, and nothing
+is muted at all (a new mute makes the master's next press clear that one
+instead, so the old set is no longer what it would restore). The same for
+S and `solo_armed`. The master buttons themselves show armed while they
+hold something, and their tooltips and the strip tooltips say so.
+Verified in Xvfb: muting AN1/2 and IN3/4 lights the master; pressing it
+leaves both strips' M and the master as dimmed blue outlines, an
+untouched strip stays neutral. `cargo test --workspace` green.

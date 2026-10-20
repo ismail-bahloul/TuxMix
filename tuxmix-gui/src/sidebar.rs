@@ -426,7 +426,9 @@ fn undo_redo_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
 /// fill when lit.
 ///
 /// * `M` lights while any channel is muted; a press clears those mutes and
-///   the next one brings them back (`Message::GlobalMuteToggle`).
+///   the next one brings them back (`Message::GlobalMuteToggle`). In
+///   between, it and the channels it holds show as armed (dimmed outline,
+///   `theme::armed_toggle_button`), as TotalMix keeps them marked.
 /// * `S` is the same for solos (`Message::GlobalSoloToggle`).
 /// * `F` is TotalMix's temporary fader group, which here is the strip
 ///   multi-selection (Ctrl/Shift-click): its faders already move together
@@ -438,6 +440,10 @@ fn undo_redo_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
 fn msf_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let any_mute = crate::app::any_channel_muted(state);
     let any_solo = crate::app::any_channel_soloed(state);
+    // Armed: the master switched its mutes (solos) off and a press brings
+    // them back; the channels it holds show the same dimmed state.
+    let mute_held = !any_mute && !state.last_cleared_mutes.is_empty();
+    let solo_held = !any_solo && !state.last_cleared_solos.is_empty();
     let has_group = !state.selected.is_empty();
     let cell = |label: &'static str| {
         button(text(label).size(theme::TEXT_SM * scale).center())
@@ -447,16 +453,32 @@ fn msf_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let mut r = row![
         hint(
             cell("M")
-                .style(theme::toggle_button(any_mute, theme::MUTE_COLOR))
+                .style(theme::armed_toggle_button(
+                    any_mute,
+                    mute_held,
+                    theme::MUTE_COLOR
+                ))
                 .on_press(Message::GlobalMuteToggle),
-            "Mute master: clear active mutes / bring them back",
+            if mute_held {
+                "Mute master: bring the held mutes back"
+            } else {
+                "Mute master: switch the active mutes off"
+            },
             scale,
         ),
         hint(
             cell("S")
-                .style(theme::toggle_button(any_solo, theme::SOLO_COLOR))
+                .style(theme::armed_toggle_button(
+                    any_solo,
+                    solo_held,
+                    theme::SOLO_COLOR
+                ))
                 .on_press(Message::GlobalSoloToggle),
-            "Solo master: clear active solos / bring them back",
+            if solo_held {
+                "Solo master: bring the held solos back"
+            } else {
+                "Solo master: switch the active solos off"
+            },
             scale,
         ),
         hint(

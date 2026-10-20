@@ -208,6 +208,10 @@ pub struct StripParams<'a> {
     pub open_flyout: Option<FlyoutKind>,
     pub mute: bool,
     pub solo: bool,
+    /// Off, but held for the sidebar's Mute / Solo master to bring back
+    /// (`theme::armed_toggle_button`). Set by `app::finish_params`.
+    pub mute_armed: bool,
+    pub solo_armed: bool,
     /// `true` only for `ChannelId::Output` — every other channel kind
     /// has no CUE bus of its own (see `RmeDevice::set_cue`'s doc
     /// comment: CUE always monitors *some output's* dedicated
@@ -414,18 +418,26 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         button(centered_label("M", theme::TEXT_MICRO * scale))
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::toggle_button(p.mute, theme::MUTE_COLOR))
+            .style(theme::armed_toggle_button(p.mute, p.mute_armed, theme::MUTE_COLOR))
             .on_press(Message::Mute(cid, !p.mute)),
-        "Mute",
+        if p.mute_armed {
+            "Mute (switched off by the M master, which brings it back)"
+        } else {
+            "Mute"
+        },
         scale,
     );
     let solo_btn = hint(
         button(centered_label("S", theme::TEXT_MICRO * scale))
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::toggle_button(p.solo, theme::SOLO_COLOR))
+            .style(theme::armed_toggle_button(p.solo, p.solo_armed, theme::SOLO_COLOR))
             .on_press(Message::Solo(cid, !p.solo)),
-        "Solo",
+        if p.solo_armed {
+            "Solo (switched off by the S master, which brings it back)"
+        } else {
+            "Solo"
+        },
         scale,
     );
     // "+" rather than a chevron — the reference puts the expand trigger
@@ -536,18 +548,26 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         button(centered_label("M", theme::TEXT_SM * scale))
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::toggle_button(p.mute, theme::MUTE_COLOR))
+            .style(theme::armed_toggle_button(p.mute, p.mute_armed, theme::MUTE_COLOR))
             .on_press(Message::Mute(cid, !p.mute)),
-        "Mute",
+        if p.mute_armed {
+            "Mute (switched off by the M master, which brings it back)"
+        } else {
+            "Mute"
+        },
         scale,
     );
     let solo_btn = hint(
         button(centered_label("S", theme::TEXT_SM * scale))
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::toggle_button(p.solo, theme::SOLO_COLOR))
+            .style(theme::armed_toggle_button(p.solo, p.solo_armed, theme::SOLO_COLOR))
             .on_press(Message::Solo(cid, !p.solo)),
-        "Solo",
+        if p.solo_armed {
+            "Solo (switched off by the S master, which brings it back)"
+        } else {
+            "Solo"
+        },
         scale,
     );
     // Fixed-width buttons left dead space flanking them whenever the card

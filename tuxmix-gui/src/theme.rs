@@ -316,63 +316,104 @@ pub fn toggle_button(
     active: bool,
     active_color: Color,
 ) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
-    move |_theme, status| {
-        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-        let pressed = matches!(status, button::Status::Pressed);
+    armed_toggle_button(active, false, active_color)
+}
 
-        let mut background = if active {
-            active_color
-        } else if hovered {
-            SURFACE_HI
-        } else {
-            BG_DEEP
-        };
-        if pressed {
-            background = blend(background, Color::BLACK, PRESS_DARKEN);
-        }
-        let border_color = if active {
-            active_color
-        } else if hovered {
-            FADER
-        } else {
-            BORDER
-        };
-        let shadow = if active {
-            Shadow {
-                color: Color {
-                    a: if pressed { 0.25 } else { 0.45 },
-                    ..active_color
-                },
-                offset: iced::Vector::new(0.0, 0.0),
-                blur_radius: if pressed { 3.0 } else { 6.0 },
+/// `toggle_button` with a third, "armed" state: off right now, but set to
+/// come back. A channel's M (or S) whose mute (solo) the sidebar's Mute
+/// (Solo) master has switched off shows it, TotalMix-style, so the
+/// channels a press on the master will restore stay visible: the button's
+/// own color, dimmed, as a tinted outline rather than a fill. `armed` is
+/// ignored while `active`.
+pub fn armed_toggle_button(
+    active: bool,
+    armed: bool,
+    active_color: Color,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        if armed && !active {
+            let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+            let mut background = blend(BG_DEEP, active_color, if hovered { 0.28 } else { 0.18 });
+            if matches!(status, button::Status::Pressed) {
+                background = blend(background, Color::BLACK, PRESS_DARKEN);
             }
-        } else {
-            Shadow::default()
-        };
-
-        button::Style {
-            background: Some(Background::Color(background)),
-            // A button with no `on_press` at all is `Disabled` in iced: same
-            // box, same place, dimmed label. Two things ride on that here —
-            // the skeleton `F` in the sidebar's M/S/F row, and every control
-            // the attached device cannot drive (the class-compliant
-            // personality has no RME-protocol features). Before this they
-            // rendered as live toggles that simply never lit.
-            text_color: if matches!(status, button::Status::Disabled) {
-                Color { a: 0.4, ..TEXT_SEC }
-            } else if active {
-                ON_ACTIVE
-            } else {
-                TEXT_SEC
-            },
-            border: Border {
-                color: border_color,
-                width: 1.0,
-                radius: RADIUS_SM.into(),
-            },
-            shadow,
-            snap: false,
+            return button::Style {
+                background: Some(Background::Color(background)),
+                text_color: blend(TEXT_SEC, active_color, 0.65),
+                border: Border {
+                    color: blend(BORDER, active_color, 0.6),
+                    width: 1.0,
+                    radius: RADIUS_SM.into(),
+                },
+                shadow: Shadow::default(),
+                snap: false,
+            };
         }
+        plain_toggle(active, active_color, theme, status)
+    }
+}
+
+fn plain_toggle(
+    active: bool,
+    active_color: Color,
+    _theme: &iced::Theme,
+    status: button::Status,
+) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    let pressed = matches!(status, button::Status::Pressed);
+
+    let mut background = if active {
+        active_color
+    } else if hovered {
+        SURFACE_HI
+    } else {
+        BG_DEEP
+    };
+    if pressed {
+        background = blend(background, Color::BLACK, PRESS_DARKEN);
+    }
+    let border_color = if active {
+        active_color
+    } else if hovered {
+        FADER
+    } else {
+        BORDER
+    };
+    let shadow = if active {
+        Shadow {
+            color: Color {
+                a: if pressed { 0.25 } else { 0.45 },
+                ..active_color
+            },
+            offset: iced::Vector::new(0.0, 0.0),
+            blur_radius: if pressed { 3.0 } else { 6.0 },
+        }
+    } else {
+        Shadow::default()
+    };
+
+    button::Style {
+        background: Some(Background::Color(background)),
+        // A button with no `on_press` at all is `Disabled` in iced: same
+        // box, same place, dimmed label. Two things ride on that here —
+        // the skeleton `F` in the sidebar's M/S/F row, and every control
+        // the attached device cannot drive (the class-compliant
+        // personality has no RME-protocol features). Before this they
+        // rendered as live toggles that simply never lit.
+        text_color: if matches!(status, button::Status::Disabled) {
+            Color { a: 0.4, ..TEXT_SEC }
+        } else if active {
+            ON_ACTIVE
+        } else {
+            TEXT_SEC
+        },
+        border: Border {
+            color: border_color,
+            width: 1.0,
+            radius: RADIUS_SM.into(),
+        },
+        shadow,
+        snap: false,
     }
 }
 
