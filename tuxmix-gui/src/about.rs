@@ -40,6 +40,45 @@ fn header(scale: f32) -> Element<'static, Message> {
     .into()
 }
 
+/// Every gesture and key the app answers to, in one place: most of them
+/// (double-clicks, Ctrl/Shift-clicks, the Matrix drags) are otherwise only
+/// discoverable by accident or by a tooltip you have to hover first.
+const SHORTCUTS: [(&str, &str); 11] = [
+    ("Tab", "Next view (Quick, Mixer, Matrix)"),
+    ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
+    ("Ctrl + / Ctrl - / Ctrl 0", "Zoom in / out / reset (also Ctrl+wheel)"),
+    ("F11", "Full screen"),
+    ("Esc", "Close a dialog, cancel an edit"),
+    ("Ctrl / Shift + click", "Select strips; their faders move together"),
+    ("Double-click a name", "Rename the strip"),
+    ("Double-click a dB value", "Type a level"),
+    ("Double-click a fader", "Reset it"),
+    ("Double-click a strip", "Collapse / expand it"),
+    ("Shift + drag", "Fine adjustment"),
+];
+
+fn shortcuts(scale: f32) -> Element<'static, Message> {
+    let mut list = column![text("SHORTCUTS")
+        .color(theme::TEXT_SEC)
+        .size(theme::TEXT_MICRO * scale)]
+    .spacing(theme::SPACE_SM * scale);
+    for (keys, action) in SHORTCUTS {
+        list = list.push(
+            row![
+                text(keys)
+                    .color(theme::TEXT_PRIMARY)
+                    .size(theme::TEXT_XS * scale)
+                    .width(Length::Fixed(150.0 * scale)),
+                text(action)
+                    .color(theme::TEXT_SEC)
+                    .size(theme::TEXT_XS * scale),
+            ]
+            .spacing(theme::SPACE_MD * scale),
+        );
+    }
+    list.into()
+}
+
 /// The whole overlay: a dimming scrim that closes on click and blocks the
 /// window behind it, with the card centered on it. The card is `opaque`,
 /// so a click inside it (its padding included) is captured before the
@@ -122,7 +161,7 @@ pub fn about_modal(state: &TuxMix) -> Element<'_, Message> {
 
     let card = opaque(
         container(
-            column![header(scale), identity_row]
+            column![header(scale), identity_row, shortcuts(scale)]
                 .spacing(theme::SPACE_LG * scale)
                 .width(Length::Fill),
         )

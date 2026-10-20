@@ -405,16 +405,24 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
 /// stack now reads as "nothing to do" instead of as two disabled boxes.
 fn undo_redo_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     row![
-        button(text("‹ undo").size(theme::TEXT_XS * scale).center())
-            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
-            .width(Length::Fill)
-            .style(theme::ghost_button)
-            .on_press_maybe((!state.undo_stack.is_empty()).then_some(Message::Undo)),
-        button(text("redo ›").size(theme::TEXT_XS * scale).center())
-            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
-            .width(Length::Fill)
-            .style(theme::ghost_button)
-            .on_press_maybe((!state.redo_stack.is_empty()).then_some(Message::Redo)),
+        hint(
+            button(text("\u{2039} undo").size(theme::TEXT_XS * scale).center())
+                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+                .width(Length::Fill)
+                .style(theme::ghost_button)
+                .on_press_maybe((!state.undo_stack.is_empty()).then_some(Message::Undo)),
+            "Undo (Ctrl+Z)",
+            scale,
+        ),
+        hint(
+            button(text("redo \u{203a}").size(theme::TEXT_XS * scale).center())
+                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+                .width(Length::Fill)
+                .style(theme::ghost_button)
+                .on_press_maybe((!state.redo_stack.is_empty()).then_some(Message::Redo)),
+            "Redo (Ctrl+Shift+Z)",
+            scale,
+        ),
     ]
     .spacing(theme::SPACE_TIGHT * scale)
     .width(Length::Fill)
@@ -646,6 +654,7 @@ fn slot_grid<'a>(
     prefix: &'a str,
     active: Option<usize>,
     dirty: bool,
+    stored: &[bool],
     on_press: fn(u8) -> Message,
     scale: f32,
 ) -> Element<'a, Message> {
@@ -654,11 +663,24 @@ fn slot_grid<'a>(
         let mut line = row![].spacing(theme::SPACE_TIGHT * scale);
         for n in first..=(first + 1).min(count) {
             let is_active = active == Some(n as usize);
+            // An empty slot is still clickable (selecting it is how you
+            // pick where "store" writes), but it reads as empty.
+            let is_stored = stored.get((n - 1) as usize).copied().unwrap_or(false);
+            let name_color = if is_stored || is_active {
+                None
+            } else {
+                Some(Color {
+                    a: 0.45,
+                    ..theme::TEXT_SEC
+                })
+            };
             // The selected slot, modified since it was recalled or stored,
             // carries an amber dot: TotalMix flashes the button instead.
             let label: Element<'a, Message> = if is_active && dirty {
                 row![
-                    text(format!("{prefix} {n}")).size(theme::TEXT_XS * scale),
+                    text(format!("{prefix} {n}"))
+                        .size(theme::TEXT_XS * scale)
+                        .color_maybe(name_color),
                     text("\u{25CF}")
                         .size(theme::TEXT_MICRO * scale)
                         .color(theme::YSIM),
@@ -669,15 +691,25 @@ fn slot_grid<'a>(
             } else {
                 text(format!("{prefix} {n}"))
                     .size(theme::TEXT_XS * scale)
+                    .color_maybe(name_color)
                     .into()
             };
-            line = line.push(
+            let tip = if is_stored {
+                format!("Recall {prefix} {n}")
+            } else {
+                "Empty: select it, then store".to_string()
+            };
+            line = line.push(iced::widget::tooltip(
                 button(container(label).center_x(Length::Fill))
                     .padding([theme::SPACE_SM * scale, theme::SPACE_SM * scale])
                     .width(Length::Fill)
                     .style(theme::segment_button(is_active))
                     .on_press(on_press(n)),
-            );
+                container(text(tip).size(theme::TEXT_XS * scale))
+                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+                    .style(theme::chip),
+                iced::widget::tooltip::Position::Bottom,
+            ));
         }
         grid = grid.push(line);
     }
@@ -686,14 +718,24 @@ fn slot_grid<'a>(
 
 /// The trailing "store" action of the Snapshot and Mixer Layout panels —
 /// right-aligned, flat text, the same weight as the panel's own collapse
-/// toggle. It used to be a bordered box the size of a slot, which made
-/// "save into the selected one" look like an eighth snapshot.
-fn store_row(on_press: Message, scale: f32) -> Element<'static, Message> {
+/// toggle. It names the slot it will write ("store to Mix 3"), so an
+/// overwrite is never a surprise, and is disabled, saying why, until a
+/// slot is selected (it used to look live and do nothing).
+fn store_row(
+    prefix: &str,
+    active: Option<usize>,
+    on_press: Message,
+    scale: f32,
+) -> Element<'static, Message> {
+    let label = match active {
+        Some(n) => format!("store to {prefix} {n}"),
+        None => "select a slot to store".to_string(),
+    };
     container(
-        button(text("store").size(theme::TEXT_XS * scale))
+        button(text(label).size(theme::TEXT_XS * scale))
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .style(theme::ghost_button)
-            .on_press(on_press),
+            .on_press_maybe(active.map(|_| on_press)),
     )
     .width(Length::Fill)
     .align_x(iced::Alignment::End)
@@ -797,10 +839,16 @@ fn snapshots_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         "Mix",
         state.active_snapshot,
         state.snapshot_dirty,
+        &state.stored_snapshots,
         Message::SnapshotClicked,
         scale,
     ));
-    body = body.push(store_row(Message::SnapshotStore, scale));
+    body = body.push(store_row(
+        "Mix",
+        state.active_snapshot,
+        Message::SnapshotStore,
+        scale,
+    ));
 
     column![header, body]
         .spacing(theme::SPACE_SM * scale)
@@ -931,15 +979,22 @@ fn layout_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         .padding(indent(CONTENT_INDENT * scale))
         .width(Length::Fill);
 
+    let layouts_stored: Vec<bool> = state.layouts.iter().map(Option::is_some).collect();
     body = body.push(slot_grid(
         LAYOUT_COUNT,
         "Layout",
         state.active_layout,
         false,
+        &layouts_stored,
         Message::LayoutClicked,
         scale,
     ));
-    body = body.push(store_row(Message::LayoutStore, scale));
+    body = body.push(store_row(
+        "Layout",
+        state.active_layout,
+        Message::LayoutStore,
+        scale,
+    ));
 
     column![header, body]
         .spacing(theme::SPACE_SM * scale)

@@ -967,6 +967,15 @@ pub struct TuxMix {
     pub layouts: [Option<HashSet<ChannelId>>; 6],
     pub active_layout: Option<usize>,
     pub active_snapshot: Option<usize>,
+    /// Which "Mix n" slots have a stored scene on disk, so the sidebar can
+    /// tell an empty slot from a stored one. Read once at startup, kept in
+    /// step by `SnapshotStore`.
+    pub stored_snapshots: [bool; 8],
+    /// The simulated device's snapshots. A mock session never touches the
+    /// real `Mix n` files (as its auto-save never does): storing there
+    /// would overwrite the user's real snapshots with simulated data, and
+    /// recalling a real one would push hardware state into the simulation.
+    pub mock_snapshots: [Option<Scene>; 8],
     /// Which channels `Message::GlobalSoloToggle` most recently cleared
     /// — restored on the next press if nothing's been soloed again in
     /// the meantime. Empty when there's nothing to restore.
@@ -1162,6 +1171,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
     // Probed before the literal: `device` moves into the struct, so it
     // cannot be asked afterwards.
     let connected = device.is_connected();
+    let simulated = device.is_mock();
     // Mock generates its own playback levels; a real backend gets them
     // from PipeWire's sink monitor (see `pw_meter`).
     let playback_tap = if device.is_mock() {
@@ -1219,6 +1229,13 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         layouts: std::array::from_fn(|i| crate::layouts::load_layout_file((i + 1) as u8)),
         active_layout: None,
         active_snapshot: None,
+        stored_snapshots: std::array::from_fn(|i| {
+            !simulated
+                && crate::scenes::scenes_dir()
+                    .join(format!("Mix {}.json", i + 1))
+                    .exists()
+        }),
+        mock_snapshots: Default::default(),
         last_cleared_solos: Vec::new(),
         last_cleared_mutes: Vec::new(),
         snapshot_dirty: false,
@@ -2476,7 +2493,12 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::SnapshotClicked(n) => {
             state.active_snapshot = Some(n as usize);
             state.snapshot_dirty = false;
-            if let Some(scene) = load_scene_file(&format!("Mix {n}")) {
+            let scene = if state.device.is_mock() {
+                state.mock_snapshots.get(n as usize - 1).cloned().flatten()
+            } else {
+                load_scene_file(&format!("Mix {n}"))
+            };
+            if let Some(scene) = scene {
                 if let Err(e) = state.device.apply_scene(&scene) {
                     log::warn!("Failed to apply snapshot 'Mix {n}': {e}");
                 }
@@ -2484,12 +2506,22 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         }
         Message::SnapshotStore => {
             if let Some(n) = state.active_snapshot {
-                if let Err(e) =
-                    save_scene_file(&format!("Mix {n}"), &state.device.capture_scene())
-                {
+                let scene = state.device.capture_scene();
+                let saved = if state.device.is_mock() {
+                    if let Some(slot) = state.mock_snapshots.get_mut(n - 1) {
+                        *slot = Some(scene);
+                    }
+                    Ok(())
+                } else {
+                    save_scene_file(&format!("Mix {n}"), &scene)
+                };
+                if let Err(e) = saved {
                     log::warn!("Failed to store snapshot 'Mix {n}': {e}");
                 } else {
                     state.snapshot_dirty = false;
+                    if let Some(slot) = state.stored_snapshots.get_mut(n - 1) {
+                        *slot = true;
+                    }
                 }
             }
         }
@@ -3495,14 +3527,35 @@ fn route_popover(state: &TuxMix, width: f32) -> Element<'_, Message> {
             button(text(*label).size(theme::TEXT_SM * scale))
                 .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
                 .width(Length::Fill)
-                .style(theme::toggle_button(idx == state.sel_out, theme::ACCENT))
+                // The bus a strip routes to is a position, not an "on"
+                // state: the graphite thumb, not the white fill.
+                .style(theme::segment_button(idx == state.sel_out))
                 .on_press(Message::SelectOutput(idx)),
         );
     }
+    // Floats over the next strips, so it is a raised card with a shadow,
+    // like the device popover; it used to be the top bar's flat fill and
+    // read as painted onto the strips under it.
     container(list)
         .padding(theme::SPACE_SM * scale)
         .width(Length::Fixed(width))
-        .style(theme::top_bar)
+        .style(theme::dialog)
+        .into()
+}
+
+/// The card a strip's settings / trim / EQ panel sits in: the strip's own
+/// card style, so the panel reads as the strip opened up rather than as
+/// loose controls on the page. These used to take the top bar's flat fill
+/// (no border, a shade off the page), and only the controls showed.
+fn flyout_card<'a>(
+    content: impl Into<Element<'a, Message>>,
+    width: f32,
+    scale: f32,
+) -> Element<'a, Message> {
+    container(content)
+        .padding(theme::SPACE_MD * scale)
+        .width(Length::Fixed(width))
+        .style(theme::panel)
         .clip(true)
         .into()
 }
@@ -3539,12 +3592,7 @@ fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, M
     );
 
     let ChannelId::Input(idx) = cid else {
-        return container(col)
-            .padding(theme::SPACE_SM * scale)
-            .width(Length::Fixed(width))
-            .style(theme::top_bar)
-            .clip(true)
-            .into();
+        return flyout_card(col, width, scale);
     };
 
     if p.has_gain {
@@ -3634,12 +3682,7 @@ fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, M
         }
     }
 
-    container(col)
-        .padding(theme::SPACE_SM * scale)
-        .width(Length::Fixed(width))
-        .style(theme::top_bar)
-        .clip(true)
-        .into()
+    flyout_card(col, width, scale)
 }
 
 /// The Trim flyout's content: a single knob, -65..+6 dB on the fader's
@@ -3675,12 +3718,7 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Messa
     ]
     .spacing(theme::SPACE_SM * scale);
 
-    container(col)
-        .padding(theme::SPACE_SM * scale)
-        .width(Length::Fixed(width))
-        .style(theme::top_bar)
-        .clip(true)
-        .into()
+    flyout_card(col, width, scale)
 }
 
 /// The EQ flyout's content: the interactive response plot, then a
@@ -3944,10 +3982,10 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message
             .width(Length::Fill)
             .height(Length::Fill),
     )
-    .padding(theme::SPACE_SM * scale)
+    .padding(theme::SPACE_MD * scale)
     .width(Length::Fixed(width))
     .height(Length::Fill)
-    .style(theme::top_bar)
+    .style(theme::panel)
     .clip(true)
     .into()
 }
@@ -5426,6 +5464,21 @@ mod tests {
         let _ = update(&mut state, Message::VolumeChanged(ChannelId::Input(5), 0, 0.5));
         let _ = update(&mut state, Message::Mute(ChannelId::Input(0), true));
         assert_eq!(state.undo_stack.len(), 3);
+    }
+
+    #[test]
+    fn a_simulated_session_keeps_its_snapshots_in_memory() {
+        let mut state = new(true, None, None);
+        assert_eq!(state.stored_snapshots, [false; 8], "never reads the real slots");
+        let cid = ChannelId::Input(4);
+        let _ = update(&mut state, Message::SnapshotClicked(3));
+        let _ = update(&mut state, Message::VolumeChanged(cid, 0, 0.5));
+        let _ = update(&mut state, Message::SnapshotStore);
+        assert!(state.stored_snapshots[2]);
+        assert!(state.mock_snapshots[2].is_some(), "stored in memory, not on disk");
+        let _ = update(&mut state, Message::VolumeChanged(cid, 0, 0.1));
+        let _ = update(&mut state, Message::SnapshotClicked(3));
+        assert!((state.device.inputs()[4].volumes[0] - 0.5).abs() < 1e-6);
     }
 
     #[test]

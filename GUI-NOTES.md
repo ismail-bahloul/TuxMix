@@ -3630,3 +3630,29 @@ hold something, and their tooltips and the strip tooltips say so.
 Verified in Xvfb: muting AN1/2 and IN3/4 lights the master; pressing it
 leaves both strips' M and the master as dimmed blue outlines, an
 untouched strip stays neutral. `cargo test --workspace` green.
+
+## 2026-10-20 (cont. 8): polish pass — flyout cards, slot states, discoverability
+
+- **Strip flyouts are cards.** The settings, trim and EQ panels used the
+  top bar's flat fill (no border, a shade off the page), so only their
+  controls showed, floating. They now share `flyout_card` (the strip's
+  own `theme::panel`), and read as the strip opened up. The route list,
+  which floats over the next strips, is a raised `theme::dialog` card,
+  its current bus the graphite thumb rather than the white "on" fill.
+- **Snapshot and layout slots show whether they hold anything.** Empty
+  slots are dimmed (`stored_snapshots`, read once at startup and kept in
+  step by `SnapshotStore`; layouts already had `layouts`), each slot's
+  tooltip says "Recall Mix 3" or "Empty: select it, then store", and the
+  store action names its target ("store to Mix 3"), disabled with "select
+  a slot to store" until a slot is picked (it looked live and did
+  nothing).
+- **A simulated session no longer touches the real snapshot files.**
+  Found while testing the above: `--mock` stored "Mix n" into
+  `~/.local/share/tuxmix/scenes/`, where the real ones live (overwriting
+  them with simulated data) and recalled the real ones into the
+  simulation. The mock keeps them in memory (`mock_snapshots`), as its
+  auto-save never persists. (The one file this created during testing was
+  checked to be new, not an overwrite, and removed.)
+- **Shortcuts are listed.** The About dialog gains a Shortcuts section
+  (Tab, undo/redo, zoom, F11, Esc, Ctrl/Shift-click, the double-clicks,
+  Shift-drag); undo/redo tooltips show their keys.
