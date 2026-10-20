@@ -409,7 +409,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             .padding(0)
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::plain_button)
+            .style(theme::toggle_button(false, theme::ACCENT))
             .on_press(Message::ToggleCollapse(cid)),
         "Expand",
         scale,
@@ -802,11 +802,17 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // with `db_display` centered in what's left between them. That
     // symmetry is what makes `db_display` land exactly under the
     // fader's own center rather than the meter's — see the row below.
+    //
+    // 2026-10-20: same box, glyph and style as the icon column above it
+    // (`toggle_button` at `ICON_BTN_W` x `ICON_BTN_H`, a true minus sign
+    // centered in it) instead of a `plain_button` of its own height, so
+    // the strip's small controls are one family.
     let collapse_btn = hint(
-        button(text("-").size(theme::TEXT_SM * scale))
-            .padding([theme::SPACE_HAIRLINE * scale, theme::SPACE_SM * scale])
+        button(centered_label("−", theme::TEXT_MICRO * scale))
+            .padding(0)
             .width(ICON_BTN_W * scale)
-            .style(theme::plain_button)
+            .height(ICON_BTN_H * scale)
+            .style(theme::toggle_button(false, theme::ACCENT))
             .on_press(Message::ToggleCollapse(cid)),
         "Collapse",
         scale,

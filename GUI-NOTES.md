@@ -3329,3 +3329,40 @@ changement de profil PipeWire ne s'est pas reproduite avec le module
 DKMS 0.1.0 : les passages stéréo → Pro Audio → `off` → stéréo ont laissé
 le PCM vivant, sans aucune reconnexion. À re-tester si le symptôme
 revient.
+
+## 2026-10-20: visual consistency pass (sidebar, strips, Matrix, top bar)
+
+User request: a UI that feels "properly pro, modern and finished". Done
+view by view, with a `--mock` capture after each change.
+
+- **VU meters** (`widgets/fader.rs`): the ruler numbers move off the
+  meter into a lane of their own (`[meter 9 px][1][ruler 12 px]`, still
+  `METER_RULER_W` in total). Printed on the wash they collided with the
+  fill (and with the gap between a linked pair's two bars), and the wash
+  had to stay translucent just so they could be read. This reverses the
+  earlier "numbers on the meter, like TotalMix" call: put it back if
+  that matters more. The fill now uses fixed zones (green up to -12 dB,
+  amber up to -3, red above, `METER_ZONES`) instead of tinting the whole
+  bar by its peak: with an opaque fill, the old rule turned a hot signal
+  entirely red.
+- **Strip cards**: per-type tint 0.10 -> 0.03. The color stays on the
+  MIC/INST/ADAT tag; the section headers already sort the strips. The
+  strip's collapse "-" and a collapsed strip's "+" take the icon-button
+  style (`toggle_button`, `ICON_BTN_W` x `ICON_BTN_H`).
+- **Sidebar**: the Options pairs and `all/submix` become real segmented
+  controls (`theme::segment_track` + `segment_cell`); Snapshots and
+  Layouts become two-column grids (`slot_grid`, `segment_button` style),
+  so the column fits without scrolling at 1080p; every cell label is
+  centered.
+- **Top bar**: the clock button becomes a captioned "Clock" field, sized
+  like the Submix pick list (`theme::field_button`, ring lit while the
+  drawer is open).
+- **Matrix**: `theme::matrix_cell` tiles (`RADIUS_XS` instead of 10 px,
+  background toward green by gain, the selected submix's columns
+  lifted), a gap after each output pair and between source groups,
+  HARDWARE INPUTS / SOFTWARE PLAYBACK captions, and one bus label per
+  pair in the footer instead of two.
+
+Verified: `cargo test --workspace` green, captures of all three views.
+Not touched: the TUI palette, the Device settings drawer and About (not
+capturable without clicking; `xdotool` is unreliable on this session).

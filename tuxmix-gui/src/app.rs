@@ -2644,14 +2644,28 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
             )
             .style(theme::pick_list)
             .menu_style(theme::menu)
+            .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
             .text_size(theme::TEXT_MD * scale),
             v_divider(scale),
+            // Captioned and sized like the Submix pick list next to it, so
+            // the chip reads as two fields of one form; it opens the
+            // device drawer instead of a menu, hence a button.
+            text("Clock")
+                .color(theme::TEXT_SEC)
+                .size(theme::TEXT_XS * scale),
             iced::widget::button(
-                text(format!("{} \u{25BE}", state.device.settings().clock_source))
-                    .size(theme::TEXT_XS * scale),
+                row![
+                    text(state.device.settings().clock_source.clone())
+                        .size(theme::TEXT_MD * scale),
+                    text("\u{25BE}")
+                        .size(theme::TEXT_XS * scale)
+                        .color(theme::TEXT_SEC),
+                ]
+                .spacing(theme::SPACE_MD * scale)
+                .align_y(iced::Alignment::Center),
             )
             .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
-            .style(theme::plain_button)
+            .style(theme::field_button(state.show_device_panel))
             .on_press(Message::ToggleDevicePanel),
         ]
         .spacing(theme::SPACE_LG)

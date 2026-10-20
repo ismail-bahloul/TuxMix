@@ -80,7 +80,17 @@ impl MeterFrame {
 /// pill *and* a label side by side) moot — 17px is the tightest this
 /// goes before clipping a 2-digit label at `theme::TEXT_MICRO`, checked
 /// via a live screenshot rather than guessed.
-const METER_RULER_W: f32 = 17.0;
+///
+/// 2026-10-20: the numbers left the meter for a lane of their own. Printed
+/// on the wash they collided with the fill (and, on a linked pair, with the
+/// gap between the two bars), and the wash had to stay translucent just so
+/// they could be read through it. The column is now `[meter][ruler lane]`,
+/// the meter fully opaque; `METER_RULER_W` is still the whole column, so
+/// `layout_x` and the collapsed `vu_meter` keep sizing against one number.
+const METER_W: f32 = 9.0;
+const LANE_GAP: f32 = 1.0;
+const RULER_LANE_W: f32 = 12.0;
+const METER_RULER_W: f32 = METER_W + LANE_GAP + RULER_LANE_W;
 const GAP: f32 = 4.0;
 const TRACK_W: f32 = 26.0;
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -477,12 +487,7 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
         let mut frame = Frame::new(renderer, bounds.size());
         let (track_x, meter_x) = self.layout_x(bounds.width);
         if self.show_meter {
-            let meter_rect = Rectangle::new(
-                Point::new(meter_x, 0.0),
-                Size::new(METER_RULER_W * self.scale, bounds.height),
-            );
-            // Meter first, as a translucent wash; ruler ticks drawn on top
-            // of it so both share the column instead of splitting the strip.
+            let (meter_rect, ruler_rect) = meter_column(meter_x, bounds.height, self.scale);
             draw_meter(
                 &mut frame,
                 meter_rect,
@@ -492,7 +497,7 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
                 self.meter2
                     .map(|m| (m.at(Instant::now()), self.meter2_available)),
             );
-            draw_ruler(&mut frame, meter_rect, self.scale);
+            draw_ruler(&mut frame, ruler_rect, self.scale);
         }
         let display_value = if state.dragging {
             self.value
@@ -548,7 +553,18 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
     }
 }
 
-const METER_RADIUS: f32 = 3.5;
+/// Splits the meter/ruler column starting at `x` into the bar itself and
+/// the lane the dB numbers sit in, right of it (next to the fader track).
+fn meter_column(x: f32, height: f32, scale: f32) -> (Rectangle, Rectangle) {
+    let meter = Rectangle::new(Point::new(x, 0.0), Size::new(METER_W * scale, height));
+    let ruler = Rectangle::new(
+        Point::new(x + (METER_W + LANE_GAP) * scale, 0.0),
+        Size::new(RULER_LANE_W * scale, height),
+    );
+    (meter, ruler)
+}
+
+const METER_RADIUS: f32 = 2.0;
 const CLIP_H: f32 = 6.0;
 
 /// `f32::clamp` panics if `lo > hi` — which a plain `min - margin, max -
@@ -569,30 +585,20 @@ fn safe_clamp(v: f32, lo: f32, hi: f32) -> f32 {
     }
 }
 
-/// Linear interpolation between two colors — `t` is clamped to [0, 1].
-fn lerp_color(a: Color, b: Color, t: f32) -> Color {
-    let t = t.clamp(0.0, 1.0);
-    Color {
-        r: a.r + (b.r - a.r) * t,
-        g: a.g + (b.g - a.g) * t,
-        b: a.b + (b.b - a.b) * t,
-        a: a.a + (b.a - a.a) * t,
-    }
-}
+/// The meter's color zones, bottom to top, as (upper edge in dB, color):
+/// signal green up to -12 dB, amber to -3 dB, red above. The last edge is
+/// the top of the scale, so every level falls in some zone.
+const METER_ZONES: [(f32, Color); 3] = [
+    (-12.0, theme::MGREEN),
+    (-3.0, theme::YSIM),
+    (TOP_DB, theme::MRED),
+];
 
-/// Above this level the fill starts tinting toward red — a continuous
-/// warning rather than a binary clip light, so the meter reads as "getting
-/// hot" well before it actually clips.
-const HOT_THRESHOLD: f32 = 0.85;
-
-/// How see-through the fill/clip-LED colors are — the ruler's numbers
-/// (see `draw_ruler`) are drawn *on top of* this same rectangle, TotalMix-
-/// style (confirmed via a live screenshot: the dB digits sit directly on
-/// the meter, not beside it in their own lane), so the fill can't be
-/// fully opaque or it'd blot the text out. Chosen high enough that the
-/// level is still clearly readable as a color, low enough that
-/// `theme::TEXT_SEC`-colored digits stay legible over green *or* red.
-const FILL_ALPHA: f32 = 0.55;
+/// Fill opacity. It used to be 0.55 so the ruler's numbers could be read
+/// *through* the wash; they have their own lane now (`RULER_LANE_W`), so
+/// the fill is all but solid, with just enough give to sit in the dark
+/// well instead of glaring.
+const FILL_ALPHA: f32 = 0.92;
 
 /// A full-width wash spanning the whole ruler column — not a slim pill
 /// off to one side — precisely so `draw_ruler`'s numbers can be
@@ -600,7 +606,7 @@ const FILL_ALPHA: f32 = 0.55;
 /// (which used to widen this whole column well past what the numbers
 /// alone need, shoving the fader and everything after it further right
 /// than the reference: see `METER_RULER_W`'s own doc comment). Tints
-/// progressively from green toward red above `HOT_THRESHOLD`, plus a
+/// through `METER_ZONES` (green, amber, red), plus a
 /// separate clip "LED" above the track that lights up near 0 dBFS.
 /// `available` is a per-session backend capability (see `DeviceHandle::
 /// has_input_meter`/`has_playback_meters`), not a per-tick reading —
@@ -697,17 +703,29 @@ fn draw_meter_bar(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, avail
         // signal data only started flowing through here this session
         // (previously every real backend read "N/A"), which is what
         // made this actually matter rather than being a latent bug.
-        let fill_h = r.height * vol_to_t(l);
-        let fill_pos = Point::new(r.x, r.y + r.height - fill_h);
-        let hot_t = (l - HOT_THRESHOLD) / (1.0 - HOT_THRESHOLD);
-        let fill_color = Color {
-            a: FILL_ALPHA,
-            ..lerp_color(theme::MGREEN, theme::MRED, hot_t)
-        };
-        frame.fill(
-            &Path::new(|b| b.rounded_rectangle(fill_pos, Size::new(fill_w, fill_h), radius.into())),
-            fill_color,
-        );
+        // Fixed color zones, console-style, instead of tinting the whole
+        // bar by its peak: with an opaque fill, a hot signal used to turn
+        // the entire column red, so "loud" and "clipping" looked alike.
+        // Each zone is filled only as far as the level reaches into it.
+        let top = r.y + r.height - r.height * vol_to_t(l);
+        let mut lower_db = FLOOR_DB;
+        for (upper_db, color) in METER_ZONES {
+            let zone_bottom = r.y + r.height - r.height * db_to_t(lower_db);
+            let zone_top = (r.y + r.height - r.height * db_to_t(upper_db)).max(top);
+            if zone_top < zone_bottom {
+                frame.fill(
+                    &Path::rectangle(
+                        Point::new(r.x, zone_top),
+                        Size::new(fill_w, zone_bottom - zone_top),
+                    ),
+                    Color {
+                        a: FILL_ALPHA,
+                        ..color
+                    },
+                );
+            }
+            lower_db = upper_db;
+        }
     }
 
     // Clip LED — a fixed indicator above the track, dim until triggered.
@@ -874,25 +892,14 @@ fn draw_track(
 /// "shared between the meter and the fader" position the reference uses.
 fn draw_ruler(frame: &mut Frame, r: Rectangle, scale: f32) {
     const TICKS: [f32; 6] = [0.0, -6.0, -10.0, -20.0, -40.0, -60.0];
-    let label_color = theme::TEXT_SEC;
-    let tick_x1 = r.x + r.width;
-    let tick_x0 = tick_x1 - 3.0 * scale;
     let label_x = r.x + r.width / 2.0;
-    // Measured against the *full* `r`, matching `draw_track`'s own
-    // `pos_of` (the fader cap) and, since the fix noted in `draw_meter`,
-    // that function's fill too — all three now agree on where a given
-    // dB value sits.
+    // Measured against the *full* height, matching `draw_track`'s own
+    // `pos_of` (the fader cap) and `draw_meter`'s fill: all three agree on
+    // where a given dB value sits.
     for db in TICKS {
         let t = db_to_t(db);
         let y = r.y + r.height - r.height * t;
         let y = safe_clamp(y, r.y + 4.0 * scale, r.y + r.height - 4.0 * scale);
-
-        let tick = Path::line(Point::new(tick_x0, y), Point::new(tick_x1, y));
-        frame.stroke(
-            &tick,
-            Stroke::default().with_color(label_color).with_width(1.0),
-        );
-
         let label = if db == 0.0 {
             "0".to_string()
         } else {
@@ -900,10 +907,19 @@ fn draw_ruler(frame: &mut Frame, r: Rectangle, scale: f32) {
         };
         frame.fill_text(canvas::Text {
             content: label,
-            position: Point::new(label_x, y - 4.0 * scale),
-            color: label_color,
+            position: Point::new(label_x, y),
+            // 0 dB is the reference the cap rests on: one step brighter.
+            color: if db == 0.0 {
+                theme::TEXT_SEC
+            } else {
+                Color {
+                    a: 0.6,
+                    ..theme::TEXT_SEC
+                }
+            },
             size: (theme::TEXT_MICRO * scale).into(),
             align_x: advanced_text::Alignment::Center,
+            align_y: iced::alignment::Vertical::Center,
             ..canvas::Text::default()
         });
     }
@@ -970,10 +986,7 @@ impl<Message> canvas::Program<Message> for VuMeter {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let meter_rect = Rectangle::new(
-            Point::ORIGIN,
-            Size::new(METER_RULER_W * self.scale, bounds.height),
-        );
+        let (meter_rect, ruler_rect) = meter_column(0.0, bounds.height, self.scale);
         draw_meter(
             &mut frame,
             meter_rect,
@@ -985,7 +998,7 @@ impl<Message> canvas::Program<Message> for VuMeter {
             // for this pass, single-bar only here.
             None,
         );
-        draw_ruler(&mut frame, meter_rect, self.scale);
+        draw_ruler(&mut frame, ruler_rect, self.scale);
         vec![frame.into_geometry()]
     }
 }
@@ -1077,29 +1090,12 @@ mod tests {
     }
 
     #[test]
-    fn fill_stays_green_below_hot_threshold() {
-        let c = lerp_color(
-            theme::MGREEN,
-            theme::MRED,
-            (0.5 - HOT_THRESHOLD) / (1.0 - HOT_THRESHOLD),
-        );
-        assert_eq!(c, theme::MGREEN);
-    }
-
-    #[test]
-    fn fill_turns_fully_red_at_full_level() {
-        let hot_t = (1.0 - HOT_THRESHOLD) / (1.0 - HOT_THRESHOLD);
-        let c = lerp_color(theme::MGREEN, theme::MRED, hot_t);
-        assert!((c.r - theme::MRED.r).abs() < 1e-4);
-        assert!((c.g - theme::MRED.g).abs() < 1e-4);
-        assert!((c.b - theme::MRED.b).abs() < 1e-4);
-    }
-
-    #[test]
-    fn fill_is_between_green_and_red_mid_hot_zone() {
-        let hot_t = ((HOT_THRESHOLD + 1.0) / 2.0 - HOT_THRESHOLD) / (1.0 - HOT_THRESHOLD);
-        let c = lerp_color(theme::MGREEN, theme::MRED, hot_t);
-        assert!(c.r > theme::MGREEN.r && c.r < theme::MRED.r);
-        assert!(c.g < theme::MGREEN.g && c.g > theme::MRED.g);
+    fn meter_zones_cover_the_scale_in_order() {
+        let mut lower = FLOOR_DB;
+        for (upper, _) in METER_ZONES {
+            assert!(upper > lower);
+            lower = upper;
+        }
+        assert_eq!(lower, TOP_DB);
     }
 }

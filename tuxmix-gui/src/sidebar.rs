@@ -20,8 +20,9 @@
 //! * Full-strength `ACCENT` is reserved for things that are actually on
 //!   (`theme::toggle_button`: the M/S pair, a group link). "Which side a
 //!   switch points at" and "which slot is selected" use the dim
-//!   `ACCENT_DIM` pill instead (`theme::segment_button`,
-//!   `theme::tab_toggle`), so a position no longer reads as a state.
+//!   graphite thumb instead (`theme::segment_button`, and
+//!   `theme::segment_cell` inside a joined `segmented_row`), so a
+//!   position no longer reads as a state.
 //! * Secondary actions (undo/redo, "store", the collapse toggle) are flat
 //!   text (`theme::ghost_button`) instead of more boxes.
 //! * Rows inside a panel are `SPACE_TIGHT` apart, panels are twice that
@@ -453,12 +454,12 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
 /// stack now reads as "nothing to do" instead of as two disabled boxes.
 fn undo_redo_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     row![
-        button(text("‹ undo").size(theme::TEXT_XS * scale))
+        button(text("‹ undo").size(theme::TEXT_XS * scale).center())
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .width(Length::Fill)
             .style(theme::ghost_button)
             .on_press_maybe((!state.undo_stack.is_empty()).then_some(Message::Undo)),
-        button(text("redo ›").size(theme::TEXT_XS * scale))
+        button(text("redo ›").size(theme::TEXT_XS * scale).center())
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .width(Length::Fill)
             .style(theme::ghost_button)
@@ -489,17 +490,17 @@ fn msf_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let muted_all = crate::app::all_channels_muted(state);
     let any_solo = crate::app::any_channel_soloed(state);
     row![
-        button(text("M").size(theme::TEXT_SM * scale))
+        button(text("M").size(theme::TEXT_SM * scale).center())
             .padding(theme::SPACE_SM * scale)
             .width(Length::Fill)
             .style(theme::toggle_button(muted_all, theme::MUTE_COLOR))
             .on_press(Message::GlobalMuteToggle),
-        button(text("S").size(theme::TEXT_SM * scale))
+        button(text("S").size(theme::TEXT_SM * scale).center())
             .padding(theme::SPACE_SM * scale)
             .width(Length::Fill)
             .style(theme::toggle_button(any_solo, theme::SOLO_COLOR))
             .on_press(Message::GlobalSoloToggle),
-        button(text("F").size(theme::TEXT_SM * scale))
+        button(text("F").size(theme::TEXT_SM * scale).center())
             .padding(theme::SPACE_SM * scale)
             .width(Length::Fill)
             .style(theme::toggle_button(false, theme::ACCENT)),
@@ -668,6 +669,40 @@ fn disabled_segmented_row(
     )
 }
 
+/// Numbered slots (Snapshots, Mixer Layouts) as a two-column grid of
+/// equal cells, like the slot buttons on a hardware console, instead of a
+/// list of full-width rows: eight rows of "Mix n" were the tallest thing
+/// in the column for the least information. The selected slot is a switch
+/// position, not an "on" state, so it takes `segment_button`'s graphite
+/// thumb, same as every other position in this column.
+fn slot_grid<'a>(
+    count: u8,
+    prefix: &'a str,
+    active: Option<usize>,
+    on_press: fn(u8) -> Message,
+    scale: f32,
+) -> Element<'a, Message> {
+    let mut grid = column![].spacing(theme::SPACE_TIGHT * scale);
+    for first in (1..=count).step_by(2) {
+        let mut line = row![].spacing(theme::SPACE_TIGHT * scale);
+        for n in first..=(first + 1).min(count) {
+            line = line.push(
+                button(
+                    text(format!("{prefix} {n}"))
+                        .size(theme::TEXT_XS * scale)
+                        .center(),
+                )
+                .padding([theme::SPACE_SM * scale, theme::SPACE_SM * scale])
+                .width(Length::Fill)
+                .style(theme::segment_button(active == Some(n as usize)))
+                .on_press(on_press(n)),
+            );
+        }
+        grid = grid.push(line);
+    }
+    grid.width(Length::Fill).into()
+}
+
 /// The trailing "store" action of the Snapshot and Mixer Layout panels —
 /// right-aligned, flat text, the same weight as the panel's own collapse
 /// toggle. It used to be a bordered box the size of a slot, which made
@@ -774,10 +809,8 @@ const SNAPSHOT_COUNT: u8 = 8;
 /// mirroring `Message::SceneSave`/`SceneLoad` almost verbatim (see
 /// `app.rs`'s own handlers).
 ///
-/// Slots use `theme::tab_toggle`'s selected pill — the same look as the
-/// top bar's current view tab — rather than a boxed switch: eight boxed
-/// rows were eight boxes to look at, and the selected one filled solid
-/// orange, which is now reserved for things that are actually on.
+/// Slots are a two-column grid (`slot_grid`), the selected one in the
+/// same graphite thumb as every other switch position in this column.
 fn snapshots_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let header = panel_header(
         "snapshots",
@@ -795,16 +828,13 @@ fn snapshots_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         .padding(indent(CONTENT_INDENT * scale))
         .width(Length::Fill);
 
-    for n in 1..=SNAPSHOT_COUNT {
-        let active = state.active_snapshot == Some(n as usize);
-        body = body.push(
-            button(text(format!("Mix {n}")).size(theme::TEXT_XS * scale))
-                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
-                .width(Length::Fill)
-                .style(theme::tab_toggle(active))
-                .on_press(Message::SnapshotClicked(n)),
-        );
-    }
+    body = body.push(slot_grid(
+        SNAPSHOT_COUNT,
+        "Mix",
+        state.active_snapshot,
+        Message::SnapshotClicked,
+        scale,
+    ));
     body = body.push(store_row(Message::SnapshotStore, scale));
 
     column![header, body]
@@ -847,15 +877,18 @@ fn groups_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
             text("mute")
                 .size(theme::TEXT_MICRO * scale)
                 .color(theme::TEXT_SEC)
-                .width(Length::Fill),
+                .width(Length::Fill)
+                .center(),
             text("solo")
                 .size(theme::TEXT_MICRO * scale)
                 .color(theme::TEXT_SEC)
-                .width(Length::Fill),
+                .width(Length::Fill)
+                .center(),
             text("fader")
                 .size(theme::TEXT_MICRO * scale)
                 .color(theme::TEXT_SEC)
-                .width(Length::Fill),
+                .width(Length::Fill)
+                .center(),
         ]
         .spacing(theme::SPACE_TIGHT * scale),
     );
@@ -865,7 +898,7 @@ fn groups_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         // mode — only the "edit" button itself (below) shows whether a
         // click here will assign a fresh membership or just flip a link.
         let cell = |lit: bool, label: String, link: GroupLink| -> Element<'_, Message> {
-            button(text(label).size(theme::TEXT_XS * scale))
+            button(text(label).size(theme::TEXT_XS * scale).center())
                 .padding(theme::SPACE_TIGHT * scale)
                 .width(Length::Fill)
                 .style(theme::toggle_button(lit, theme::ACCENT))
@@ -889,12 +922,12 @@ fn groups_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     // the most important thing in the panel.
     body = body.push(
         row![
-            button(text("edit").size(theme::TEXT_XS * scale))
+            button(text("edit").size(theme::TEXT_XS * scale).center())
                 .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
                 .width(Length::Fill)
                 .style(theme::segment_button(state.group_editing))
                 .on_press(Message::GroupEditToggle),
-            button(text("clear").size(theme::TEXT_XS * scale))
+            button(text("clear").size(theme::TEXT_XS * scale).center())
                 .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
                 .width(Length::Fill)
                 .style(theme::ghost_button)
@@ -942,16 +975,13 @@ fn layout_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         scale,
     ));
 
-    for n in 1..=LAYOUT_COUNT {
-        let active = state.active_layout == Some(n as usize);
-        body = body.push(
-            button(text(format!("Layout {n}")).size(theme::TEXT_XS * scale))
-                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
-                .width(Length::Fill)
-                .style(theme::tab_toggle(active))
-                .on_press(Message::LayoutClicked(n)),
-        );
-    }
+    body = body.push(slot_grid(
+        LAYOUT_COUNT,
+        "Layout",
+        state.active_layout,
+        Message::LayoutClicked,
+        scale,
+    ));
     body = body.push(store_row(Message::LayoutStore, scale));
 
     column![header, body]
