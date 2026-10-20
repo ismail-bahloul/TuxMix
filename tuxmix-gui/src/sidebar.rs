@@ -51,11 +51,14 @@ pub const DEFAULT_WIDTH: f32 = 210.0;
 /// stop having room to spare on a 1920px window.
 pub const MIN_WIDTH: f32 = 170.0;
 pub const MAX_WIDTH: f32 = 420.0;
-/// Width of the collapsed rail — just enough for the expand button, so
-/// collapsing the sidebar reclaims most of its width for the mixer
-/// without losing the one control needed to bring it back (an
-/// entirely-gone sidebar would have nowhere left to click).
-pub const COLLAPSED_WIDTH: f32 = 22.0;
+/// Width of the collapsed rail: the panel toggle plus its padding, so
+/// collapsing reclaims most of the width for the mixer while the button
+/// that brings the column back stays exactly where it was.
+pub const COLLAPSED_WIDTH: f32 = 34.0;
+/// The panel toggle's hit box, at scale 1 — the same in both states, so
+/// the button never moves when it is pressed.
+const TOGGLE_W: f32 = 26.0;
+const TOGGLE_H: f32 = 22.0;
 
 /// Left indent of a panel's *content*, so it sits under the panel header's
 /// label rather than under its accent tick — the one bit of inset the
@@ -76,20 +79,6 @@ const fn indent(left: f32) -> iced::Padding {
 /// Width of the Options panel's caption column. Sized for the longest
 /// caption the reference uses there ("solo/pfl mode") at `TEXT_XS`.
 const OPTIONS_LABEL_W: f32 = 76.0;
-
-/// Width of the fold tab that straddles the sidebar's inner edge. Narrow
-/// enough to read as a grip on the edge (`theme::tab_handle` finishes it
-/// as a capsule) rather than a button parked next to it.
-const TAB_W: f32 = 14.0;
-/// Height of that tab — tall enough that the capsule reads as a handle,
-/// short enough that it doesn't read as a scrollbar segment.
-const TAB_H: f32 = 52.0;
-/// How much of the tab overlaps the sidebar itself — exactly the column's
-/// own left padding (`SPACE_MD`), so the tab hangs over the mixer's side
-/// of the boundary without ever covering a row. The rest of it
-/// (`TAB_W - TAB_INSIDE` = 12px) lands in the mixer page's own right
-/// padding (`SPACE_XL`), which is empty by construction.
-const TAB_INSIDE: f32 = theme::SPACE_MD;
 
 /// Which sidebar panel a `Message::ToggleSidebarPanel` collapses/expands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -221,28 +210,68 @@ impl SkeletonPairs {
 /// `SPACE_MD` from the column's left edge.
 const RESIZE_W: f32 = theme::SPACE_MD;
 
-/// The fold control itself: a small grip whose chevron points the way
-/// the column is about to move (right folds it away, left brings it
-/// back). The chevron is canvas-drawn (`widgets::chevron`), not a font
-/// glyph: at `TAB_W` wide, every candidate glyph's side bearing put its
-/// ink visibly off the capsule's center, and `Button`'s own default
-/// padding (5px a side) left no content box at all in a box this narrow —
-/// padding zeroed, the canvas fills the whole tab.
-fn tab_button(right: bool, scale: f32) -> Element<'static, Message> {
-    button(
-        iced::widget::canvas(crate::widgets::chevron::Chevron {
+/// The fold control, part of the panel itself: the "toggle sidebar"
+/// icon (`widgets::panel_icon`) at the right end of the panel's title row
+/// when open, and at the top of the rail when collapsed — the same spot
+/// and size either way, the way editors and design tools do it. It
+/// replaced a capsule tab that hung over the mixer/sidebar boundary as an
+/// overlay: findable, but it belonged to neither side and read as a
+/// scrollbar fragment.
+fn panel_toggle(open: bool, scale: f32) -> Element<'static, Message> {
+    let toggle = button(
+        iced::widget::canvas(crate::widgets::panel_icon::PanelIcon {
             color: theme::TEXT_SEC,
-            right,
+            open,
             scale,
         })
         .width(Length::Fill)
         .height(Length::Fill),
     )
     .padding(0)
-    .width(Length::Fixed(TAB_W * scale))
-    .height(Length::Fixed(TAB_H * scale))
-    .style(theme::tab_handle)
-    .on_press(Message::ToggleSidebar)
+    .width(Length::Fixed(TOGGLE_W * scale))
+    .height(Length::Fixed(TOGGLE_H * scale))
+    .style(theme::ghost_button)
+    .on_press(Message::ToggleSidebar);
+    iced::widget::tooltip(
+        toggle,
+        container(
+            text(if open { "Hide panel" } else { "Show panel" }).size(theme::TEXT_XS * scale),
+        )
+        .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+        .style(theme::chip),
+        iced::widget::tooltip::Position::Left,
+    )
+    .into()
+}
+
+/// The panel's title row: its name on the left, the fold toggle on the
+/// right — what makes the column read as one panel with a header instead
+/// of a stack of rows that happens to sit at the window's edge.
+fn title_row(scale: f32) -> Element<'static, Message> {
+    row![
+        text("CONTROLS")
+            .size(theme::TEXT_XS * scale)
+            .color(theme::TEXT_SEC),
+        iced::widget::Space::new().width(Length::Fill),
+        panel_toggle(true, scale),
+    ]
+    .align_y(iced::Alignment::Center)
+    .width(Length::Fill)
+    .into()
+}
+
+/// The 1px line on the panel's inner edge while collapsed. Open, the
+/// resize strip draws the same line at rest (see `widgets::splitter`).
+fn edge_line(scale: f32) -> Element<'static, Message> {
+    container(
+        iced::widget::Space::new()
+            .width(Length::Fixed(scale.max(1.0)))
+            .height(Length::Fill),
+    )
+    .style(|_theme: &iced::Theme| container::Style {
+        background: Some(iced::Background::Color(theme::BORDER)),
+        ..container::Style::default()
+    })
     .into()
 }
 
@@ -262,9 +291,18 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
     // one control that brings the column back *is* the whole rail, and
     // the tab is centered so it doesn't move height between states.
     if !state.sidebar_open {
-        return container(tab_button(false, scale))
-            .padding(theme::SPACE_TIGHT * scale)
-            .align_y(iced::Alignment::Center)
+        // The rail keeps the device's status dot under the toggle, so a
+        // card that drops out is still visible with the panel folded.
+        let (status_color, _) = device_state(state);
+        let rail = column![
+            panel_toggle(false, scale),
+            text("●").size(theme::TEXT_XS * scale).color(status_color),
+        ]
+        .spacing(theme::SPACE_LG * scale)
+        .padding([theme::SPACE_MD * scale, 0.0])
+        .align_x(iced::Alignment::Center)
+        .width(Length::Fill);
+        return container(row![edge_line(scale), rail])
             .width(Length::Fixed(COLLAPSED_WIDTH * scale))
             .height(Length::Fill)
             .style(theme::top_bar)
@@ -272,6 +310,7 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
     }
 
     let col = column![
+        title_row(scale),
         device_chip(state, scale),
         undo_redo_row(state, scale),
         msf_row(state, scale),
@@ -317,40 +356,6 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
 /// needs no overlay of its own: it sits in the column's own left padding.
 fn resize_strip(scale: f32) -> Element<'static, Message> {
     crate::widgets::splitter::splitter(Message::SidebarResize, scale, RESIZE_W * scale)
-}
-
-/// The fold tab as an *overlay*, for `app.rs::view`'s own `stack`.
-///
-/// It used to be a widget inside the row, with a strip of its own to sit
-/// in — which left a full-height column of empty width next to the mixer.
-/// A row's children never draw outside their box, so the only way for the
-/// tab to hang over the boundary it folds is to be layered above the
-/// whole body row (see `TAB_INSIDE` for the split).
-///
-/// Deliberately nothing but `Space`s and the one button: no `opaque`, no
-/// `mouse_area`, like the mixer's own `page`. Everything else in this
-/// overlay has to stay transparent to clicks and wheel events so they
-/// keep reaching the body row underneath (the page's own
-/// click-to-clear-selection, the sidebar's scrollable).
-///
-/// Collapsed, the rail (`COLLAPSED_WIDTH`) *is* the tab, so there is
-/// nothing to overlay and this contributes nothing.
-pub fn fold_tab(state: &TuxMix) -> Element<'_, Message> {
-    let scale = state.ui_scale;
-
-    if !state.sidebar_open {
-        return iced::widget::Space::new().into();
-    }
-
-    row![
-        iced::widget::Space::new().width(Length::Fill),
-        tab_button(true, scale),
-        iced::widget::Space::new().width(Length::Fixed((state.sidebar_width - TAB_INSIDE) * scale)),
-    ]
-    .align_y(iced::Alignment::Center)
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
 }
 
 /// Gives one panel its own top margin on top of the outer column's
@@ -531,31 +536,39 @@ fn fx_show_row(scale: f32) -> Element<'static, Message> {
 
 /// One panel's header — the sidebar's only structure. The same
 /// vocabulary as the mixer's `section_header` (accent tick, label, rule
-/// trailing right) at sidebar scale, with the reference's own "−"/"+"
-/// collapse toggle at the end. This replaced a boxed chip: four
+/// trailing right) at sidebar scale, with a collapse chevron at the end. This replaced a boxed chip: four
 /// identical bordered headers stacked in one column gave the panels
 /// exactly the weight of the controls inside them, so neither read as
 /// either.
 fn panel_header(label: &str, open: bool, on_toggle: Message, scale: f32) -> Element<'_, Message> {
-    row![
-        container(
-            iced::widget::Space::new()
-                .width(3.0 * scale)
-                .height(12.0 * scale)
-        )
-        .style(theme::accent_bar),
-        text(label.to_uppercase())
-            .size(theme::TEXT_SM * scale)
-            .color(theme::TEXT_PRIMARY),
-        iced::widget::rule::horizontal(1),
-        button(text(if open { "−" } else { "+" }).size(theme::TEXT_XS * scale))
-            .padding(theme::SPACE_SM * scale)
-            .style(theme::ghost_button)
-            .on_press(on_toggle),
-    ]
-    .spacing(theme::SPACE_SM * scale)
-    .align_y(iced::Alignment::Center)
+    // The whole header is the toggle, the way collapsible sections work
+    // in editors and design tools: the old "−"/"+" was a 10px target at
+    // the far end of the rule, and nothing about the label said it folds.
+    // The chevron (Inter covers U+25BE/U+25B8) says which way it is.
+    button(
+        row![
+            container(
+                iced::widget::Space::new()
+                    .width(3.0 * scale)
+                    .height(12.0 * scale)
+            )
+            .style(theme::accent_bar),
+            text(label.to_uppercase())
+                .size(theme::TEXT_SM * scale)
+                .color(theme::TEXT_PRIMARY),
+            iced::widget::rule::horizontal(1),
+            // No color of its own: it takes `header_button`'s, which is
+            // what lights up under the cursor.
+            text(if open { "\u{25BE}" } else { "\u{25B8}" }).size(theme::TEXT_XS * scale),
+        ]
+        .spacing(theme::SPACE_SM * scale)
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill),
+    )
+    .padding([theme::SPACE_TIGHT * scale, 0.0])
     .width(Length::Fill)
+    .style(theme::header_button)
+    .on_press(on_toggle)
     .into()
 }
 

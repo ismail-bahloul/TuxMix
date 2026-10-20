@@ -3366,3 +3366,49 @@ view by view, with a `--mock` capture after each change.
 Verified: `cargo test --workspace` green, captures of all three views.
 Not touched: the TUI palette, the Device settings drawer and About (not
 capturable without clicking; `xdotool` is unreliable on this session).
+
+## 2026-10-20 (cont.): the sidebar becomes a real panel, the device drawer a popover
+
+**Fold control.** The capsule tab that straddled the mixer/sidebar
+boundary as a `stack` overlay is gone (it belonged to neither side and
+read as a scrollbar fragment). The panel now has a title row, "CONTROLS"
+plus a "toggle sidebar" icon button on the right (`widgets/panel_icon.rs`,
+canvas-drawn, replacing `widgets/chevron.rs`; the right-hand column is
+filled while the panel is open). Collapsed, the panel is a 34px rail with
+the same button at the same height and the device status dot under it, so
+a disconnect stays visible. The panel's inner edge is a 1px `BORDER` line:
+the resize strip draws it at rest (`widgets/splitter.rs`) and thickens it
+on hover/drag; the rail draws its own. `theme::tab_handle` and the
+`TAB_*` constants are gone with the tab.
+
+**Panel headers.** The whole header row is the collapse toggle
+(`theme::header_button`, no fill, the chevron brightens on hover), with a
+▾/▸ chevron instead of the 10px "−"/"+" at the end of the rule.
+
+**Device settings.** No longer a full-width drawer docked at the window's
+bottom-left: a 320px popover card anchored under the top bar's Clock
+field (`POPOVER_TOP`), in CLOCK / OUTPUT / GLOBAL sections with a shared
+caption column, the knobs captioned underneath, and the five global flags
+as a two-column toggle grid. It closes on Close, the Clock field, Escape
+(after the About modal, see `escape_closes_the_device_popover_after_the_modal`)
+or any click outside it.
+
+**Bug found while testing that: click-outside never worked.** Both the
+popover's first draft and the existing About modal put a click catcher
+*under* the card in a `stack`. `Stack::update` (iced_widget 0.14.2,
+`stack.rs`) levitates the cursor for every lower layer as soon as an upper
+layer reports a mouse interaction, and the card's full-window container
+does, so the scrim never saw a click: About only closed via its button or
+Escape. Both now use one layer, `opaque(mouse_area(container(opaque(card))))`:
+the card captures its own clicks and `mouse_area` acts only on uncaptured
+ones (`mouse_area.rs` returns early on `is_event_captured`). About's Close
+became a ghost button, matching the popover.
+
+**Testing.** Verified by real clicks in an isolated Xvfb display (`Xvfb :99`
+plus `xdotool`, the app in `--mock`): unlike XWayland on the KDE session,
+clicks land on exact pixels. Checked: fold/unfold and the rail; a header
+click folds Options; popover open, stays open on an inner click, closes
+outside and on Escape; About opens from the mark, stays open on an inner
+click, closes outside and on Escape. Without a window manager the window
+needs an explicit `xdotool windowfocus` before key events reach it.
+`cargo test --workspace` green.

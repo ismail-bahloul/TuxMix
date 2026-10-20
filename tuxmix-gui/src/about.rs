@@ -6,7 +6,7 @@
 //! Quick view it landed below the fold and on the Mixer view it came after
 //! every strip row.
 
-use iced::widget::{button, column, container, mouse_area, opaque, row, stack, text, Space};
+use iced::widget::{button, column, container, mouse_area, opaque, row, text, Space};
 use iced::{Alignment, Background, Color, Element, Length};
 
 use tuxmix_core::RmeDevice;
@@ -25,13 +25,14 @@ const CARD_W: f32 = 420.0;
 
 fn header(scale: f32) -> Element<'static, Message> {
     row![
-        text("ABOUT")
+        text("About")
             .color(theme::TEXT_PRIMARY)
-            .size(theme::TEXT_SM * scale),
+            .size(theme::TEXT_MD * scale),
         Space::new().width(Length::Fill),
+        // Same title/Close pair as the device popover (`app::device_panel`).
         button(text("Close").size(theme::TEXT_XS * scale))
-            .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
-            .style(theme::plain_button)
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+            .style(theme::ghost_button)
             .on_press(Message::ToggleAbout),
     ]
     .spacing(theme::SPACE_MD * scale)
@@ -40,9 +41,9 @@ fn header(scale: f32) -> Element<'static, Message> {
 }
 
 /// The whole overlay: a dimming scrim that closes on click and blocks the
-/// window behind it, with the card centered above it. Both layers are
-/// `opaque`, so a click inside the card (its padding included) never falls
-/// through to the scrim and closes the dialog under the cursor.
+/// window behind it, with the card centered on it. The card is `opaque`,
+/// so a click inside it (its padding included) is captured before the
+/// scrim's `mouse_area` and never closes the dialog under the cursor.
 pub fn about_modal(state: &TuxMix) -> Element<'_, Message> {
     let scale = state.ui_scale;
 
@@ -131,34 +132,28 @@ pub fn about_modal(state: &TuxMix) -> Element<'_, Message> {
         .max_width(CARD_W * scale),
     );
 
-    // The scrim is the invisible half of the modal: dim it, catch the
-    // click that closes the dialog, and keep every event from reaching
-    // the window underneath.
-    let scrim = opaque(
+    // The scrim is the invisible half of the modal: dim the window, catch
+    // the click that closes the dialog, and keep every event from reaching
+    // the window underneath. It wraps the card rather than sitting under
+    // it in a `stack`: there, the full-window container on top made iced
+    // levitate the cursor for the scrim below, so clicking outside the
+    // card never closed anything. The card is `opaque`, so its own clicks
+    // are captured before `mouse_area` sees them.
+    opaque(
         mouse_area(
-            container(Space::new().width(Length::Fill).height(Length::Fill)).style(
-                |_theme: &iced::Theme| container::Style {
+            container(card)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(|_theme: &iced::Theme| container::Style {
                     background: Some(Background::Color(Color {
                         a: 0.55,
                         ..Color::BLACK
                     })),
                     ..container::Style::default()
-                },
-            ),
+                }),
         )
         .on_press(Message::ToggleAbout),
-    );
-
-    stack(vec![
-        scrim,
-        container(card)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into(),
-    ])
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    )
 }

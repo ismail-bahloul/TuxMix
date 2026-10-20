@@ -592,6 +592,23 @@ pub fn field_button(open: bool) -> impl Fn(&iced::Theme, button::Status) -> butt
     }
 }
 
+/// A collapsible section header (`sidebar::panel_header`): no fill at all,
+/// even under the cursor, since a hover box around a whole header row
+/// would outweigh the panel it heads. Hover only brightens the chevron;
+/// the tick, label and rule keep their own colors.
+pub fn header_button(_theme: &iced::Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => TEXT_PRIMARY,
+            _ => TEXT_SEC,
+        },
+        border: Border::default(),
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
 /// A flat, textual button: no box at rest, brightening to `SURFACE_HI`
 /// under the cursor.
 ///
@@ -623,37 +640,6 @@ pub fn ghost_button(_theme: &iced::Theme, status: button::Status) -> button::Sty
         border: Border {
             radius: RADIUS_SM.into(),
             ..Border::default()
-        },
-        shadow: Shadow::default(),
-        snap: false,
-    }
-}
-
-/// The sidebar's fold tab (`sidebar.rs`): a capsule grip, half the width
-/// of the old box and taller, straddling the edge it folds. Boxed at rest,
-/// unlike every other utility in that column, because it has to be
-/// findable without hovering (it is the only way to get the sidebar back
-/// once it is gone); brightens to the same `SURFACE_HI`/`FADER` hover as
-/// everything else.
-pub fn tab_handle(_theme: &iced::Theme, status: button::Status) -> button::Style {
-    // Half of `sidebar::TAB_W`: capsule, not rounded box.
-    const TAB_RADIUS: f32 = 7.0;
-    let (background, border_color, text_color) = match status {
-        button::Status::Pressed => (
-            Background::Color(blend(SURFACE_HI, Color::BLACK, PRESS_DARKEN)),
-            FADER,
-            TEXT_PRIMARY,
-        ),
-        button::Status::Hovered => (Background::Color(SURFACE_HI), FADER, TEXT_PRIMARY),
-        _ => (Background::Color(BG_DEEP), BORDER, TEXT_SEC),
-    };
-    button::Style {
-        background: Some(background),
-        text_color,
-        border: Border {
-            color: border_color,
-            width: 1.0,
-            radius: TAB_RADIUS.into(),
         },
         shadow: Shadow::default(),
         snap: false,

@@ -6,8 +6,8 @@
 //! asks for the `Pointer` cursor. A `canvas::Program` gets the raw mouse
 //! events *with* their coordinates, so it can emit drag deltas itself and
 //! ask for the `ResizingHorizontally` cursor. Same shape as `fader.rs`,
-//! minus the drawing: the strip shows a 2px line only while hovered or
-//! dragged, so the sidebar's edge stays a plain edge at rest.
+//! minus most of the drawing: at rest the strip is the panel's own 1px
+//! edge line, hover and drag thicken it into a 2px handle.
 
 use std::rc::Rc;
 
@@ -111,10 +111,18 @@ impl<Message> canvas::Program<Message> for Splitter<Message> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        if !state.dragging && !cursor.is_over(bounds) {
-            return Vec::new();
-        }
         let mut frame = Frame::new(renderer, bounds.size());
+        if !state.dragging && !cursor.is_over(bounds) {
+            // The panel's edge, on the strip's outer side.
+            let x = self.scale.max(1.0) / 2.0;
+            frame.stroke(
+                &Path::line(Point::new(x, 0.0), Point::new(x, bounds.height)),
+                Stroke::default()
+                    .with_width(self.scale.max(1.0))
+                    .with_color(theme::BORDER),
+            );
+            return vec![frame.into_geometry()];
+        }
         let x = bounds.width / 2.0;
         frame.stroke(
             &Path::line(Point::new(x, 0.0), Point::new(x, bounds.height)),

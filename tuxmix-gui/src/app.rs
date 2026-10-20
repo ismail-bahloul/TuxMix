@@ -1700,6 +1700,8 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             // Topmost thing first: the modal outranks an in-place edit.
             if state.show_about {
                 state.show_about = false;
+            } else if state.show_device_panel {
+                state.show_device_panel = false;
             } else if state.editing.is_some() {
                 state.editing = None;
             }
@@ -2258,29 +2260,22 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
     // indistinguishable on screen from a genuinely non-interactive one.
     // That's what made `page()`'s click-to-clear-selection silently miss
     // every click below the shortest section's natural content height.
-    // The sidebar's fold tab rides in a `stack` *above* that row rather
-    // than inside it, so it can straddle the mixer/sidebar boundary
-    // instead of needing a column of its own (see `sidebar::fold_tab`,
-    // including why it stays a bare row of spaces plus one button).
-    let body = stack(vec![
-        row![content, sidebar::sidebar(state)]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into(),
-        sidebar::fold_tab(state),
-    ])
-    .width(Length::Fill)
-    .height(Length::Fill);
+    let body = row![content, sidebar::sidebar(state)]
+        .width(Length::Fill)
+        .height(Length::Fill);
     let mut col = column![top, body]
         .width(Length::Fill)
         .height(Length::Fill);
     if state.show_osc_log {
         col = col.push(osc_log_panel(state));
     }
+    let mut base: Element<'_, Message> = col.into();
     if state.show_device_panel {
-        col = col.push(device_panel(state));
+        base = stack(vec![base, device_panel(state)])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
     }
-    let base: Element<'_, Message> = col.into();
     if state.show_about {
         // The About dialog rides above the whole window, drawers included:
         // it is a modal now, not one more docked panel (see
@@ -2359,76 +2354,96 @@ fn osc_log_panel(state: &TuxMix) -> Element<'_, Message> {
     .into()
 }
 
-/// A docked drawer for settings that have no per-channel strip to live
-/// on — clock source and SPDIF format flags. Same pattern as
-/// `osc_log_panel`: fixed height, docked under the main view, toggled
-/// from the top bar (here, the "<clock> ▾" button next to Submix).
+/// Settings that have no per-channel strip to live on (clock, sample
+/// rate, pitch/width, the global protocol flags), as a popover card
+/// anchored under the top bar's Clock field, which opens it.
+///
+/// It used to be a full-width drawer docked under the main view: a strip
+/// of loose rows pinned to the window's bottom-left corner, as far as the
+/// window allows from the field that opened it. A card under that field,
+/// closed by a click anywhere outside it (or by the field / Close), is
+/// what the field promises, and sections give the flags a structure.
 fn device_panel(state: &TuxMix) -> Element<'_, Message> {
     let scale = state.ui_scale;
     let settings = state.device.settings();
+    let modifiers = state.modifiers;
+
+    // Caption column shared by every labelled row, so the controls line up.
+    const LABEL_W: f32 = 92.0;
+    let labelled = |label: &'static str, control: Element<'static, Message>| -> Element<'static, Message> {
+        row![
+            text(label)
+                .color(theme::TEXT_SEC)
+                .size(theme::TEXT_XS * scale)
+                .width(Length::Fixed(LABEL_W * scale)),
+            control,
+        ]
+        .spacing(theme::SPACE_MD * scale)
+        .align_y(iced::Alignment::Center)
+        .into()
+    };
+    let section = |label: &'static str| -> Element<'static, Message> {
+        row![
+            text(label)
+                .color(theme::TEXT_SEC)
+                .size(theme::TEXT_MICRO * scale),
+            iced::widget::rule::horizontal(1),
+        ]
+        .spacing(theme::SPACE_MD * scale)
+        .align_y(iced::Alignment::Center)
+        .into()
+    };
 
     let header = row![
-        text("DEVICE SETTINGS")
+        text("Device settings")
             .color(theme::TEXT_PRIMARY)
-            .size(theme::TEXT_SM * scale),
+            .size(theme::TEXT_MD * scale),
         iced::widget::Space::new().width(Length::Fill),
         iced::widget::button(text("Close").size(theme::TEXT_XS * scale))
-            .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
-            .style(theme::plain_button)
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+            .style(theme::ghost_button)
             .on_press(Message::ToggleDevicePanel),
     ]
-    .spacing(theme::SPACE_MD * scale)
-    .align_y(iced::Alignment::Center);
-
-    let clock_row = row![
-        text("Clock Source")
-            .color(theme::TEXT_SEC)
-            .size(theme::TEXT_XS * scale),
-        pick_list(
-            settings.clock_sources.clone(),
-            Some(settings.clock_source.clone()),
-            Message::ClockSourceSelected,
-        )
-        .style(theme::pick_list)
-        .menu_style(theme::menu)
-        .text_size(theme::TEXT_MD * scale),
-    ]
-    .spacing(theme::SPACE_MD * scale)
     .align_y(iced::Alignment::Center);
 
     // The device's supported sample-rate classes (alt 1/2/3 — see
     // PROTOCOL.md "Sample rate"): 32/44.1/48/64/88.2, 96/128, 176.4/192.
-    // The pick list shows the common ones; a custom entry is not
-    // editable, so the full supported set is listed.
+    // A custom entry is not editable, so the full supported set is listed.
     let rates: Vec<u32> = vec![
         32000, 44100, 48000, 64000, 88200, 96000, 128000, 176400, 192000,
     ];
-    let rate_row = row![
-        text("Sample Rate")
-            .color(theme::TEXT_SEC)
-            .size(theme::TEXT_XS * scale),
-        pick_list(
-            rates,
-            Some(settings.sample_rate),
-            Message::SampleRateSelected,
-        )
-        .style(theme::pick_list)
-        .menu_style(theme::menu)
-        .text_size(theme::TEXT_MD * scale),
+    let clock = column![
+        section("CLOCK"),
+        labelled(
+            "Clock source",
+            pick_list(
+                settings.clock_sources.clone(),
+                Some(settings.clock_source.clone()),
+                Message::ClockSourceSelected,
+            )
+            .style(theme::pick_list)
+            .menu_style(theme::menu)
+            .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+            .text_size(theme::TEXT_MD * scale)
+            .width(Length::Fill)
+            .into(),
+        ),
+        labelled(
+            "Sample rate",
+            pick_list(rates, Some(settings.sample_rate), Message::SampleRateSelected)
+                .style(theme::pick_list)
+                .menu_style(theme::menu)
+                .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+                .text_size(theme::TEXT_MD * scale)
+                .width(Length::Fill)
+                .into(),
+        ),
     ]
-    .spacing(theme::SPACE_MD * scale)
-    .align_y(iced::Alignment::Center);
+    .spacing(theme::SPACE_MD * scale);
 
-    // Generic toggle-button helper for this panel's rows. (Was named
-    // `spdif_toggle` when the panel's first row was the SPDIF one —
-    // that row is gone, see below, but every other row used the same
-    // helper.)
-    let panel_toggle = |label: &'static str, active: bool, on_toggle: fn(bool) -> Message| {
-        iced::widget::button(text(label).size(theme::TEXT_SM * scale))
-            .padding([theme::SPACE_SM * scale, theme::SPACE_LG * scale])
-            .style(theme::toggle_button(active, theme::ACCENT))
-            .on_press(on_toggle(!active))
-    };
+    let mut body = column![header, clock]
+        .spacing(theme::SPACE_XL * scale)
+        .width(Length::Fill);
 
     // NOTE: there used to be a "SPDIF: Enabled / Emphasis / Professional"
     // row here. Removed 2026-09-12: those were never Babyface Pro
@@ -2440,72 +2455,87 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
     // reference). They reached TuxMix through the CC-mode ALSA surface,
     // and once `open()` started refusing CC-mode cards they were three
     // buttons that could not do anything on any backend. The real
-    // optical-format control lives in `toggle_row` below.
+    // optical-format control lives in the Global grid below.
 
-    let modifiers = state.modifiers;
-    let pitch_row = row![
-        text("Pitch")
-            .color(theme::TEXT_SEC)
-            .size(theme::TEXT_XS * scale),
-        knob(Knob {
-            value: settings.pitch_percent,
-            range: (-5.0, 5.0),
-            label: format!("{:+.1}%", settings.pitch_percent),
-            arc_from_center: true,
-            interactive: true,
-            log_scale: false,
-            modifiers,
-            scale,
-            on_change: Box::new(|v| Message::PitchChanged(v.clamp(-5.0, 5.0))),
-            on_reset: Box::new(|| Message::PitchChanged(0.0)),
-        }),
-        text("Width")
-            .color(theme::TEXT_SEC)
-            .size(theme::TEXT_XS * scale),
-        knob(Knob {
-            value: settings.width,
-            range: (-1.0, 1.0),
-            label: format!("{:+.2}", settings.width),
-            arc_from_center: true,
-            interactive: true,
-            log_scale: false,
-            modifiers,
-            scale,
-            on_change: Box::new(|v| Message::WidthChanged(v.clamp(-1.0, 1.0))),
-            on_reset: Box::new(|| Message::WidthChanged(0.0)),
-        }),
-    ]
-    .spacing(theme::SPACE_MD * scale)
-    .align_y(iced::Alignment::Center);
-
-    let toggle_row = row![
-        text("Global")
-            .color(theme::TEXT_SEC)
-            .size(theme::TEXT_XS * scale),
-        panel_toggle("MS Proc", settings.ms_proc, Message::MsProcChanged),
-        panel_toggle("AN 1>2", settings.an12, Message::An12Changed),
-        panel_toggle("Input Link", settings.input_link, Message::InputLinkChanged),
-        panel_toggle(
-            "EQ for Record",
-            settings.eq_for_record,
-            Message::EqForRecordChanged
-        ),
-        panel_toggle(
-            "Opt Out: SPDIF",
-            settings.optical_out_spdif,
-            Message::OpticalOutFormatChanged
-        ),
-    ]
-    .spacing(theme::SPACE_MD * scale)
-    .align_y(iced::Alignment::Center);
-
-    let mut body = column![header, clock_row, rate_row]
-        .spacing(theme::SPACE_LG * scale)
-        .width(Length::Fill);
     if state.device.protocol_features() {
-        body = body.push(pitch_row).push(toggle_row);
+        let knob_cell = |label: &'static str, k: Element<'static, Message>| -> Element<'static, Message> {
+            column![
+                k,
+                text(label)
+                    .color(theme::TEXT_SEC)
+                    .size(theme::TEXT_XS * scale),
+            ]
+            .spacing(theme::SPACE_SM * scale)
+            .align_x(iced::Alignment::Center)
+            .width(Length::Fill)
+            .into()
+        };
+        let output = column![
+            section("OUTPUT"),
+            row![
+                knob_cell(
+                    "Pitch",
+                    knob(Knob {
+                        value: settings.pitch_percent,
+                        range: (-5.0, 5.0),
+                        label: format!("{:+.1}%", settings.pitch_percent),
+                        arc_from_center: true,
+                        interactive: true,
+                        log_scale: false,
+                        modifiers,
+                        scale,
+                        on_change: Box::new(|v| Message::PitchChanged(v.clamp(-5.0, 5.0))),
+                        on_reset: Box::new(|| Message::PitchChanged(0.0)),
+                    }),
+                ),
+                knob_cell(
+                    "Width",
+                    knob(Knob {
+                        value: settings.width,
+                        range: (-1.0, 1.0),
+                        label: format!("{:+.2}", settings.width),
+                        arc_from_center: true,
+                        interactive: true,
+                        log_scale: false,
+                        modifiers,
+                        scale,
+                        on_change: Box::new(|v| Message::WidthChanged(v.clamp(-1.0, 1.0))),
+                        on_reset: Box::new(|| Message::WidthChanged(0.0)),
+                    }),
+                ),
+            ],
+        ]
+        .spacing(theme::SPACE_MD * scale);
+
+        // The global flags as a two-column grid of equal toggles, the same
+        // family as the sidebar's group cells.
+        let flags: [(&'static str, bool, fn(bool) -> Message); 5] = [
+            ("MS Proc", settings.ms_proc, Message::MsProcChanged),
+            ("AN 1>2", settings.an12, Message::An12Changed),
+            ("Input Link", settings.input_link, Message::InputLinkChanged),
+            ("EQ for Record", settings.eq_for_record, Message::EqForRecordChanged),
+            ("Opt Out: SPDIF", settings.optical_out_spdif, Message::OpticalOutFormatChanged),
+        ];
+        let mut grid = column![section("GLOBAL")].spacing(theme::SPACE_SM * scale);
+        for pair in flags.chunks(2) {
+            let mut line = row![].spacing(theme::SPACE_SM * scale);
+            for &(label, active, on_toggle) in pair {
+                line = line.push(
+                    iced::widget::button(text(label).size(theme::TEXT_XS * scale).center())
+                        .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+                        .width(Length::Fill)
+                        .style(theme::toggle_button(active, theme::ACCENT))
+                        .on_press(on_toggle(!active)),
+                );
+            }
+            if pair.len() == 1 {
+                line = line.push(iced::widget::Space::new().width(Length::Fill));
+            }
+            grid = grid.push(line);
+        }
+        body = body.push(output).push(grid);
     } else {
-        // Say why the panel is shorter rather than leaving two knobs and
+        // Say why the card is shorter rather than leaving two knobs and
         // five toggles silently missing: on the class-compliant personality
         // everything below the sample rate lives in RME's own protocol.
         body = body.push(
@@ -2520,12 +2550,42 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
             .size(theme::TEXT_XS * scale),
         );
     }
-    container(body)
-    .style(theme::top_bar)
-    .padding(theme::SPACE_MD * scale)
-    .width(Length::Fill)
-    .into()
+
+    const CARD_W: f32 = 320.0;
+    let card = opaque(
+        container(body)
+            .style(theme::dialog)
+            .padding(theme::SPACE_XL * scale)
+            .width(Length::Fixed(CARD_W * scale)),
+    );
+
+    // One layer, not a catcher stacked under the card: in a `stack`, the
+    // top layer's full-window container reports a mouse interaction, which
+    // makes iced levitate the cursor for every layer below it, so a
+    // catcher underneath never saw a click. Here the card (`opaque`)
+    // captures its own clicks first, and `mouse_area` only acts on the
+    // uncaptured ones: a click anywhere outside the card closes it, like a
+    // menu. No dimming: it is a popover, not a modal.
+    opaque(
+        mouse_area(
+            container(card)
+                .align_x(iced::Alignment::End)
+                .padding(iced::Padding {
+                    top: POPOVER_TOP * scale,
+                    right: theme::SPACE_XXL * scale,
+                    bottom: 0.0,
+                    left: 0.0,
+                })
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+        .on_press(Message::ToggleDevicePanel),
+    )
 }
+
+/// Where the device popover's card starts, from the window top at scale 1:
+/// just under the top bar's session chip that holds the Clock field.
+const POPOVER_TOP: f32 = 46.0;
 
 /// A section label (HARDWARE INPUTS, SOFTWARE PLAYBACK, ...) with an accent
 /// tick and a rule trailing off to the right, instead of bare gray text that
@@ -4668,6 +4728,18 @@ mod tests {
 
         let _ = update(&mut state, Message::EscapePressed);
         assert_eq!(state.editing, None);
+    }
+
+    #[test]
+    fn escape_closes_the_device_popover_after_the_modal() {
+        let mut state = new(true, None, None);
+        state.show_about = true;
+        state.show_device_panel = true;
+        let _ = update(&mut state, Message::EscapePressed);
+        assert!(!state.show_about);
+        assert!(state.show_device_panel);
+        let _ = update(&mut state, Message::EscapePressed);
+        assert!(!state.show_device_panel);
     }
 
     #[test]
