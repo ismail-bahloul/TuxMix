@@ -1,12 +1,13 @@
 //! The right-hand "control strip" sidebar — TotalMix's own device chip,
-//! Undo/Redo, Snapshots, Groups, and Mixer Layout panels, plus a
-//! visual-only M/S/F row and Options panel.
+//! Undo/Redo, the global M/S/F row, Options, Snapshots, Groups and Mixer
+//! Layout panels.
 //!
-//! Not everything here is wired to real behavior — see each panel's own
-//! doc comment. Snapshots/Undo-Redo/Groups/Mixer-Layout are real;
-//! the M/S/F row, "FX show %", and several Options rows are deliberate
-//! visual skeleton (per the user's own framing: build the shape, don't
-//! guess at behavior a static reference screenshot can't confirm).
+//! Everything here is wired to real behavior. It used to carry visual
+//! skeleton copied from a TotalMix screenshot before its semantics were
+//! known ("FX show %", the `F` button, most Options rows, the layout
+//! panel's "all/submix"); on 2026-10-20 each was checked against RME's
+//! Control Strip documentation, this app and the kernel driver, and either
+//! made real (`F`, "2 rows", `DIM`) or removed (see `GUI-NOTES.md`).
 //!
 //! Visual weight is deliberate, not incidental. Every control in this
 //! column is the same 210px wide, so the only things telling the eye what
@@ -89,28 +90,6 @@ pub enum Panel {
     Layout,
 }
 
-/// A 2-way segmented toggle with no behavior behind it — the row still
-/// flips which side is highlighted (so it *reads* as a working control,
-/// not a dead button), it just doesn't change anything else. Used for
-/// every Options-panel row whose real TotalMix semantics aren't
-/// confirmed (`show`, `2 row`, `solo/pfl mode`) and for the Mixer
-/// Layout panel's `all`/`submix` scope row, which has no real
-/// distinction to key off yet — `state.collapsed` isn't scoped
-/// per-submix anywhere in the current model.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SkeletonPair {
-    /// "names" / "trim".
-    Show,
-    /// "2 row" / "2 row in".
-    RowMode,
-    /// "excl. solo" / "live" — real non-exclusive solo would mean
-    /// touching `usb.rs`'s hardcoded exclusive-solo logic; scoped out
-    /// of this pass, see `GUI-NOTES.md`.
-    SoloMode,
-    /// "all" / "submix", in the Mixer Layout panel.
-    LayoutScope,
-}
-
 /// Which of a group's three independent links (`GroupLinkToggle`
 /// flips) a click on one of its `M1`/`S1`/`1`-style cells targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,38 +144,6 @@ impl PanelsOpen {
             Panel::Snapshots => &mut self.snapshots,
             Panel::Groups => &mut self.groups,
             Panel::Layout => &mut self.layout,
-        };
-        *slot = !*slot;
-    }
-}
-
-/// State for every `SkeletonPair` — `true` = first option highlighted.
-#[derive(Clone, Copy, Debug)]
-pub struct SkeletonPairs {
-    pub show_first: bool,
-    pub row_mode_first: bool,
-    pub solo_mode_first: bool,
-    pub layout_scope_first: bool,
-}
-
-impl Default for SkeletonPairs {
-    fn default() -> Self {
-        Self {
-            show_first: true,
-            row_mode_first: true,
-            solo_mode_first: true,
-            layout_scope_first: true,
-        }
-    }
-}
-
-impl SkeletonPairs {
-    pub fn toggle(&mut self, pair: SkeletonPair) {
-        let slot = match pair {
-            SkeletonPair::Show => &mut self.show_first,
-            SkeletonPair::RowMode => &mut self.row_mode_first,
-            SkeletonPair::SoloMode => &mut self.solo_mode_first,
-            SkeletonPair::LayoutScope => &mut self.layout_scope_first,
         };
         *slot = !*slot;
     }
@@ -314,7 +261,6 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
         device_chip(state, scale),
         undo_redo_row(state, scale),
         msf_row(state, scale),
-        fx_show_row(scale),
         panel(options_panel(state, scale), scale),
         panel(snapshots_panel(state, scale), scale),
         panel(groups_panel(state, scale), scale),
@@ -475,62 +421,83 @@ fn undo_redo_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     .into()
 }
 
-/// `M` and `S` are real, both true toggles: `M` toggles every
-/// channel's mute at once (lit when all channels are already muted),
-/// `S` clears every active solo and remembers which channels those
-/// were, restoring them on the next press if nothing's been soloed
-/// again since (lit when at least one channel is currently soloed) —
-/// see `Message::GlobalMuteToggle`/`GlobalSoloToggle` in `app.rs`.
+/// The global row, TotalMix's Mute/Solo/Fader masters plus the hardware
+/// Dim. All four report real state, so all keep `toggle_button`'s full
+/// fill when lit.
 ///
-/// These two keep the full-strength fill (`theme::toggle_button`): they
-/// are the one pair in this sidebar that reports a real state, which is
-/// exactly what that look is now reserved for. `F` stays skeleton (no
-/// `on_press`) — nothing in this app corresponds to TotalMix's own third
-/// button here, and a static screenshot can't confirm what it should do —
-/// and being unpressable is all it needs: `toggle_button` renders a
-/// `Disabled` button with the same dimmed label the other inert controls
-/// get (`disabled_segmented_row`), so it stops looking like a live toggle
-/// that never lights up.
+/// * `M` lights while any channel is muted; a press clears those mutes and
+///   the next one brings them back (`Message::GlobalMuteToggle`).
+/// * `S` is the same for solos (`Message::GlobalSoloToggle`).
+/// * `F` is TotalMix's temporary fader group, which here is the strip
+///   multi-selection (Ctrl/Shift-click): its faders already move together
+///   relatively. Lit while a selection exists, a press clears it; with
+///   nothing selected it is disabled, since there is nothing to clear.
+/// * `DIM` flips `RmeDevice::set_dim`, the switch the front-panel DIM
+///   button toggles, which had no on-screen control at all. RME-protocol
+///   only, so it is absent in Class Compliant mode.
 fn msf_row(state: &TuxMix, scale: f32) -> Element<'_, Message> {
-    let muted_all = crate::app::all_channels_muted(state);
+    let any_mute = crate::app::any_channel_muted(state);
     let any_solo = crate::app::any_channel_soloed(state);
-    row![
-        button(text("M").size(theme::TEXT_SM * scale).center())
+    let has_group = !state.selected.is_empty();
+    let cell = |label: &'static str| {
+        button(text(label).size(theme::TEXT_SM * scale).center())
             .padding(theme::SPACE_SM * scale)
             .width(Length::Fill)
-            .style(theme::toggle_button(muted_all, theme::MUTE_COLOR))
-            .on_press(Message::GlobalMuteToggle),
-        button(text("S").size(theme::TEXT_SM * scale).center())
-            .padding(theme::SPACE_SM * scale)
-            .width(Length::Fill)
-            .style(theme::toggle_button(any_solo, theme::SOLO_COLOR))
-            .on_press(Message::GlobalSoloToggle),
-        button(text("F").size(theme::TEXT_SM * scale).center())
-            .padding(theme::SPACE_SM * scale)
-            .width(Length::Fill)
-            .style(theme::toggle_button(false, theme::ACCENT)),
+    };
+    let mut r = row![
+        hint(
+            cell("M")
+                .style(theme::toggle_button(any_mute, theme::MUTE_COLOR))
+                .on_press(Message::GlobalMuteToggle),
+            "Mute master: clear active mutes / bring them back",
+            scale,
+        ),
+        hint(
+            cell("S")
+                .style(theme::toggle_button(any_solo, theme::SOLO_COLOR))
+                .on_press(Message::GlobalSoloToggle),
+            "Solo master: clear active solos / bring them back",
+            scale,
+        ),
+        hint(
+            cell("F")
+                .style(theme::toggle_button(has_group, theme::ACCENT))
+                .on_press_maybe(has_group.then_some(Message::ClearSelection)),
+            "Fader group (Ctrl/Shift-click strips): clear it",
+            scale,
+        ),
     ]
     .spacing(theme::SPACE_TIGHT * scale)
-    .width(Length::Fill)
-    .into()
+    .width(Length::Fill);
+    if state.device.protocol_features() {
+        r = r.push(hint(
+            cell("DIM")
+                .style(theme::toggle_button(
+                    state.device.settings().dim,
+                    theme::ACCENT,
+                ))
+                .on_press(Message::DimToggle),
+            "Dim the phones output (also the front-panel DIM button)",
+            scale,
+        ));
+    }
+    r.into()
 }
 
-/// Not applicable — no FX/reverb/echo processing exists in this app at
-/// all (unlike TotalMix FX, which this row reports the send level of).
-/// Static, no interaction, and flat: it's a readout, not a control, so it
-/// must not wear the same box as the switches below it.
-fn fx_show_row(scale: f32) -> Element<'static, Message> {
-    row![
-        text("FX show")
-            .size(theme::TEXT_XS * scale)
-            .color(theme::TEXT_SEC),
-        iced::widget::Space::new().width(Length::Fill),
-        text("0%")
-            .size(theme::TEXT_XS * scale)
-            .color(theme::TEXT_SEC),
-    ]
-    .align_y(iced::Alignment::Center)
-    .width(Length::Fill)
+/// A short tooltip under a sidebar control, in the same chip as the panel
+/// toggle's.
+fn hint<'a>(
+    content: impl Into<Element<'a, Message>>,
+    label: &'a str,
+    scale: f32,
+) -> Element<'a, Message> {
+    iced::widget::tooltip(
+        content,
+        container(text(label).size(theme::TEXT_XS * scale))
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+            .style(theme::chip),
+        iced::widget::tooltip::Position::Bottom,
+    )
     .into()
 }
 
@@ -606,15 +573,8 @@ fn options_row<'a>(
         .into()
 }
 
-/// A 2-way segmented row for the *skeleton* toggle pairs (`show`/
-/// `2 row`/`solo mode`) and the permanently-fixed `routing` row — one
-/// side highlighted, the other not, `on_press` wired on both (skeleton)
-/// or neither (fixed `routing`: "submix" is always the highlighted
-/// side, so there's nothing to press toward). For a row where *neither*
-/// side should ever look engaged (the `meters` row — see
-/// `disabled_segmented_row`), use that instead: passing `left_active:
-/// false` here still lights the *right* side, which is correct for an
-/// actual exclusive pair but wrong for "both are simply off."
+/// A 2-way segmented switch: one side lit, a press on either side
+/// sends that side's message (`None` leaves a side inert).
 fn segmented_row<'a>(
     left_label: &'a str,
     right_label: &'a str,
@@ -653,35 +613,6 @@ fn segment_track<'a>(
         .into()
 }
 
-/// A 2-way segmented row where *neither* side is real — both rendered
-/// dimmed (40% text alpha, same treatment as the Output strip's inert
-/// balance knob, `Knob::interactive: false`) on an unlit switch body, and
-/// unpressable, for Options rows that don't map to anything in this app's
-/// architecture (`meters: post fx / RMS` — no on-device meter register, no
-/// RMS ballistics, no post-FX tap point since no FX exists at all).
-fn disabled_segmented_row(
-    left_label: &str,
-    right_label: &str,
-    scale: f32,
-) -> Element<'static, Message> {
-    let dim = Color {
-        a: 0.4,
-        ..theme::TEXT_SEC
-    };
-    let cell = |label: String| -> Element<'static, Message> {
-        button(text(label).size(theme::TEXT_XS * scale).color(dim).center())
-            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
-            .width(Length::Fill)
-            .style(theme::segment_cell(false))
-            .into()
-    };
-    segment_track(
-        cell(left_label.to_string()),
-        cell(right_label.to_string()),
-        scale,
-    )
-}
-
 /// Numbered slots (Snapshots, Mixer Layouts) as a two-column grid of
 /// equal cells, like the slot buttons on a hardware console, instead of a
 /// list of full-width rows: eight rows of "Mix n" were the tallest thing
@@ -692,6 +623,7 @@ fn slot_grid<'a>(
     count: u8,
     prefix: &'a str,
     active: Option<usize>,
+    dirty: bool,
     on_press: fn(u8) -> Message,
     scale: f32,
 ) -> Element<'a, Message> {
@@ -699,16 +631,30 @@ fn slot_grid<'a>(
     for first in (1..=count).step_by(2) {
         let mut line = row![].spacing(theme::SPACE_TIGHT * scale);
         for n in first..=(first + 1).min(count) {
+            let is_active = active == Some(n as usize);
+            // The selected slot, modified since it was recalled or stored,
+            // carries an amber dot: TotalMix flashes the button instead.
+            let label: Element<'a, Message> = if is_active && dirty {
+                row![
+                    text(format!("{prefix} {n}")).size(theme::TEXT_XS * scale),
+                    text("\u{25CF}")
+                        .size(theme::TEXT_MICRO * scale)
+                        .color(theme::YSIM),
+                ]
+                .spacing(theme::SPACE_SM * scale)
+                .align_y(iced::Alignment::Center)
+                .into()
+            } else {
+                text(format!("{prefix} {n}"))
+                    .size(theme::TEXT_XS * scale)
+                    .into()
+            };
             line = line.push(
-                button(
-                    text(format!("{prefix} {n}"))
-                        .size(theme::TEXT_XS * scale)
-                        .center(),
-                )
-                .padding([theme::SPACE_SM * scale, theme::SPACE_SM * scale])
-                .width(Length::Fill)
-                .style(theme::segment_button(active == Some(n as usize)))
-                .on_press(on_press(n)),
+                button(container(label).center_x(Length::Fill))
+                    .padding([theme::SPACE_SM * scale, theme::SPACE_SM * scale])
+                    .width(Length::Fill)
+                    .style(theme::segment_button(is_active))
+                    .on_press(on_press(n)),
             );
         }
         grid = grid.push(line);
@@ -732,11 +678,13 @@ fn store_row(on_press: Message, scale: f32) -> Element<'static, Message> {
     .into()
 }
 
-/// Real where the app has something to report (`routing`/`meters` are
-/// permanently-fixed readouts of this app's own architecture, not
-/// switches), skeleton everywhere the reference's exact behavior isn't
-/// confirmed (`show`/`2 row`/`solo mode`) — see `SkeletonPair`'s own
-/// doc comment.
+/// TotalMix's Options panel, cut to what this app can actually do. The
+/// mixer row count ("2 Row" in TotalMix) is real (`Message::SetTwoRow`).
+/// The rest of TotalMix's panel was dropped rather than shown as dead
+/// switches: "routing: free" (editing several submixes at once) and
+/// "show: trim" have no counterpart here, "show: names" needs channel
+/// renaming, which does not exist, "meters: post FX" is moot without an FX
+/// engine and "RMS" needs a numeric level readout the strips do not have.
 fn options_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let header = panel_header(
         "options",
@@ -754,56 +702,14 @@ fn options_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         .padding(indent(CONTENT_INDENT * scale))
         .width(Length::Fill);
 
-    // Permanently fixed — this app only ever has one routing model
-    // (see `RmeDevice`'s own "the device exposes a matrix/submix
-    // mixer" framing), there's no "free" mode to switch into.
     body = body.push(options_row(
-        Some("routing"),
-        segmented_row("submix", "free", true, None, None, scale),
-        scale,
-    ));
-
-    // Permanently fixed, both disabled. See `GUI-NOTES.md`'s
-    // "VU meters: conclusion".
-    body = body.push(options_row(
-        Some("meters"),
-        disabled_segmented_row("post fx", "RMS", scale),
-        scale,
-    ));
-
-    body = body.push(options_row(
-        Some("show"),
+        Some("mixer"),
         segmented_row(
-            "names",
-            "trim",
-            state.skeleton_pairs.show_first,
-            Some(Message::ToggleSkeletonPair(SkeletonPair::Show)),
-            Some(Message::ToggleSkeletonPair(SkeletonPair::Show)),
-            scale,
-        ),
-        scale,
-    ));
-    body = body.push(options_row(
-        None,
-        segmented_row(
-            "2 row",
-            "2 row in",
-            state.skeleton_pairs.row_mode_first,
-            Some(Message::ToggleSkeletonPair(SkeletonPair::RowMode)),
-            Some(Message::ToggleSkeletonPair(SkeletonPair::RowMode)),
-            scale,
-        ),
-        scale,
-    ));
-
-    body = body.push(options_row(
-        Some("solo/pfl mode"),
-        segmented_row(
-            "excl. solo",
-            "live",
-            state.skeleton_pairs.solo_mode_first,
-            Some(Message::ToggleSkeletonPair(SkeletonPair::SoloMode)),
-            Some(Message::ToggleSkeletonPair(SkeletonPair::SoloMode)),
+            "3 rows",
+            "2 rows",
+            !state.two_row,
+            Some(Message::SetTwoRow(false)),
+            Some(Message::SetTwoRow(true)),
             scale,
         ),
         scale,
@@ -845,6 +751,7 @@ fn snapshots_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         SNAPSHOT_COUNT,
         "Mix",
         state.active_snapshot,
+        state.snapshot_dirty,
         Message::SnapshotClicked,
         scale,
     ));
@@ -960,8 +867,8 @@ const LAYOUT_COUNT: u8 = 6;
 /// Real — a layout is `state.collapsed` (which strips are collapsed;
 /// there's no strip-reordering yet, so that's the whole story),
 /// persisted to disk per slot (see `layouts.rs`, mirroring `scenes.rs`'s
-/// own file-per-slot pattern). "all"/"submix" scope is skeleton — see
-/// `SkeletonPair::LayoutScope`'s own doc comment.
+/// own file-per-slot pattern). TotalMix's "all/submix" scope row is not
+/// here: a layout is not scoped per submix in this app's model.
 fn layout_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let header = panel_header(
         "mixer layout",
@@ -979,19 +886,11 @@ fn layout_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         .padding(indent(CONTENT_INDENT * scale))
         .width(Length::Fill);
 
-    body = body.push(segmented_row(
-        "all",
-        "submix",
-        state.skeleton_pairs.layout_scope_first,
-        Some(Message::ToggleSkeletonPair(SkeletonPair::LayoutScope)),
-        Some(Message::ToggleSkeletonPair(SkeletonPair::LayoutScope)),
-        scale,
-    ));
-
     body = body.push(slot_grid(
         LAYOUT_COUNT,
         "Layout",
         state.active_layout,
+        false,
         Message::LayoutClicked,
         scale,
     ));

@@ -3412,3 +3412,61 @@ outside and on Escape; About opens from the mark, stays open on an inner
 click, closes outside and on Escape. Without a window manager the window
 needs an explicit `xdotool windowfocus` before key events reach it.
 `cargo test --workspace` green.
+
+## 2026-10-20 (cont. 2): the sidebar's skeleton, decided against TotalMix and the driver
+
+The sidebar still carried controls copied from a TotalMix screenshot
+before anyone knew what they did. Each one was checked against RME's
+Control Strip documentation (docs.rme-audio.com, "Control Strip"), this
+app's `RmeDevice` trait and the kernel driver's ALSA controls
+(`babyfacepro-ctl.c` in the driver repo), then made real or removed.
+
+- **M** now follows TotalMix's Mute Master: "As soon as any Mute button
+  is pressed, the Mute Master button lights up ... With this button all
+  selected mutes can be switched off and on again." Lit while any channel
+  is muted; a press clears those mutes (`last_cleared_mutes`), the next
+  restores them. It used to mute *every* channel (a panic button TotalMix
+  does not have) and stayed dark while a single channel was muted. Same
+  shape as **S**, which already matched.
+- **F** is real: TotalMix's temporary fader group ("A Shift-click on a
+  fader adds the fader to the temporary fader group ... deleted by a
+  click on the F symbol"). Here that group is the strip multi-selection
+  (Ctrl/Shift-click), whose faders already move together relatively, so
+  F lights while a selection exists and a press sends `ClearSelection`.
+- **DIM** is new in the row. The driver exposes `Dim Switch` and the
+  front-panel DIM button already toggled it through `babyface.rs`, but
+  the GUI had no control for it at all. `Message::DimToggle`,
+  RME-protocol only (`needs_protocol_features`), not undoable (Dim is not
+  part of a `Scene`).
+- **"FX show 0%"** is gone. TotalMix's FX button opens the Reverb/Echo
+  window, and on the Babyface Pro those effects are computed on the host
+  CPU by RME's Windows/macOS driver (the hardware only has the FX send,
+  `FX Send Volume`, feeding hidden channels). Nothing computes them on
+  Linux, so the row could never mean anything.
+- **Options** keeps one real row, "mixer: 3 rows / 2 rows" (TotalMix's
+  "2 Row": Hardware Inputs and Software Playback side by side, outputs
+  underneath; `Message::SetTwoRow`). It only takes effect when both rows
+  fit next to each other, otherwise the stacked layout stays. Dropped:
+  "routing: submix/free" (no multi-submix editing), "meters: post fx/RMS"
+  (no FX, no numeric level readout), "show: names/trim" (no channel
+  renaming, no TotalMix trim mode), "solo/pfl mode" (solo stays the
+  hardware's exclusive solo). `SkeletonPair`/`SkeletonPairs` and
+  `Message::ToggleSkeletonPair` are deleted.
+- **Mixer Layout** loses its "all/submix" row (layouts are not scoped per
+  submix in this model).
+- **Snapshots** gain TotalMix's "modified" cue ("As soon as the mixer
+  state is changed the button starts flashing"): the selected slot shows
+  an amber dot once the mix changes after a recall or store
+  (`TuxMix::snapshot_dirty`, set by `changes_mix`, which is the undoable
+  messages plus fader drag steps and undo/redo).
+- The global row's buttons have tooltips.
+
+Also fixed on the way: `mixer_view`'s `available_width` measured against
+the whole window, ignoring the sidebar, so a strip row could run under
+the sidebar without switching to its scrolling form. It now subtracts
+the sidebar (open or collapsed). The 2-row decision depends on it.
+
+Verified in Xvfb with real clicks: 2 rows lays the whole mixer out
+without scrolling at 1920x1080; DIM lights; a fader move puts the dot on
+Mix 1; Ctrl-clicking two strips lights F and F clears it; muting one
+strip lights M and M clears it. `cargo test --workspace`: 206 passed.

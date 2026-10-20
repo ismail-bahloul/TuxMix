@@ -584,15 +584,15 @@ pub enum Message {
 
     Mute(ChannelId, bool),
     Solo(ChannelId, bool),
-    /// The sidebar's global "M" button (`sidebar::msf_row`) — a real
-    /// toggle, same shape as `GlobalSoloToggle`: if any channel isn't
-    /// muted yet, mutes exactly those and remembers which ones it
-    /// touched (`TuxMix::last_globally_muted`); if every channel is
-    /// already muted, restores mute *off* on exactly that remembered
-    /// set instead of blindly unmuting everything. That distinction
-    /// matters when a channel was already muted independently before
-    /// the global press — a second press won't un-mute it, since this
-    /// action never muted it in the first place.
+    /// The sidebar's global "M" button (`sidebar::msf_row`), TotalMix's
+    /// Mute Master: if any channel is muted, unmutes exactly those and
+    /// remembers them (`TuxMix::last_cleared_mutes`); if none is, mutes
+    /// the remembered set again. The same shape as `GlobalSoloToggle`.
+    /// RME's manual: "As soon as any Mute button is pressed, the Mute
+    /// Master button lights up ... With this button all selected mutes can
+    /// be switched off and on again." It used to mute *every* channel
+    /// instead, which is a panic button TotalMix does not have, and left
+    /// the button unlit while a single channel was muted.
     GlobalMuteToggle,
     /// The sidebar's global "S" button — a real toggle, symmetric with
     /// `GlobalMuteToggle`: if anything is soloed, clears every solo and
@@ -744,11 +744,13 @@ pub enum Message {
     /// `sidebar::MIN_WIDTH`/`MAX_WIDTH` in `update`. UI-only: never
     /// pushed on `undo_stack`, never persisted.
     SidebarResize(f32),
-    /// Skeleton toggles — visually real 2-way switches (see
-    /// `sidebar::SkeletonPair`'s own doc comment), no behavior behind
-    /// them. Distinct from the M/S/F row, which isn't wired to
-    /// `on_press` at all (see `sidebar::msf_row`).
-    ToggleSkeletonPair(sidebar::SkeletonPair),
+    /// The Options panel's mixer row count (TotalMix's "2 Row"): `true`
+    /// puts Hardware Inputs and Software Playback side by side above the
+    /// outputs, `false` stacks the three sections. UI-only.
+    SetTwoRow(bool),
+    /// Flips the hardware Dim (`RmeDevice::set_dim`), the same switch the
+    /// front-panel DIM button toggles.
+    DimToggle,
     /// Recalls "Mix `u8`" (1-8) and marks it as the slot `SnapshotStore`
     /// will save into.
     SnapshotClicked(u8),
@@ -935,14 +937,17 @@ pub struct TuxMix {
     /// — restored on the next press if nothing's been soloed again in
     /// the meantime. Empty when there's nothing to restore.
     pub last_cleared_solos: Vec<ChannelId>,
-    /// Which channels `Message::GlobalMuteToggle` most recently muted
-    /// (i.e. weren't already muted before that press) — un-muted again
-    /// on the next press, leaving any channel that was independently
-    /// muted beforehand untouched. Empty when there's nothing to
-    /// restore.
-    pub last_globally_muted: Vec<ChannelId>,
+    /// Which channels `Message::GlobalMuteToggle` most recently
+    /// unmuted, muted again on the next press if nothing has been muted in
+    /// the meantime. Empty when there's nothing to restore.
+    pub last_cleared_mutes: Vec<ChannelId>,
+    /// Whether the mix has changed since `active_snapshot` was recalled
+    /// or stored: TotalMix flashes the slot ("As soon as the mixer state
+    /// is changed the button starts flashing"), the sidebar marks it.
+    pub snapshot_dirty: bool,
+    /// See `Message::SetTwoRow`.
+    pub two_row: bool,
     pub sidebar_panels_open: sidebar::PanelsOpen,
-    pub skeleton_pairs: sidebar::SkeletonPairs,
     /// Whether the whole right sidebar is expanded — distinct from
     /// `sidebar_panels_open`, which collapses individual panels *within*
     /// an expanded sidebar. `false` reclaims its width for the mixer,
@@ -1115,9 +1120,10 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         active_layout: None,
         active_snapshot: None,
         last_cleared_solos: Vec::new(),
-        last_globally_muted: Vec::new(),
+        last_cleared_mutes: Vec::new(),
+        snapshot_dirty: false,
+        two_row: false,
         sidebar_panels_open: sidebar::PanelsOpen::default(),
-        skeleton_pairs: sidebar::SkeletonPairs::default(),
         sidebar_open: true,
         sidebar_width: sidebar::DEFAULT_WIDTH,
     }
@@ -1227,7 +1233,7 @@ fn channel_is_soloed(state: &TuxMix, cid: ChannelId) -> bool {
 
 /// Every channel the device currently exposes, across all three types
 /// — what the sidebar's global "M"/"S" buttons
-/// (`Message::GlobalMuteToggle`/`GlobalSoloClear`) act on.
+/// (`Message::GlobalMuteToggle`/`GlobalSoloToggle`) act on.
 fn all_channel_ids(state: &TuxMix) -> Vec<ChannelId> {
     (0..state.device.inputs().len())
         .map(ChannelId::Input)
@@ -1236,11 +1242,11 @@ fn all_channel_ids(state: &TuxMix) -> Vec<ChannelId> {
         .collect()
 }
 
-/// Whether every channel is currently muted — drives both the global
+/// Whether at least one channel is currently muted — drives the global
 /// "M" button's toggle direction and its lit state (`sidebar::msf_row`
 /// reads this too, hence `pub(crate)`).
-pub(crate) fn all_channels_muted(state: &TuxMix) -> bool {
-    all_channel_ids(state).into_iter().all(|cid| channel_is_muted(state, cid))
+pub(crate) fn any_channel_muted(state: &TuxMix) -> bool {
+    all_channel_ids(state).into_iter().any(|cid| channel_is_muted(state, cid))
 }
 
 /// Whether at least one channel is currently soloed — drives the
@@ -1466,7 +1472,8 @@ fn is_undoable(message: &Message) -> bool {
             | Message::ToggleSidebarPanel(_)
             | Message::ToggleSidebar
             | Message::SidebarResize(_)
-            | Message::ToggleSkeletonPair(_)
+            | Message::SetTwoRow(_)
+            | Message::DimToggle
             | Message::SnapshotStore
             | Message::GroupEditToggle
             | Message::GroupLinkToggle(..)
@@ -1474,6 +1481,19 @@ fn is_undoable(message: &Message) -> bool {
             | Message::LayoutClicked(_)
             | Message::LayoutStore
     )
+}
+
+/// Whether `message` changes the mix away from the recalled snapshot:
+/// everything that would push an undo step, plus the steps of a fader
+/// drag (`VolumeChanged`, kept off the undo stack, see `is_undoable`) and
+/// undo/redo themselves. Recalling a snapshot is the one undoable message
+/// that does the opposite, so it is left out; its handler clears the flag.
+fn changes_mix(message: &Message) -> bool {
+    match message {
+        Message::SnapshotClicked(_) => false,
+        Message::VolumeChanged(..) | Message::Undo | Message::Redo => true,
+        other => is_undoable(other),
+    }
 }
 
 /// Whether `message` can only do something on a connection that speaks
@@ -1499,6 +1519,7 @@ fn needs_protocol_features(message: &Message) -> bool {
             | Message::An12Changed(_)
             | Message::InputLinkChanged(_)
             | Message::EqForRecordChanged(_)
+            | Message::DimToggle
             | Message::EqEnabled(..)
             | Message::EqBandType(..)
             | Message::EqBandFreq(..)
@@ -1519,6 +1540,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
     if needs_protocol_features(&message) && !state.device.protocol_features() {
         log::debug!("ignored {message:?}: this connection has no RME-protocol features");
         return Task::none();
+    }
+    if changes_mix(&message) {
+        state.snapshot_dirty = true;
     }
     if is_undoable(&message) {
         let scene = state.device.capture_scene();
@@ -1725,19 +1749,19 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::GlobalMuteToggle => {
-            let to_mute: Vec<ChannelId> =
-                all_channel_ids(state).into_iter().filter(|&cid| !channel_is_muted(state, cid)).collect();
-            if to_mute.is_empty() {
-                for cid in std::mem::take(&mut state.last_globally_muted) {
-                    set_channel_mute(state, cid, false);
-                    notify_osc(state, OscOutbound::Mute(cid, false));
-                }
-            } else {
-                for &cid in &to_mute {
+            let muted: Vec<ChannelId> =
+                all_channel_ids(state).into_iter().filter(|&cid| channel_is_muted(state, cid)).collect();
+            if muted.is_empty() {
+                for cid in std::mem::take(&mut state.last_cleared_mutes) {
                     set_channel_mute(state, cid, true);
                     notify_osc(state, OscOutbound::Mute(cid, true));
                 }
-                state.last_globally_muted = to_mute;
+            } else {
+                for &cid in &muted {
+                    set_channel_mute(state, cid, false);
+                    notify_osc(state, OscOutbound::Mute(cid, false));
+                }
+                state.last_cleared_mutes = muted;
             }
         }
         Message::GlobalSoloToggle => {
@@ -2099,9 +2123,16 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             state.sidebar_width =
                 (state.sidebar_width - dx).clamp(sidebar::MIN_WIDTH, sidebar::MAX_WIDTH);
         }
-        Message::ToggleSkeletonPair(pair) => state.skeleton_pairs.toggle(pair),
+        Message::SetTwoRow(on) => state.two_row = on,
+        Message::DimToggle => {
+            let on = !state.device.settings().dim;
+            if let Err(e) = state.device.set_dim(on) {
+                log::warn!("Dim failed: {e}");
+            }
+        }
         Message::SnapshotClicked(n) => {
             state.active_snapshot = Some(n as usize);
+            state.snapshot_dirty = false;
             if let Some(scene) = load_scene_file(&format!("Mix {n}")) {
                 if let Err(e) = state.device.apply_scene(&scene) {
                     log::warn!("Failed to apply snapshot 'Mix {n}': {e}");
@@ -2114,6 +2145,8 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                     save_scene_file(&format!("Mix {n}"), &state.device.capture_scene())
                 {
                     log::warn!("Failed to store snapshot 'Mix {n}': {e}");
+                } else {
+                    state.snapshot_dirty = false;
                 }
             }
         }
@@ -3824,28 +3857,76 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
 
     // `page()`'s own horizontal padding, plus a small safety margin so a
     // borderline-fitting row biases toward scrolling instead of clipping.
-    let available_width = (state.window_width - 2.0 * theme::SPACE_XL - 4.0).max(0.0);
+    // The sidebar's width comes off too: the mixer only gets what is left
+    // of the window beside it (this used to measure against the whole
+    // window, so a row could overflow under the sidebar without ever
+    // switching to its scrolling form).
+    let sidebar_w = if state.sidebar_open {
+        state.sidebar_width
+    } else {
+        sidebar::COLLAPSED_WIDTH
+    } * state.ui_scale;
+    let available_width =
+        (state.window_width - sidebar_w - 2.0 * theme::SPACE_XL - 4.0).max(0.0);
 
     let scale = state.ui_scale;
-    let body = column![
-        section_header("HARDWARE INPUTS", scale),
+    let submix_hint = || {
         text(format!(
             "Submix: {} - Tab for Matrix",
             OUT_LABELS[state.sel_out]
         ))
         .color(theme::TEXT_SEC)
-        .size(theme::TEXT_XS * scale),
-        with_flyout(
-            state,
-            responsive_row(input_strips.into(), input_width, available_width),
-            input_open_x,
-        ),
-        section_header("SOFTWARE PLAYBACK", scale),
-        with_flyout(
-            state,
-            responsive_row(pb_strips.into(), pb_width, available_width),
-            pb_open_x,
-        ),
+        .size(theme::TEXT_XS * scale)
+    };
+    // TotalMix's "2 Row" (Options panel): inputs and playbacks side by
+    // side, outputs underneath, so the whole mixer fits in two rows of
+    // strips. Only taken when both rows really fit next to each other;
+    // otherwise the stacked layout (which scrolls each row on its own)
+    // is the honest fallback, rather than squeezing one of them.
+    let side_gap = theme::SPACE_XXL * scale;
+    let fits_side_by_side = input_width + side_gap + pb_width <= available_width;
+    let sources: Element<'_, Message> = if state.two_row && fits_side_by_side {
+        row![
+            column![
+                section_header("HARDWARE INPUTS", scale),
+                submix_hint(),
+                with_flyout(state, input_strips.into(), input_open_x),
+            ]
+            .spacing(theme::SPACE_LG)
+            .width(Length::Fixed(input_width)),
+            column![
+                section_header("SOFTWARE PLAYBACK", scale),
+                // Keeps the playback strips level with the input strips,
+                // which have the submix hint above them.
+                text(" ").size(theme::TEXT_XS * scale),
+                with_flyout(state, pb_strips.into(), pb_open_x),
+            ]
+            .spacing(theme::SPACE_LG)
+            .width(Length::Fixed(pb_width)),
+        ]
+        .spacing(side_gap)
+        .into()
+    } else {
+        column![
+            section_header("HARDWARE INPUTS", scale),
+            submix_hint(),
+            with_flyout(
+                state,
+                responsive_row(input_strips.into(), input_width, available_width),
+                input_open_x,
+            ),
+            section_header("SOFTWARE PLAYBACK", scale),
+            with_flyout(
+                state,
+                responsive_row(pb_strips.into(), pb_width, available_width),
+                pb_open_x,
+            ),
+        ]
+        .spacing(theme::SPACE_LG)
+        .into()
+    };
+    let body = column![
+        sources,
         section_header("HARDWARE OUTPUTS", scale),
         responsive_row(out_strips.into(), out_width, available_width),
     ]
@@ -4046,7 +4127,7 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use super::{
-        all_channel_ids, all_channels_muted, any_channel_soloed, apply_pending_resize,
+        all_channel_ids, any_channel_muted, any_channel_soloed, apply_pending_resize,
         channel_is_muted, channel_is_soloed, is_undoable, new, power_sum_output_meters,
         update, zoom, ChannelId, MeterAnim, Message, ZOOM_STEP,
     };
@@ -4448,21 +4529,22 @@ mod tests {
     }
 
     #[test]
-    fn global_mute_toggle_mutes_everything_then_unmutes_on_second_press() {
+    fn global_mute_master_clears_the_active_mutes_then_restores_them() {
         let mut state = new(true, None, None);
-        assert!(!all_channels_muted(&state), "mock starts fully unmuted");
+        assert!(!any_channel_muted(&state), "mock starts fully unmuted");
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Playback(2);
+        let _ = update(&mut state, Message::Mute(a, true));
+        let _ = update(&mut state, Message::Mute(b, true));
+        assert!(any_channel_muted(&state), "the master lights with any mute");
 
         let _ = update(&mut state, Message::GlobalMuteToggle);
-        assert!(all_channels_muted(&state));
-        for cid in all_channel_ids(&state) {
-            assert!(channel_is_muted(&state, cid), "{cid:?} should be muted");
-        }
+        assert!(!any_channel_muted(&state), "first press clears every mute");
 
         let _ = update(&mut state, Message::GlobalMuteToggle);
-        assert!(!all_channels_muted(&state));
-        for cid in all_channel_ids(&state) {
-            assert!(!channel_is_muted(&state, cid), "{cid:?} should be unmuted");
-        }
+        assert!(channel_is_muted(&state, a));
+        assert!(channel_is_muted(&state, b));
+        assert!(state.last_cleared_mutes.is_empty(), "the remembered set was used up");
     }
 
     #[test]
@@ -4610,30 +4692,10 @@ mod tests {
     }
 
     #[test]
-    fn global_mute_toggle_leaves_a_pre_muted_channel_muted_after_restoring() {
+    fn global_mute_master_does_nothing_with_nothing_to_restore() {
         let mut state = new(true, None, None);
-        // Input(8) is half of a hardware-linked pair by default, so
-        // muting it mirrors onto Input(9) too — both are the
-        // "independently muted before the global press" channels here.
-        let pre_muted = ChannelId::Input(8);
-        let its_pair_sibling = ChannelId::Input(9);
-        let _ = update(&mut state, Message::Mute(pre_muted, true));
-
         let _ = update(&mut state, Message::GlobalMuteToggle);
-        assert!(all_channels_muted(&state));
-
-        let _ = update(&mut state, Message::GlobalMuteToggle);
-        assert!(
-            channel_is_muted(&state, pre_muted),
-            "a channel muted before the global press must stay muted after restoring"
-        );
-        assert!(channel_is_muted(&state, its_pair_sibling));
-        // Everything the global press itself muted should be back off.
-        for cid in all_channel_ids(&state) {
-            if cid != pre_muted && cid != its_pair_sibling {
-                assert!(!channel_is_muted(&state, cid), "{cid:?} should be unmuted");
-            }
-        }
+        assert!(!any_channel_muted(&state), "it never mutes everything");
     }
 
     #[test]
@@ -4695,10 +4757,35 @@ mod tests {
     #[test]
     fn global_mute_toggle_is_undoable() {
         let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::Mute(ChannelId::Input(0), true));
         let _ = update(&mut state, Message::GlobalMuteToggle);
-        assert!(!state.undo_stack.is_empty());
+        assert!(!any_channel_muted(&state));
         let _ = update(&mut state, Message::Undo);
-        assert!(!all_channels_muted(&state));
+        assert!(channel_is_muted(&state, ChannelId::Input(0)));
+    }
+
+    #[test]
+    fn a_mix_change_marks_the_recalled_snapshot_modified() {
+        let mut state = new(true, None, None);
+        state.active_snapshot = Some(1);
+        assert!(!state.snapshot_dirty);
+        let _ = update(&mut state, Message::VolumeChanged(ChannelId::Input(0), 0, 0.5));
+        assert!(state.snapshot_dirty, "a fader drag step is a mix change");
+        let _ = update(&mut state, Message::SnapshotClicked(1));
+        assert!(!state.snapshot_dirty, "recalling the slot clears it");
+        let _ = update(&mut state, Message::ToggleSidebar);
+        assert!(!state.snapshot_dirty, "UI-only messages do not count");
+    }
+
+    #[test]
+    fn dim_toggle_flips_the_device_dim() {
+        let mut state = new(true, None, None);
+        assert!(!state.device.settings().dim);
+        let _ = update(&mut state, Message::DimToggle);
+        assert!(state.device.settings().dim);
+        let _ = update(&mut state, Message::DimToggle);
+        assert!(!state.device.settings().dim);
+        assert!(state.undo_stack.is_empty(), "Dim is not part of a scene");
     }
 
     #[test]
