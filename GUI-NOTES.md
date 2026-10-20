@@ -3656,3 +3656,18 @@ untouched strip stays neutral. `cargo test --workspace` green.
 - **Shortcuts are listed.** The About dialog gains a Shortcuts section
   (Tab, undo/redo, zoom, F11, Esc, Ctrl/Shift-click, the double-clicks,
   Shift-drag); undo/redo tooltips show their keys.
+
+## 2026-10-20 (cont. 9): disconnect banner, window title, minimum size
+
+- **Disconnected banner.** While the device is gone, a full-width line
+  under the top bar says so and what happens next ("... reconnects on
+  its own and restores the mix when it is back"). Before, the only sign
+  was the sidebar chip's small red word, while the mixer kept looking
+  live. Checked with `TUXMIX_MOCK_DISCONNECT=1`.
+- **Window title** names the device and its state ("TuxMix - Babyface
+  Pro FS", "... (simulated)", "... (disconnected)") for the taskbar and
+  window switcher, instead of a fixed "TuxMix - RME Mixer".
+- **Minimum window size** 960x600: below that the top bar's tools and the
+  sidebar no longer fit beside a strip row.
+- A collapsed strip's M/S labels go from `TEXT_MICRO` to `TEXT_XS`, and
+  the Mixer caption uses the same "·" separator as the others.

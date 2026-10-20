@@ -1367,9 +1367,22 @@ fn finish_params<'a>(state: &'a TuxMix, mut p: strip::StripParams<'a>) -> strip:
     p
 }
 
+/// The window title: which device this window drives, and whether it is
+/// there. That is what the taskbar and the window switcher show, where
+/// "TuxMix - RME Mixer" said the same thing for every state.
 pub fn title(state: &TuxMix) -> String {
-    let _ = state;
-    "TuxMix - RME Mixer".into()
+    let model = state
+        .device
+        .model_name()
+        .strip_suffix(" (mock)")
+        .unwrap_or_else(|| state.device.model_name());
+    if !state.connected {
+        format!("TuxMix \u{2014} {model} (disconnected)")
+    } else if state.device.is_mock() {
+        format!("TuxMix \u{2014} {model} (simulated)")
+    } else {
+        format!("TuxMix \u{2014} {model}")
+    }
 }
 
 /// Floor used when converting silence (linear 0.0) to dB for group-delta
@@ -2686,7 +2699,11 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
     let body = row![content, sidebar::sidebar(state)]
         .width(Length::Fill)
         .height(Length::Fill);
-    let mut col = column![top, body]
+    let mut col = column![top];
+    if !state.connected {
+        col = col.push(disconnected_banner(state));
+    }
+    let mut col = col.push(body)
         .width(Length::Fill)
         .height(Length::Fill);
     if state.show_osc_log {
@@ -2710,6 +2727,43 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
     } else {
         base
     }
+}
+
+/// Shown under the top bar while the device is gone. The sidebar chip
+/// already says "Disconnected", but that is a small word at the window's
+/// edge, while the mixer underneath keeps looking live; a full-width line
+/// says it where the eye is, and says what happens next.
+fn disconnected_banner(state: &TuxMix) -> Element<'_, Message> {
+    let scale = state.ui_scale;
+    let model = state
+        .device
+        .model_name()
+        .strip_suffix(" (mock)")
+        .unwrap_or_else(|| state.device.model_name())
+        .to_string();
+    container(
+        row![
+            text("\u{25CF}").size(theme::TEXT_XS * scale).color(theme::MRED),
+            text(format!(
+                "{model} is disconnected. TuxMix reconnects on its own and restores the mix when it is back."
+            ))
+            .size(theme::TEXT_SM * scale)
+            .color(theme::TEXT_PRIMARY),
+        ]
+        .spacing(theme::SPACE_MD * scale)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([theme::SPACE_SM * scale, theme::SPACE_XXL * scale])
+    .width(Length::Fill)
+    .style(|_theme: &iced::Theme| container::Style {
+        background: Some(iced::Background::Color(theme::blend(
+            theme::SURFACE,
+            theme::MRED,
+            0.22,
+        ))),
+        ..container::Style::default()
+    })
+    .into()
 }
 
 /// A fixed-height drawer docked under the main view, listing raw OSC
@@ -4272,7 +4326,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
     let scale = state.ui_scale;
     let submix_hint = || {
         text(format!(
-            "Submix: {} - Tab for Matrix",
+            "Submix: {} \u{00b7} Tab for Matrix",
             OUT_LABELS[state.sel_out]
         ))
         .color(theme::TEXT_SEC)

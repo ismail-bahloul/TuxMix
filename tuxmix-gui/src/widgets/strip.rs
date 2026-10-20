@@ -415,7 +415,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     let btn_h = ICON_BTN_H * scale;
 
     let mute_btn = hint(
-        button(centered_label("M", theme::TEXT_MICRO * scale))
+        button(centered_label("M", theme::TEXT_XS * scale))
             .width(Length::Fill)
             .height(btn_h)
             .style(theme::armed_toggle_button(p.mute, p.mute_armed, theme::MUTE_COLOR))
@@ -428,7 +428,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         scale,
     );
     let solo_btn = hint(
-        button(centered_label("S", theme::TEXT_MICRO * scale))
+        button(centered_label("S", theme::TEXT_XS * scale))
             .width(Length::Fill)
             .height(btn_h)
             .style(theme::armed_toggle_button(p.solo, p.solo_armed, theme::SOLO_COLOR))

@@ -129,6 +129,9 @@ fn main() -> iced::Result {
     .default_font(Font::with_name("Inter"))
     .window(window::Settings {
         size: Size::new(1280.0, 800.0),
+        // Below this the top bar's tools and the sidebar no longer fit
+        // beside a strip row, and the layout stops reading as one.
+        min_size: Some(Size::new(960.0, 600.0)),
         fullscreen: start_fullscreen,
         icon: window_icon(),
         platform_specific: window::settings::PlatformSpecific {
