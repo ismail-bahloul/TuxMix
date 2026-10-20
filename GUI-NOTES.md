@@ -3592,3 +3592,24 @@ with a tooltip saying how to rename (`segment_cell` dims a side that has
 no `on_press`). Verified in Xvfb at 1410 px: 2 rows lays out side by side
 with a sideways scroll; names is dim with its hint, becomes live after a
 rename, and "original" shows the hardware name again.
+
+## 2026-10-20 (cont. 6): a click away accepts an inline edit
+
+User report: after typing a strip name, clicking elsewhere should accept
+it. It left the field open (and the typed dB field the same). iced 0.14's
+`text_input` has no blur callback, but it does unfocus itself on a press
+outside it, so: every left press in the window is sent as
+`Message::PointerPressed` by the global listener, and while a field is
+open that asks iced whether the field still has focus
+(`operation::is_focused`); `FieldFocus(field, cid, false)` then commits
+through the field's own `RenameCommit`/`EditCommit`. The answer carries
+the strip it was asked about, so a late one cannot commit a newer edit.
+The press that opens a field (the double-click's second click) reaches
+the listener after the widget's own message and is skipped
+(`field_opening`). Double-clicking another strip's name accepts the name
+being typed first. The dB field also opens focused and selected now (it
+needed an extra click before typing did anything). Escape still cancels.
+Verified in Xvfb: typing, clicking inside the field and typing on keeps
+it open; a click away accepts the name; a double-click on a dB value,
+"-10", a click away sets the fader to -10.0 dB. `cargo test --workspace`
+green.

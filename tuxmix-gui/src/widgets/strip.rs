@@ -785,6 +785,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
 
     let db_display: Element<'a, Message> = if p.editing {
         text_input("", p.edit_buf)
+            .id(crate::app::DB_INPUT_ID)
             .on_input(Message::EditChanged)
             .on_submit(Message::EditCommit)
             .style(theme::text_input)

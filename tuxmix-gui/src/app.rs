@@ -779,10 +779,29 @@ pub enum Message {
     /// and the physical output column. Drives the crosshair labels and
     /// the view's readout.
     MatrixHover(ChannelId, usize, bool),
+    /// Any left press in the window (from the global event listener).
+    /// While a text field is open, it asks the field whether it still has
+    /// focus, see `Message::FieldFocus`.
+    PointerPressed,
+    /// The answer to that question: `false` means the click landed outside
+    /// the field (iced unfocuses a text input then), so its text is
+    /// accepted, the way a click away commits an edit in any desktop app.
+    /// Carries which field and which strip were open when asked, so a late
+    /// answer cannot commit a different, newer edit.
+    FieldFocus(EditField, ChannelId, bool),
+}
+
+/// The two inline text fields a strip can open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditField {
+    Rename,
+    Db,
 }
 
 /// The strip-rename field's widget id, so `RenameStart` can focus it.
 pub(crate) const RENAME_INPUT_ID: &str = "strip-rename";
+/// The typed-dB field's widget id, for the same reason.
+pub(crate) const DB_INPUT_ID: &str = "strip-db";
 
 // ── App state ────────────────────────────────────────────────────
 
@@ -993,6 +1012,11 @@ pub struct TuxMix {
     /// The continuous edit the last undo step was opened for, and when it
     /// last moved (see `undo_gesture`).
     pub undo_gesture: Option<(UndoGesture, Instant)>,
+    /// Set when a text field opens. The press that opened it (the second
+    /// click of the double-click) also reaches `PointerPressed`, after the
+    /// widget's own message; this makes that one press not count as a
+    /// click away.
+    pub field_opening: bool,
 }
 
 /// What a continuous control is editing. A drag, a wheel spin or a knob
@@ -1210,6 +1234,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         prefs_dirty: false,
         matrix_hover: None,
         undo_gesture: None,
+        field_opening: false,
     }
 }
 
@@ -1668,6 +1693,8 @@ fn is_undoable(message: &Message) -> bool {
             | Message::SetTwoRow(_)
             | Message::DimToggle
             | Message::MatrixHover(..)
+            | Message::PointerPressed
+            | Message::FieldFocus(..)
             | Message::RenameStart(_)
             | Message::RenameChanged(_)
             | Message::RenameCommit
@@ -2228,6 +2255,13 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::EditStart(cid, buf) => {
             state.editing = Some(cid);
             state.edit_buf = buf;
+            state.field_opening = true;
+            // Ready to type over, like the rename field: it used to open
+            // unfocused, so typing did nothing until it was clicked again.
+            return Task::batch([
+                iced::widget::operation::focus(DB_INPUT_ID),
+                iced::widget::operation::select_all(DB_INPUT_ID),
+            ]);
         }
         Message::EditChanged(s) => state.edit_buf = s,
         Message::EditCommit => {
@@ -2348,8 +2382,13 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         }
         Message::SetTwoRow(on) => state.two_row = on,
         Message::RenameStart(cid) => {
+            // Opening another strip's name accepts the one being typed.
+            if state.renaming.is_some_and(|open| open != cid) {
+                let _ = update(state, Message::RenameCommit);
+            }
             state.rename_buf = state.labels.get(&cid).cloned().unwrap_or_default();
             state.renaming = Some(cid);
+            state.field_opening = true;
             return Task::batch([
                 iced::widget::operation::focus(RENAME_INPUT_ID),
                 iced::widget::operation::select_all(RENAME_INPUT_ID),
@@ -2368,6 +2407,38 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::SetShowOriginalNames(on) => state.show_original_names = on,
+        Message::PointerPressed => {
+            if std::mem::take(&mut state.field_opening) {
+                return Task::none();
+            }
+            let mut checks = Vec::new();
+            if let Some(cid) = state.renaming {
+                checks.push(
+                    iced::widget::operation::is_focused(RENAME_INPUT_ID)
+                        .map(move |f| Message::FieldFocus(EditField::Rename, cid, f)),
+                );
+            }
+            if let Some(cid) = state.editing {
+                checks.push(
+                    iced::widget::operation::is_focused(DB_INPUT_ID)
+                        .map(move |f| Message::FieldFocus(EditField::Db, cid, f)),
+                );
+            }
+            return Task::batch(checks);
+        }
+        Message::FieldFocus(field, cid, focused) => {
+            if !focused {
+                match field {
+                    EditField::Rename if state.renaming == Some(cid) => {
+                        return update(state, Message::RenameCommit);
+                    }
+                    EditField::Db if state.editing == Some(cid) => {
+                        return update(state, Message::EditCommit);
+                    }
+                    _ => {}
+                }
+            }
+        }
         Message::MatrixHover(cid, col, over) => {
             if over {
                 state.matrix_hover = Some((cid, col));
@@ -2519,6 +2590,9 @@ fn handle_global_event(
         }
         iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => {
             Some(Message::ModifiersChanged(m))
+        }
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
+            Some(Message::PointerPressed)
         }
         iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta, .. }) => {
             // Reported every wheel tick; `update` decides whether it's a
@@ -4453,7 +4527,7 @@ mod tests {
     use super::{
         any_channel_muted, any_channel_soloed, apply_pending_resize,
         apply_prefs, channel_is_muted, channel_is_soloed, is_undoable, new, prefs_of,
-        power_sum_output_meters, update, zoom, ChannelId, MeterAnim, Message, View, ZOOM_STEP,
+        power_sum_output_meters, update, zoom, ChannelId, EditField, MeterAnim, Message, View, ZOOM_STEP,
     };
     use crate::sidebar;
     use crate::theme;
@@ -5121,6 +5195,56 @@ mod tests {
         let _ = update(&mut state, Message::RenameChanged(String::new()));
         let _ = update(&mut state, Message::RenameCommit);
         assert!(state.labels.get(&cid).is_none());
+    }
+
+    #[test]
+    fn a_click_away_accepts_the_typed_name() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(0);
+        let _ = update(&mut state, Message::RenameStart(cid));
+        // The press that opened the field does not count as a click away.
+        let _ = update(&mut state, Message::PointerPressed);
+        assert_eq!(state.renaming, Some(cid));
+        let _ = update(&mut state, Message::RenameChanged("Kick".into()));
+        // A later click: the field reports it lost focus.
+        let _ = update(&mut state, Message::FieldFocus(EditField::Rename, cid, false));
+        assert_eq!(state.renaming, None);
+        assert_eq!(state.labels.get(&cid).map(String::as_str), Some("Kick"));
+    }
+
+    #[test]
+    fn a_click_inside_the_field_keeps_it_open() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(0);
+        let _ = update(&mut state, Message::RenameStart(cid));
+        let _ = update(&mut state, Message::FieldFocus(EditField::Rename, cid, true));
+        assert_eq!(state.renaming, Some(cid));
+    }
+
+    #[test]
+    fn a_stale_focus_answer_does_not_commit_a_newer_edit() {
+        let mut state = new(true, None, None);
+        let (a, b) = (ChannelId::Input(0), ChannelId::Input(2));
+        let _ = update(&mut state, Message::RenameStart(a));
+        let _ = update(&mut state, Message::RenameChanged("Snare".into()));
+        // Opening another name accepts the first one.
+        let _ = update(&mut state, Message::RenameStart(b));
+        assert_eq!(state.labels.get(&a).map(String::as_str), Some("Snare"));
+        assert_eq!(state.renaming, Some(b));
+        let _ = update(&mut state, Message::FieldFocus(EditField::Rename, a, false));
+        assert_eq!(state.renaming, Some(b), "the answer about `a` is ignored");
+    }
+
+    #[test]
+    fn a_click_away_applies_a_typed_db_value() {
+        let mut state = new(true, None, None);
+        let cid = ChannelId::Input(4);
+        let _ = update(&mut state, Message::EditStart(cid, "0.0".into()));
+        let _ = update(&mut state, Message::EditChanged("-12".into()));
+        let _ = update(&mut state, Message::FieldFocus(EditField::Db, cid, false));
+        assert_eq!(state.editing, None);
+        let db = 20.0 * state.device.inputs()[4].volumes[state.sel_out].log10();
+        assert!((db + 12.0).abs() < 0.1, "{db}");
     }
 
     #[test]
