@@ -609,21 +609,34 @@ fn segmented_row<'a>(
     on_right: Option<Message>,
     scale: f32,
 ) -> Element<'a, Message> {
-    row![
-        button(text(left_label).size(theme::TEXT_XS * scale))
+    segment_track(
+        button(text(left_label).size(theme::TEXT_XS * scale).center())
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .width(Length::Fill)
-            .style(theme::segment_button(left_active))
-            .on_press_maybe(on_left),
-        button(text(right_label).size(theme::TEXT_XS * scale))
+            .style(theme::segment_cell(left_active))
+            .on_press_maybe(on_left)
+            .into(),
+        button(text(right_label).size(theme::TEXT_XS * scale).center())
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .width(Length::Fill)
-            .style(theme::segment_button(!left_active))
-            .on_press_maybe(on_right),
-    ]
-    .spacing(theme::SPACE_TIGHT * scale)
-    .width(Length::Fill)
-    .into()
+            .style(theme::segment_cell(!left_active))
+            .on_press_maybe(on_right)
+            .into(),
+        scale,
+    )
+}
+
+/// Wraps two switch cells in the shared `theme::segment_track`.
+fn segment_track<'a>(
+    left: Element<'a, Message>,
+    right: Element<'a, Message>,
+    scale: f32,
+) -> Element<'a, Message> {
+    container(row![left, right].spacing(theme::SPACE_HAIRLINE * scale))
+        .padding(theme::SPACE_TIGHT * scale)
+        .width(Length::Fill)
+        .style(theme::segment_track)
+        .into()
 }
 
 /// A 2-way segmented row where *neither* side is real — both rendered
@@ -642,16 +655,17 @@ fn disabled_segmented_row(
         ..theme::TEXT_SEC
     };
     let cell = |label: String| -> Element<'static, Message> {
-        button(text(label).size(theme::TEXT_XS * scale).color(dim))
+        button(text(label).size(theme::TEXT_XS * scale).color(dim).center())
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .width(Length::Fill)
-            .style(theme::segment_button(false))
+            .style(theme::segment_cell(false))
             .into()
     };
-    row![cell(left_label.to_string()), cell(right_label.to_string())]
-        .spacing(theme::SPACE_TIGHT * scale)
-        .width(Length::Fill)
-        .into()
+    segment_track(
+        cell(left_label.to_string()),
+        cell(right_label.to_string()),
+        scale,
+    )
 }
 
 /// The trailing "store" action of the Snapshot and Mixer Layout panels —

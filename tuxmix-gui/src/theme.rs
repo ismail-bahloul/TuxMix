@@ -459,6 +459,55 @@ pub fn segment_button(active: bool) -> impl Fn(&iced::Theme, button::Status) -> 
     }
 }
 
+/// The shared track of a joined 2-way switch (`sidebar::segmented_row`):
+/// one recessed rounded body that both cells sit inside, so the pair
+/// reads as a single control with a sliding thumb instead of two
+/// unrelated pills.
+pub fn segment_track(_theme: &iced::Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(BG_DEEP)),
+        border: Border {
+            color: BORDER,
+            width: 1.0,
+            radius: RADIUS_SM.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+/// One cell inside a `segment_track`: the lit side is a raised graphite
+/// thumb, the other is bare text on the track that only gains a fill
+/// under the cursor. Same semantics as `segment_button` (a position, not
+/// an "on" state), minus the per-cell outline the track now provides.
+pub fn segment_cell(active: bool) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let pressed = matches!(status, button::Status::Pressed);
+        let background = if active {
+            SURFACE_HI
+        } else if hovered {
+            SURFACE
+        } else {
+            Color::TRANSPARENT
+        };
+        button::Style {
+            background: Some(Background::Color(if pressed {
+                blend(background, Color::BLACK, PRESS_DARKEN)
+            } else {
+                background
+            })),
+            text_color: if active { TEXT_PRIMARY } else { TEXT_SEC },
+            border: Border {
+                color: if active { BORDER } else { Color::TRANSPARENT },
+                width: 1.0,
+                radius: (RADIUS_SM - 2.0).into(),
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
 pub fn plain_button(_theme: &iced::Theme, status: button::Status) -> button::Style {
     let bg = match status {
         button::Status::Pressed => blend(SURFACE_HI, Color::BLACK, PRESS_DARKEN),
