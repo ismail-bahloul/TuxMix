@@ -3671,3 +3671,15 @@ untouched strip stays neutral. `cargo test --workspace` green.
   sidebar no longer fit beside a strip row.
 - A collapsed strip's M/S labels go from `TEXT_MICRO` to `TEXT_XS`, and
   the Mixer caption uses the same "·" separator as the others.
+
+## 2026-10-20 (cont. 10): larger targets for folding the sidebar
+
+Asked whether double-clicking the panel should fold it: not the panel
+body, whose buttons (M/S, slots, groups, switches) are clicked in quick
+runs and would fold it by accident. Instead, two places with nothing else
+to hit: a single click anywhere on the collapsed rail opens the panel
+(the whole rail, not only its 26px button), and a double-click on the
+open panel's "CONTROLS" title row folds it, like a title bar. The toggle
+button captures its own presses, so it never counts twice. Verified in
+Xvfb: a single click on the title does nothing, a double-click folds, a
+click mid-rail opens, the icon toggles exactly once in both states.

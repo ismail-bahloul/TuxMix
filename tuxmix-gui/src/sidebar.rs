@@ -29,7 +29,7 @@
 //! * Rows inside a panel are `SPACE_TIGHT` apart, panels are twice that
 //!   (see `panel`), and the whole column is one scrollable strip.
 
-use iced::widget::{button, column, container, row, text};
+use iced::widget::{button, column, container, mouse_area, row, text};
 use iced::{Color, Element, Length};
 
 use tuxmix_core::{ChannelId, RmeDevice};
@@ -194,16 +194,25 @@ fn panel_toggle(open: bool, scale: f32) -> Element<'static, Message> {
 /// The panel's title row: its name on the left, the fold toggle on the
 /// right — what makes the column read as one panel with a header instead
 /// of a stack of rows that happens to sit at the window's edge.
+///
+/// Double-clicking the row folds the panel too, like double-clicking a
+/// title bar: the row holds nothing else to click, so the gesture cannot
+/// collide with a control (the panel body could not take it, its buttons
+/// are clicked in quick runs). The toggle button captures its own presses,
+/// so pressing it never counts toward the row's double-click.
 fn title_row(scale: f32) -> Element<'static, Message> {
-    row![
-        text("CONTROLS")
-            .size(theme::TEXT_XS * scale)
-            .color(theme::TEXT_SEC),
-        iced::widget::Space::new().width(Length::Fill),
-        panel_toggle(true, scale),
-    ]
-    .align_y(iced::Alignment::Center)
-    .width(Length::Fill)
+    mouse_area(
+        row![
+            text("CONTROLS")
+                .size(theme::TEXT_XS * scale)
+                .color(theme::TEXT_SEC),
+            iced::widget::Space::new().width(Length::Fill),
+            panel_toggle(true, scale),
+        ]
+        .align_y(iced::Alignment::Center)
+        .width(Length::Fill),
+    )
+    .on_double_click(Message::ToggleSidebar)
     .into()
 }
 
@@ -249,11 +258,18 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
         .padding([theme::SPACE_MD * scale, 0.0])
         .align_x(iced::Alignment::Center)
         .width(Length::Fill);
-        return container(row![edge_line(scale), rail])
-            .width(Length::Fixed(COLLAPSED_WIDTH * scale))
-            .height(Length::Fill)
-            .style(theme::top_bar)
-            .into();
+        // The whole rail is the way back: one click anywhere on it opens
+        // the panel, not just on the 26px button at its top. The button
+        // captures its own press, so a click on it is not counted twice.
+        return mouse_area(
+            container(row![edge_line(scale), rail])
+                .width(Length::Fixed(COLLAPSED_WIDTH * scale))
+                .height(Length::Fill)
+                .style(theme::top_bar),
+        )
+        .on_press(Message::ToggleSidebar)
+        .interaction(iced::mouse::Interaction::Pointer)
+        .into();
     }
 
     let col = column![
