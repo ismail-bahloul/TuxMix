@@ -3065,6 +3065,15 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
     )
 }
 
+/// A sample rate as people say it: "48 kHz", "44.1 kHz", "176.4 kHz".
+pub(crate) fn rate_label(hz: u32) -> String {
+    if hz % 1000 == 0 {
+        format!("{} kHz", hz / 1000)
+    } else {
+        format!("{:.1} kHz", hz as f32 / 1000.0)
+    }
+}
+
 /// The sidebar's current width on screen, open or folded.
 pub(crate) fn sidebar_px(state: &TuxMix) -> f32 {
     let logical = if state.sidebar_open {
@@ -3178,26 +3187,36 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
             .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
             .text_size(theme::TEXT_MD * scale),
             iced::widget::Space::new().width(theme::SPACE_MD * scale),
-            // Captioned and sized like the Submix pick list next to it, so
-            // the two read as fields of one form; it opens the device
-            // popover instead of a menu, hence a button.
-            text("Clock")
-                .color(theme::TEXT_SEC)
-                .size(theme::TEXT_XS * scale),
-            iced::widget::button(
-                row![
-                    text(state.device.settings().clock_source.clone())
+            // The way into the device settings, showing their two most
+            // looked-at values ("48 kHz · Internal") the way a DAW's
+            // transport does. It used to be a field captioned "Clock"
+            // showing the clock source only, so nothing said the sample
+            // rate, pitch or the global flags were behind it.
+            hint(
+                iced::widget::button(
+                    row![
+                        text("\u{2699}")
+                            .size(theme::TEXT_SM * scale)
+                            .color(theme::TEXT_SEC),
+                        text(format!(
+                            "{} \u{00b7} {}",
+                            rate_label(state.device.settings().sample_rate),
+                            state.device.settings().clock_source
+                        ))
                         .size(theme::TEXT_MD * scale),
-                    text("\u{25BE}")
-                        .size(theme::TEXT_XS * scale)
-                        .color(theme::TEXT_SEC),
-                ]
-                .spacing(theme::SPACE_MD * scale)
-                .align_y(iced::Alignment::Center),
-            )
-            .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
-            .style(theme::field_button(state.show_device_panel))
-            .on_press(Message::ToggleDevicePanel),
+                        text("\u{25BE}")
+                            .size(theme::TEXT_XS * scale)
+                            .color(theme::TEXT_SEC),
+                    ]
+                    .spacing(theme::SPACE_SM * scale)
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+                .style(theme::field_button(state.show_device_panel))
+                .on_press(Message::ToggleDevicePanel),
+                "Device settings: clock, sample rate, pitch, global options",
+                scale,
+            ),
     ]
     .spacing(theme::SPACE_SM * scale)
     .align_y(iced::Alignment::Center);
@@ -5526,6 +5545,14 @@ mod tests {
         let _ = update(&mut state, Message::VolumeChanged(cid, 0, 0.1));
         let _ = update(&mut state, Message::SnapshotClicked(3));
         assert!((state.device.inputs()[4].volumes[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sample_rates_read_as_people_say_them() {
+        assert_eq!(super::rate_label(48_000), "48 kHz");
+        assert_eq!(super::rate_label(44_100), "44.1 kHz");
+        assert_eq!(super::rate_label(176_400), "176.4 kHz");
+        assert_eq!(super::rate_label(192_000), "192 kHz");
     }
 
     #[test]

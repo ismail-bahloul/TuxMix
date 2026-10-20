@@ -382,10 +382,10 @@ pub(crate) fn device_state(state: &TuxMix) -> (Color, &'static str) {
 /// sidebar as it is dragged, with the identity on one line and the state
 /// under it: one line for both wraps "Class Compliant", the longest word,
 /// against the default column width (seen live), and a clipped or
-/// wrapping state word is worse than a second line. The `▾` that used to
-/// sit at the right edge suggested a dropdown that never existed —
-/// nothing behind it was clickable — and the row-per-line stack around it
-/// left most of the card empty.
+/// wrapping state word is worse than a second line. It is a button that
+/// opens the device settings (2026-10-20), so its `▾` means something
+/// again: an earlier one decorated a chip nothing could click, and was
+/// removed for that.
 fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     // What the connection actually is right now (see `device_state`);
     // the strips hide the controls that only exist on some of those
@@ -403,13 +403,24 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         .model_name()
         .strip_suffix(" (mock)")
         .unwrap_or(state.device.model_name());
-    container(
+    // The device's own settings are one click from the device: the chip
+    // opens the same popover as the top bar's "48 kHz · Internal" field.
+    // The caret is honest now (it once decorated a chip nothing could
+    // click, and was removed for that).
+    button(
         column![
             row![
-                text("●").size(theme::TEXT_XS * scale).color(status_color),
+                text("\u{25CF}")
+                    .size(theme::TEXT_XS * scale)
+                    .color(status_color),
                 text(display_name)
                     .size(theme::TEXT_MD * scale)
-                    .color(theme::TEXT_PRIMARY),
+                    .color(theme::TEXT_PRIMARY)
+                    .wrapping(iced::advanced::text::Wrapping::None),
+                iced::widget::Space::new().width(Length::Fill),
+                text("\u{25BE}")
+                    .size(theme::TEXT_XS * scale)
+                    .color(theme::TEXT_SEC),
             ]
             .spacing(theme::SPACE_SM * scale)
             .align_y(iced::Alignment::Center),
@@ -421,7 +432,11 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     )
     .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
     .width(Length::Fill)
-    .style(theme::chip)
+    .style(theme::chip_button(state.show_device_panel))
+    .on_press(Message::ToggleDevicePanel)
+    // A narrow sidebar clips a long model name instead of letting it run
+    // past the chip's border.
+    .clip(true)
     .into()
 }
 

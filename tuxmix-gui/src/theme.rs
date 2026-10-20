@@ -627,6 +627,30 @@ pub fn header_button(_theme: &iced::Theme, status: button::Status) -> button::St
     }
 }
 
+/// The sidebar's device chip as a button: the `chip` look at rest, the
+/// field-style ring under the cursor and while the popover it opens is up.
+pub fn chip_button(open: bool) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let background = match status {
+            button::Status::Pressed => blend(BG_DEEP, Color::BLACK, PRESS_DARKEN),
+            button::Status::Hovered => blend(BG_DEEP, SURFACE_HI, 0.5),
+            _ => BG_DEEP,
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: TEXT_PRIMARY,
+            border: Border {
+                color: if open || hovered { FADER } else { BORDER },
+                width: 1.0,
+                radius: RADIUS_MD.into(),
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
 /// A flat, textual button: no box at rest, brightening to `SURFACE_HI`
 /// under the cursor.
 ///

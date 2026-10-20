@@ -3700,3 +3700,16 @@ fields at the bar's right end, against the sidebar's edge (`chip` and
 `v_divider` are gone). The device popover's anchor follows: right of it
 is now the sidebar (`sidebar_px`, which `mixer_view` uses too). Verified
 in Xvfb, open and folded, popover included.
+
+## 2026-10-20 (cont. 12): finding the device settings
+
+User report: nobody would guess the sample rate (or pitch, MS Proc, the
+global flags) lives behind a top-bar field captioned "Clock". No separate
+settings page (a dozen settings, already in sections), but two honest
+ways in. The top-bar field now reads `⚙ 48 kHz · Internal ▾`
+(`rate_label`), so the two most-checked values are always on screen and
+the gear says it opens settings; a tooltip lists what is inside. And the
+sidebar's device chip is a button (`theme::chip_button`, ring on hover and
+while open, an honest `▾` again) opening the same popover: the device's
+settings are one click from the device. Verified in Xvfb: rest, hover,
+click opens the popover with both entry points lit.
