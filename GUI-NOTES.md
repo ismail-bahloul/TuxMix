@@ -3683,3 +3683,20 @@ open panel's "CONTROLS" title row folds it, like a title bar. The toggle
 button captures its own presses, so it never counts twice. Verified in
 Xvfb: a single click on the title does nothing, a double-click folds, a
 click mid-rail opens, the icon toggles exactly once in both states.
+
+## 2026-10-20 (cont. 11): the top-right corner, regridded
+
+User report: the Submix/Clock cluster looked dropped into the corner. It
+was the bar's only boxed element (`chip`), and the bar spanned the whole
+window above the sidebar, so the cluster aligned neither with the
+sidebar's edge nor with its "CONTROLS" title, which sat on a second line
+below it. Now the sidebar runs the window's full height and the top bar
+spans the views' column only (`view`: `row![column![top, banner, view,
+osc log], sidebar]`). The bar has a fixed height, `theme::TOP_BAR_H`
+(48), and the sidebar's title row is sized against it, so "CONTROLS" and
+the fold toggle sit on the bar's line, open or folded, and the device
+chip starts where the views do. Submix and Clock are flat captioned
+fields at the bar's right end, against the sidebar's edge (`chip` and
+`v_divider` are gone). The device popover's anchor follows: right of it
+is now the sidebar (`sidebar_px`, which `mixer_view` uses too). Verified
+in Xvfb, open and folded, popover included.

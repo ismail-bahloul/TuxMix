@@ -2696,20 +2696,23 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
     // indistinguishable on screen from a genuinely non-interactive one.
     // That's what made `page()`'s click-to-clear-selection silently miss
     // every click below the shortest section's natural content height.
-    let body = row![content, sidebar::sidebar(state)]
-        .width(Length::Fill)
-        .height(Length::Fill);
-    let mut col = column![top];
+    // The sidebar runs the window's full height; the top bar, banner,
+    // view and OSC drawer stack in the column beside it. (The bar used to
+    // span the whole window above both, which left its right-hand tools
+    // floating over the sidebar's own title, aligned with neither.)
+    let mut main = column![top];
     if !state.connected {
-        col = col.push(disconnected_banner(state));
+        main = main.push(disconnected_banner(state));
     }
-    let mut col = col.push(body)
-        .width(Length::Fill)
-        .height(Length::Fill);
+    main = main.push(content);
     if state.show_osc_log {
-        col = col.push(osc_log_panel(state));
+        main = main.push(osc_log_panel(state));
     }
-    let mut base: Element<'_, Message> = col.into();
+    let main = main.width(Length::Fill).height(Length::Fill);
+    let mut base: Element<'_, Message> = row![main, sidebar::sidebar(state)]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into();
     if state.show_device_panel {
         base = stack(vec![base, device_panel(state)])
             .width(Length::Fill)
@@ -3049,7 +3052,9 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                 .align_x(iced::Alignment::End)
                 .padding(iced::Padding {
                     top: POPOVER_TOP * scale,
-                    right: theme::SPACE_XXL * scale,
+                    // Under the Clock field, which now ends at the
+                    // sidebar's edge rather than the window's.
+                    right: theme::SPACE_XXL * scale + sidebar_px(state),
                     bottom: 0.0,
                     left: 0.0,
                 })
@@ -3060,9 +3065,19 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
     )
 }
 
+/// The sidebar's current width on screen, open or folded.
+pub(crate) fn sidebar_px(state: &TuxMix) -> f32 {
+    let logical = if state.sidebar_open {
+        state.sidebar_width
+    } else {
+        sidebar::COLLAPSED_WIDTH
+    };
+    logical * state.ui_scale
+}
+
 /// Where the device popover's card starts, from the window top at scale 1:
-/// just under the top bar's session chip that holds the Clock field.
-const POPOVER_TOP: f32 = 46.0;
+/// just under the top bar, which holds the Clock field.
+const POPOVER_TOP: f32 = theme::TOP_BAR_H - 2.0;
 
 /// A section label (HARDWARE INPUTS, SOFTWARE PLAYBACK, ...) with an accent
 /// tick and a rule trailing off to the right, instead of bare gray text that
@@ -3105,28 +3120,6 @@ fn page<'a>(body: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
     .into()
 }
 
-/// Wraps a cluster of related controls in a recessed "chip" so the top bar
-/// reads as grouped sections instead of one long undifferentiated row.
-fn chip<'a>(content: impl Into<Element<'a, Message>>, scale: f32) -> Element<'a, Message> {
-    container(content)
-        .style(theme::chip)
-        .padding([theme::SPACE_SM * scale, theme::SPACE_XL * scale])
-        .into()
-}
-
-/// A thin vertical separator between sub-groups inside a merged chip —
-/// lighter-weight than another chip boundary, just enough to break up
-/// dense runs of controls (Scene tools / Submix / Clock) without adding a
-/// third level of boxing.
-fn v_divider<'a>(scale: f32) -> Element<'a, Message> {
-    container(iced::widget::Space::new().width(1).height(16.0 * scale))
-        .style(|_theme: &iced::Theme| container::Style {
-            background: Some(iced::Background::Color(theme::BORDER)),
-            ..container::Style::default()
-        })
-        .into()
-}
-
 fn top_bar(state: &TuxMix) -> Element<'_, Message> {
     let scale = state.ui_scale;
 
@@ -3166,8 +3159,9 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
     // same `save_scene_file`/`load_scene_file` mechanism as the Mix 1-8
     // slots there, just with free-form names instead of fixed ones —
     // no reason to keep two separate homes for one feature.
-    let session = chip(
-        row![
+    // Flat fields, like everything else in the bar: this was the bar's
+    // only boxed element (a `chip`), and read as dropped into the corner.
+    let session = row![
             text("Submix")
                 .color(theme::TEXT_SEC)
                 .size(theme::TEXT_XS * scale),
@@ -3183,10 +3177,10 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
             .menu_style(theme::menu)
             .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
             .text_size(theme::TEXT_MD * scale),
-            v_divider(scale),
+            iced::widget::Space::new().width(theme::SPACE_MD * scale),
             // Captioned and sized like the Submix pick list next to it, so
-            // the chip reads as two fields of one form; it opens the
-            // device drawer instead of a menu, hence a button.
+            // the two read as fields of one form; it opens the device
+            // popover instead of a menu, hence a button.
             text("Clock")
                 .color(theme::TEXT_SEC)
                 .size(theme::TEXT_XS * scale),
@@ -3204,11 +3198,9 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
             .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
             .style(theme::field_button(state.show_device_panel))
             .on_press(Message::ToggleDevicePanel),
-        ]
-        .spacing(theme::SPACE_LG)
-        .align_y(iced::Alignment::Center),
-        scale,
-    );
+    ]
+    .spacing(theme::SPACE_SM * scale)
+    .align_y(iced::Alignment::Center);
 
     // The mark and the wordmark as one lockup, the same artwork the window
     // icon wears (see `icon::mark`), flat white like every other engaged
@@ -3276,9 +3268,14 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
     // the chip's real width there is nothing left to overflow.
     bar = bar.push(session);
 
+    // A fixed height (`theme::TOP_BAR_H`) the sidebar's title row is
+    // aligned to: the bar spans the mixer's width only, and the sidebar
+    // runs the window's full height beside it, its title on the same line.
     container(bar)
         .style(theme::top_bar)
-        .padding([theme::SPACE_LG * scale, theme::SPACE_XXL * scale])
+        .padding([0.0, theme::SPACE_XXL * scale])
+        .height(Length::Fixed(theme::TOP_BAR_H * scale))
+        .align_y(iced::Alignment::Center)
         .width(Length::Fill)
         .into()
 }
@@ -4315,11 +4312,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
     // of the window beside it (this used to measure against the whole
     // window, so a row could overflow under the sidebar without ever
     // switching to its scrolling form).
-    let sidebar_w = if state.sidebar_open {
-        state.sidebar_width
-    } else {
-        sidebar::COLLAPSED_WIDTH
-    } * state.ui_scale;
+    let sidebar_w = sidebar_px(state);
     let available_width =
         (state.window_width - sidebar_w - 2.0 * theme::SPACE_XL - 4.0).max(0.0);
 

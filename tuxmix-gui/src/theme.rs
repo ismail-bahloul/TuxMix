@@ -147,6 +147,10 @@ pub const SPACE_XL: f32 = 12.0;
 /// session groups.
 pub const SPACE_XXL: f32 = 16.0;
 
+/// The top bar's height at scale 1. The sidebar's title row is laid out
+/// against it (`sidebar::title_row`), so the two read as one header line.
+pub const TOP_BAR_H: f32 = 48.0;
+
 pub fn panel(_theme: &iced::Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(SURFACE)),
