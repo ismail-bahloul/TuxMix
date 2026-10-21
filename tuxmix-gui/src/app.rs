@@ -3304,10 +3304,13 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
     } else {
         rate_label(clock.force_rate)
     };
-    let quantum_opts: Vec<String> =
-        std::iter::once(format!("Auto ({} samples)", clock.quantum))
-            .chain(quanta.iter().map(|q| format!("{q} samples")))
-            .collect();
+    // "Auto" without a number: with nothing forced, the card runs what
+    // its active clients ask for, 256 by default from the WirePlumber rule
+    // (`node.latency`), not PipeWire's global `clock.quantum`, which this
+    // label used to show. The latency line below shows what really runs.
+    let quantum_opts: Vec<String> = std::iter::once("Auto".to_string())
+        .chain(quanta.iter().map(|q| format!("{q} samples")))
+        .collect();
     let quantum_sel = if clock.force_quantum == 0 {
         quantum_opts[0].clone()
     } else {

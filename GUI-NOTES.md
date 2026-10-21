@@ -3841,3 +3841,16 @@ card for the first time; 32 is validated end-to-end through PipeWire.
 The bench is reproducible with `tools/alsa/bench-pw-timing.sh`
 (variants current/pinned/tsched; the rule is backed up and restored
 byte-exact, `clock.force-quantum` is reset).
+
+## 2026-10-21 (cont. 5): 256 by default, lower on request
+
+The rule now also sets `node.latency = "256/48000"` on both RME nodes:
+the card runs 256 (5.33 ms, TotalMix's default) unless something asks
+for less, instead of PipeWire's global `clock.quantum` (1024 on a stock
+PipeWire, 64 on the author's machine). Measured on the card, a fresh
+open each time: a default client -> period 256 / buffer 768; a client
+asking 128 -> 128; asking 64 -> 64 (the graph's driver node at quantum
+64); asking 4096 -> 256. 0 xrun throughout. `clock.force-quantum`
+(TuxMix's picker) still overrides it. The picker's first entry is now
+plain "Auto": it used to show `clock.quantum`, which is no longer what
+the card runs; the latency line shows the real period.
