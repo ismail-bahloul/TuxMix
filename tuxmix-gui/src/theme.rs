@@ -584,32 +584,6 @@ pub fn plain_button(_theme: &iced::Theme, status: button::Status) -> button::Sty
     }
 }
 
-/// A button dressed as a form field, matching `pick_list` (same surface,
-/// border and hover ring), for a field whose "menu" is a drawer rather
-/// than a dropdown (the top bar's clock source). `open` keeps the ring lit
-/// while that drawer is showing, the way an opened pick list does.
-pub fn field_button(open: bool) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
-    move |_theme, status| {
-        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-        let background = if matches!(status, button::Status::Pressed) {
-            blend(SURFACE, Color::BLACK, PRESS_DARKEN)
-        } else {
-            SURFACE
-        };
-        button::Style {
-            background: Some(Background::Color(background)),
-            text_color: TEXT_PRIMARY,
-            border: Border {
-                color: if open || hovered { FADER } else { BORDER },
-                width: 1.0,
-                radius: RADIUS_SM.into(),
-            },
-            shadow: Shadow::default(),
-            snap: false,
-        }
-    }
-}
-
 /// A collapsible section header (`sidebar::panel_header`): no fill at all,
 /// even under the cursor, since a hover box around a whole header row
 /// would outweigh the panel it heads. Hover only brightens the chevron;

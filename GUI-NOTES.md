@@ -3713,3 +3713,17 @@ sidebar's device chip is a button (`theme::chip_button`, ring on hover and
 while open, an honest `▾` again) opening the same popover: the device's
 settings are one click from the device. Verified in Xvfb: rest, hover,
 click opens the popover with both entry points lit.
+
+## 2026-10-21: one home for the device
+
+Follow-up to cont. 12. The device chip's `▾` read as "dropdown" while it
+opened a settings panel, and the top-bar field opening the same popover
+made two doors for one room. The sidebar's device card is now the one way
+in: name with a gear, state, then "48 kHz · Internal" (`rate_label`),
+the whole card a button with a tooltip, the popover opening level with it
+just off the sidebar's edge (`POPOVER_TOP` = `TOP_BAR_H`). The top bar
+keeps only Submix, which is about the view, not the device. With the
+panel folded, the rail shows a gear under the status dot that opens the
+same popover without unfolding. `theme::field_button` is gone. Verified
+in Xvfb: card, popover beside it, a rate change to 96000 shows on the
+card, the rail gear opens it folded.

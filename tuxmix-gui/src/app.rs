@@ -2836,7 +2836,9 @@ fn osc_log_panel(state: &TuxMix) -> Element<'_, Message> {
 
 /// Settings that have no per-channel strip to live on (clock, sample
 /// rate, pitch/width, the global protocol flags), as a popover card
-/// anchored under the top bar's Clock field, which opens it.
+/// beside the sidebar's device card, which opens it (or the folded rail's
+/// gear). It was opened from a top-bar field captioned "Clock" first,
+/// where nobody would look for the sample rate.
 ///
 /// It used to be a full-width drawer docked under the main view: a strip
 /// of loose rows pinned to the window's bottom-left corner, as far as the
@@ -3052,9 +3054,9 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                 .align_x(iced::Alignment::End)
                 .padding(iced::Padding {
                     top: POPOVER_TOP * scale,
-                    // Under the Clock field, which now ends at the
-                    // sidebar's edge rather than the window's.
-                    right: theme::SPACE_XXL * scale + sidebar_px(state),
+                    // Beside the device card that opens it, just off the
+                    // sidebar's edge.
+                    right: theme::SPACE_MD * scale + sidebar_px(state),
                     bottom: 0.0,
                     left: 0.0,
                 })
@@ -3085,8 +3087,8 @@ pub(crate) fn sidebar_px(state: &TuxMix) -> f32 {
 }
 
 /// Where the device popover's card starts, from the window top at scale 1:
-/// just under the top bar, which holds the Clock field.
-const POPOVER_TOP: f32 = theme::TOP_BAR_H - 2.0;
+/// level with the sidebar's device card, which opens it.
+const POPOVER_TOP: f32 = theme::TOP_BAR_H;
 
 /// A section label (HARDWARE INPUTS, SOFTWARE PLAYBACK, ...) with an accent
 /// tick and a rule trailing off to the right, instead of bare gray text that
@@ -3186,37 +3188,7 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
             .menu_style(theme::menu)
             .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
             .text_size(theme::TEXT_MD * scale),
-            iced::widget::Space::new().width(theme::SPACE_MD * scale),
-            // The way into the device settings, showing their two most
-            // looked-at values ("48 kHz · Internal") the way a DAW's
-            // transport does. It used to be a field captioned "Clock"
-            // showing the clock source only, so nothing said the sample
-            // rate, pitch or the global flags were behind it.
-            hint(
-                iced::widget::button(
-                    row![
-                        text("\u{2699}")
-                            .size(theme::TEXT_SM * scale)
-                            .color(theme::TEXT_SEC),
-                        text(format!(
-                            "{} \u{00b7} {}",
-                            rate_label(state.device.settings().sample_rate),
-                            state.device.settings().clock_source
-                        ))
-                        .size(theme::TEXT_MD * scale),
-                        text("\u{25BE}")
-                            .size(theme::TEXT_XS * scale)
-                            .color(theme::TEXT_SEC),
-                    ]
-                    .spacing(theme::SPACE_SM * scale)
-                    .align_y(iced::Alignment::Center),
-                )
-                .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
-                .style(theme::field_button(state.show_device_panel))
-                .on_press(Message::ToggleDevicePanel),
-                "Device settings: clock, sample rate, pitch, global options",
-                scale,
-            ),
+
     ]
     .spacing(theme::SPACE_SM * scale)
     .align_y(iced::Alignment::Center);

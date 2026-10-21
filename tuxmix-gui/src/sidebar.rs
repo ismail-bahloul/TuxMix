@@ -259,6 +259,18 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
         let rail = column![
             panel_toggle(false, scale),
             text("●").size(theme::TEXT_XS * scale).color(status_color),
+            // The device card is folded away with the panel; its settings
+            // stay one click off.
+            hint(
+                button(text("\u{2699}").size(theme::TEXT_SM * scale).center())
+                    .padding(0)
+                    .width(Length::Fixed(TOGGLE_W * scale))
+                    .height(Length::Fixed(TOGGLE_H * scale))
+                    .style(theme::ghost_button)
+                    .on_press(Message::ToggleDevicePanel),
+                "Device settings",
+                scale,
+            ),
         ]
         .spacing(theme::SPACE_LG * scale)
         // The toggle centered on the top bar's line, where it sits when
@@ -403,41 +415,54 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         .model_name()
         .strip_suffix(" (mock)")
         .unwrap_or(state.device.model_name());
-    // The device's own settings are one click from the device: the chip
-    // opens the same popover as the top bar's "48 kHz · Internal" field.
-    // The caret is honest now (it once decorated a chip nothing could
-    // click, and was removed for that).
-    button(
-        column![
-            row![
-                text("\u{25CF}")
+    let settings = state.device.settings();
+    // The device card is the one way into the device's settings: it says
+    // what the card is, what state it is in and how it is clocked, and a
+    // click on it opens Device settings beside it. The gear says
+    // "settings"; a caret said "dropdown", and the top bar's clock field
+    // opening the same popover made two doors for one room.
+    hint(
+        button(
+            column![
+                row![
+                    text("\u{25CF}")
+                        .size(theme::TEXT_XS * scale)
+                        .color(status_color),
+                    text(display_name)
+                        .size(theme::TEXT_MD * scale)
+                        .color(theme::TEXT_PRIMARY)
+                        .wrapping(iced::advanced::text::Wrapping::None),
+                    iced::widget::Space::new().width(Length::Fill),
+                    text("\u{2699}")
+                        .size(theme::TEXT_SM * scale)
+                        .color(theme::TEXT_SEC),
+                ]
+                .spacing(theme::SPACE_SM * scale)
+                .align_y(iced::Alignment::Center),
+                text(status_label)
                     .size(theme::TEXT_XS * scale)
                     .color(status_color),
-                text(display_name)
-                    .size(theme::TEXT_MD * scale)
-                    .color(theme::TEXT_PRIMARY)
-                    .wrapping(iced::advanced::text::Wrapping::None),
-                iced::widget::Space::new().width(Length::Fill),
-                text("\u{25BE}")
-                    .size(theme::TEXT_XS * scale)
-                    .color(theme::TEXT_SEC),
-            ]
-            .spacing(theme::SPACE_SM * scale)
-            .align_y(iced::Alignment::Center),
-            text(status_label)
+                text(format!(
+                    "{} \u{00b7} {}",
+                    crate::app::rate_label(settings.sample_rate),
+                    settings.clock_source
+                ))
                 .size(theme::TEXT_XS * scale)
-                .color(status_color),
-        ]
-        .spacing(theme::SPACE_HAIRLINE * scale),
+                .color(theme::TEXT_SEC)
+                .wrapping(iced::advanced::text::Wrapping::None),
+            ]
+            .spacing(theme::SPACE_HAIRLINE * scale),
+        )
+        .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+        .width(Length::Fill)
+        .style(theme::chip_button(state.show_device_panel))
+        .on_press(Message::ToggleDevicePanel)
+        // A narrow sidebar clips a long model name instead of letting it
+        // run past the card's border.
+        .clip(true),
+        "Device settings: clock, sample rate, pitch, global options",
+        scale,
     )
-    .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
-    .width(Length::Fill)
-    .style(theme::chip_button(state.show_device_panel))
-    .on_press(Message::ToggleDevicePanel)
-    // A narrow sidebar clips a long model name instead of letting it run
-    // past the chip's border.
-    .clip(true)
-    .into()
 }
 
 /// Real: pops/pushes `undo_stack`/`redo_stack` (see `Message::Undo`'s
