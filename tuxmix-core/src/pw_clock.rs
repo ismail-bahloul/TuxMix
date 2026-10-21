@@ -133,6 +133,17 @@ impl CardStream {
     }
 }
 
+/// The smallest period the kernel driver accepts, from its module
+/// parameter (`urb_frames_min`, 32 by default; the driver's period floor
+/// is one URB). `None` when the module is not loaded.
+pub fn driver_period_floor() -> Option<u32> {
+    std::fs::read_to_string("/sys/module/snd_usb_babyface_pro/parameters/urb_frames_min")
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 /// Parses a `hw_params` file. `None` for "closed" (the card is idle).
 pub fn parse_hw_params(text: &str) -> Option<CardStream> {
     let field = |name: &str| -> Option<u32> {

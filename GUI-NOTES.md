@@ -3796,3 +3796,14 @@ recorded `0` at once). A simulated session now changes its simulated
 clock only, never the remembered choice
 (`a_simulated_session_never_changes_the_remembered_engine_choice`); the
 Xvfb harness now clears its config dir on every start.
+
+## 2026-10-21 (cont. 3): 16 and 24 samples, when the driver can run them
+
+After real-time 10-minute soaks on the card (driver repo, KERNEL-DRIVER.md,
+2026-10-21: 24 and 16 frames clean with the module loaded
+`urb_frames_min=8 nurbs=16`; the default floor is 32; 8 still loses
+capture buffers), the buffer-size list offers 16 and 24 only when the
+driver's period floor allows them (`pw_clock::driver_period_floor`, the
+module's `urb_frames_min`, read at launch into `driver_floor`). With the
+stock module the list starts at 32 and the note under it says what 16
+and 24 need. 8 is never offered. The mock stands for the stock driver.

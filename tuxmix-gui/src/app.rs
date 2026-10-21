@@ -1062,6 +1062,10 @@ pub struct TuxMix {
     /// its rate and hardware period, which the sound server may pin
     /// regardless of the quantum. `None` while the card is idle.
     pub card_stream: Option<CardStream>,
+    /// The kernel driver's period floor (`urb_frames_min`), read at
+    /// launch: which buffer sizes the card can actually run. `None` when
+    /// unknown (no kernel driver), taken as the default 32.
+    pub driver_floor: Option<u32>,
 }
 
 /// The mock's stand-in for PipeWire's clock: PipeWire's stock defaults.
@@ -1300,6 +1304,8 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         engine_force_rate: 0,
         engine_force_quantum: 0,
         card_stream: None,
+        // The mock stands for the stock driver.
+        driver_floor: simulated.then_some(32),
     }
 }
 
@@ -1387,6 +1393,7 @@ pub fn restore_engine(state: &mut TuxMix) {
     }
     state.engine = pw_clock::read();
     state.card_stream = pw_clock::card_stream(CARD_ID);
+    state.driver_floor = pw_clock::driver_period_floor();
 }
 
 /// Writes the preferences if something changed (and a path is set).
@@ -3280,12 +3287,15 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
     // keeps the default visible next to the overrides.
     const RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
     // 48 and 96 are 1 and 2 ms at 48 kHz, whole USB packets; PipeWire takes
-    // quanta that are not powers of two. Nothing below 32: the driver's
-    // period floor is one URB, 32 frames unless the module is loaded with
-    // `urb_frames_min=16` (and at 16 the capture drops about one buffer
-    // every 7 s, see the driver's KERNEL-DRIVER.md), and PipeWire's own
-    // `clock.min-quantum` defaults to 32 as well.
-    const QUANTA: [u32; 9] = [32, 48, 64, 96, 128, 256, 512, 1024, 2048];
+    // quanta that are not powers of two. 16 and 24 only when the driver can
+    // run them: its period floor is one URB, `urb_frames_min` (32 unless
+    // the module is loaded lower). Measured 2026-10-21 (the driver's
+    // KERNEL-DRIVER.md): 10-minute real-time soaks at 16 and 24 ran clean
+    // once loaded with `urb_frames_min=8`; 8 still loses capture buffers,
+    // so it is never offered.
+    const ALL_QUANTA: [u32; 11] = [16, 24, 32, 48, 64, 96, 128, 256, 512, 1024, 2048];
+    let floor = state.driver_floor.unwrap_or(32);
+    let quanta: Vec<u32> = ALL_QUANTA.iter().copied().filter(|q| *q >= floor).collect();
     let rate_opts: Vec<String> = std::iter::once(format!("Auto ({})", rate_label(clock.rate)))
         .chain(RATES.iter().map(|r| rate_label(*r)))
         .collect();
@@ -3296,7 +3306,7 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
     };
     let quantum_opts: Vec<String> =
         std::iter::once(format!("Auto ({} samples)", clock.quantum))
-            .chain(QUANTA.iter().map(|q| format!("{q} samples")))
+            .chain(quanta.iter().map(|q| format!("{q} samples")))
             .collect();
     let quantum_sel = if clock.force_quantum == 0 {
         quantum_opts[0].clone()
@@ -3316,9 +3326,10 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
         Message::EngineRate(if idx == 0 { 0 } else { RATES[idx - 1] })
     }));
     let quantum_list = quantum_opts.clone();
+    let quanta_for_pick = quanta.clone();
     let quantum_pick = field(pick_list(quantum_opts, Some(quantum_sel), move |label| {
         let idx = quantum_list.iter().position(|l| *l == label).unwrap_or(0);
-        Message::EngineQuantum(if idx == 0 { 0 } else { QUANTA[idx - 1] })
+        Message::EngineQuantum(if idx == 0 { 0 } else { quanta_for_pick[idx - 1] })
     }));
 
     column![
@@ -3332,10 +3343,15 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
         row![caption("Latency"), latency_readout(state, clock)]
             .spacing(theme::SPACE_MD * scale)
             .align_y(iced::Alignment::Center),
-        text(
+        text(if floor > 16 {
             "System-wide: every app using PipeWire follows these until \
-             PipeWire restarts. TuxMix applies them again when it starts.",
-        )
+             PipeWire restarts. TuxMix applies them again when it starts. \
+             16 and 24 samples need the driver loaded with \
+             urb_frames_min=8 nurbs=16 (the setting they were tested with)."
+        } else {
+            "System-wide: every app using PipeWire follows these until \
+             PipeWire restarts. TuxMix applies them again when it starts."
+        })
         .color(Color {
             a: 0.7,
             ..theme::TEXT_SEC
