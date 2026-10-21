@@ -26,7 +26,11 @@ pub struct Prefs {
     pub sidebar_width: Option<f32>,
     /// Options, Snapshots, Groups, Mixer Layout, in that order.
     pub panels_open: Option<[bool; 4]>,
+    /// Superseded by `row_mode`; still read, so an older file keeps its
+    /// choice, and no longer written.
+    #[serde(skip_serializing)]
     pub two_row: Option<bool>,
+    pub row_mode: Option<crate::app::RowMode>,
     pub ui_scale: Option<f32>,
     /// User channel names, keyed by the strip they were typed on. A list
     /// of pairs rather than a map: JSON object keys must be strings, and
@@ -38,6 +42,8 @@ pub struct Prefs {
     /// The PipeWire rate / buffer size forced from the device settings
     /// (`0` = PipeWire's own), applied again at launch.
     pub engine_force_rate: Option<u32>,
+    /// Logical size of the window at the last close.
+    pub window_size: Option<(f32, f32)>,
     pub engine_force_quantum: Option<u32>,
 }
 
@@ -91,11 +97,13 @@ mod tests {
             sidebar_open: Some(false),
             sidebar_width: Some(260.0),
             panels_open: Some([true, false, true, false]),
-            two_row: Some(true),
+            two_row: None,
+            row_mode: Some(crate::app::RowMode::Two),
             ui_scale: Some(1.25),
             labels: vec![(ChannelId::Input(0), "Vocal".into())],
             show_original_names: true,
             engine_force_rate: Some(96_000),
+            window_size: Some((1600.0, 900.0)),
             engine_force_quantum: Some(128),
         };
         save(&file, &prefs).unwrap();

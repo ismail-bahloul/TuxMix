@@ -584,6 +584,8 @@ pub enum Message {
     /// `ui_scale` (changed only by the manual `Zoom*` / `WheelZoom`
     /// messages), so a window drag is pure scroll/clip.
     WindowResized(f32),
+    /// The window's full size, kept for the preferences (`window_size`).
+    WindowSize(f32, f32),
 
     /// Ctrl+wheel — zooms the UI in/out (see `zoom`). Ignored unless Ctrl
     /// is held (`TuxMix::modifiers`); plain wheel scrolls as normal.
@@ -755,10 +757,9 @@ pub enum Message {
     /// `sidebar::MIN_WIDTH`/`MAX_WIDTH` in `update`. UI-only: never
     /// pushed on `undo_stack`, never persisted.
     SidebarResize(f32),
-    /// The Options panel's mixer row count (TotalMix's "2 Row"): `true`
-    /// puts Hardware Inputs and Software Playback side by side above the
-    /// outputs, `false` stacks the three sections. UI-only.
-    SetTwoRow(bool),
+    /// The Options panel's mixer layout (TotalMix's "2 Row"), see
+    /// `RowMode`. UI-only.
+    SetRowMode(RowMode),
     /// Flips the hardware Dim (`RmeDevice::set_dim`), the same switch the
     /// front-panel DIM button toggles.
     DimToggle,
@@ -820,6 +821,20 @@ const CARD_ID: &str = "BabyfacePro";
 pub enum EditField {
     Rename,
     Db,
+}
+
+/// How the Mixer lays its three sections out. `Two` is TotalMix's "2 Row":
+/// Hardware Inputs and Software Playback side by side, outputs underneath.
+/// `Auto` (the default) takes two rows when the two blocks fit side by
+/// side and three otherwise: on a 1920 px window that shows the whole
+/// mixer without scrolling, where three rows used half the width and
+/// pushed the outputs below the fold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum RowMode {
+    #[default]
+    Auto,
+    Three,
+    Two,
 }
 
 /// The strip-rename field's widget id, so `RenameStart` can focus it.
@@ -906,6 +921,10 @@ pub struct TuxMix {
     /// skipping the scrollable entirely when content already fits —
     /// which needs the real window width tracked in state.
     pub window_width: f32,
+    /// The window's size, saved at close so the next launch opens the
+    /// same (`prefs::Prefs::window_size`). Not written on every resize
+    /// step: a drag would rewrite the file 20 times a second.
+    pub window_size: Option<(f32, f32)>,
     /// When the last resize was actually applied to `window_width`/
     /// `ui_scale` (`None` = never) — the resize coalescing throttle (see
     /// `RESIZE_THROTTLE`) compares against this so a stream of `Resized`
@@ -1012,8 +1031,8 @@ pub struct TuxMix {
     /// or stored: TotalMix flashes the slot ("As soon as the mixer state
     /// is changed the button starts flashing"), the sidebar marks it.
     pub snapshot_dirty: bool,
-    /// See `Message::SetTwoRow`.
-    pub two_row: bool,
+    /// See `RowMode`.
+    pub row_mode: RowMode,
     pub sidebar_panels_open: sidebar::PanelsOpen,
     /// Whether the whole right sidebar is expanded — distinct from
     /// `sidebar_panels_open`, which collapses individual panels *within*
@@ -1068,10 +1087,12 @@ pub struct TuxMix {
     pub driver_floor: Option<u32>,
 }
 
-/// The mock's stand-in for PipeWire's clock: PipeWire's stock defaults.
+/// The mock's stand-in for PipeWire's clock: what the real card runs with
+/// nothing forced, 48 kHz and the 256-sample default the WirePlumber rule
+/// requests (`node.latency`).
 const SIMULATED_ENGINE: PwClock = PwClock {
     rate: 48_000,
-    quantum: 1024,
+    quantum: 256,
     force_rate: 0,
     force_quantum: 0,
 };
@@ -1251,6 +1272,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         fullscreen: false,
         // Matches `window::Settings::size` in main.rs — updated for real
         // as soon as the first `Opened`/`Resized` event arrives.
+        window_size: None,
         window_width: 1280.0,
         last_resize_applied: None,
         pending_resize_width: None,
@@ -1287,7 +1309,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         last_cleared_solos: Vec::new(),
         last_cleared_mutes: Vec::new(),
         snapshot_dirty: false,
-        two_row: false,
+        row_mode: RowMode::Auto,
         sidebar_panels_open: sidebar::PanelsOpen::default(),
         sidebar_open: true,
         sidebar_width: sidebar::DEFAULT_WIDTH,
@@ -1321,10 +1343,12 @@ pub fn prefs_of(state: &TuxMix) -> crate::prefs::Prefs {
         sidebar_open: Some(state.sidebar_open),
         sidebar_width: Some(state.sidebar_width),
         panels_open: Some([p.options, p.snapshots, p.groups, p.layout]),
-        two_row: Some(state.two_row),
+        two_row: None,
+        row_mode: Some(state.row_mode),
         ui_scale: Some(state.ui_scale),
         labels,
         show_original_names: state.show_original_names,
+        window_size: state.window_size,
         engine_force_rate: Some(state.engine_force_rate),
         engine_force_quantum: Some(state.engine_force_quantum),
     }
@@ -1351,9 +1375,13 @@ pub fn apply_prefs(state: &mut TuxMix, prefs: crate::prefs::Prefs) {
             layout,
         };
     }
-    if let Some(two) = prefs.two_row {
-        state.two_row = two;
-    }
+    // `two_row` is the older boolean key: a saved `true` still means two
+    // rows; `false` was merely the old default, so it maps to `Auto`.
+    state.row_mode = match (prefs.row_mode, prefs.two_row) {
+        (Some(mode), _) => mode,
+        (None, Some(true)) => RowMode::Two,
+        _ => RowMode::Auto,
+    };
     if let Some(z) = prefs.ui_scale {
         state.ui_scale = z.clamp(theme::SCALE_MIN, theme::SCALE_MAX);
     }
@@ -1363,6 +1391,7 @@ pub fn apply_prefs(state: &mut TuxMix, prefs: crate::prefs::Prefs) {
         .filter(|(_, l)| !l.trim().is_empty())
         .collect();
     state.show_original_names = prefs.show_original_names;
+    state.window_size = prefs.window_size;
     state.engine_force_rate = prefs.engine_force_rate.unwrap_or(0);
     state.engine_force_quantum = prefs.engine_force_quantum.unwrap_or(0);
 }
@@ -1418,7 +1447,7 @@ fn changes_prefs(message: &Message) -> bool {
             | Message::ToggleSidebar
             | Message::SidebarResize(_)
             | Message::ToggleSidebarPanel(_)
-            | Message::SetTwoRow(_)
+            | Message::SetRowMode(_)
             | Message::WheelZoom(_)
             | Message::ZoomIn
             | Message::ZoomOut
@@ -1800,6 +1829,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::TabPressed
             | Message::EscapePressed
             | Message::WindowResized(_)
+            | Message::WindowSize(..)
             | Message::WheelZoom(_)
             | Message::ZoomIn
             | Message::ZoomOut
@@ -1828,7 +1858,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::ToggleSidebarPanel(_)
             | Message::ToggleSidebar
             | Message::SidebarResize(_)
-            | Message::SetTwoRow(_)
+            | Message::SetRowMode(_)
             | Message::DimToggle
             | Message::MatrixHover(..)
             | Message::PointerPressed
@@ -2047,6 +2077,8 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         // (see the 3 s auto-save in `Message::Tick`). The mock never
         // persists (same reasoning as the auto-save).
         Message::SaveNow => {
+            // Closing writes the window size, which no resize step does.
+            state.prefs_dirty = true;
             flush_prefs(state);
             if !state.device.is_mock() {
                 if let Some(their) = tuxmix_core::scene::auto_scene_written_by_other(
@@ -2095,6 +2127,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             close_route_flyout(state);
         }
         Message::ModifiersChanged(m) => state.modifiers = m,
+        Message::WindowSize(w, h) => {
+            state.window_size = Some((w, h));
+            return update(state, Message::WindowResized(w));
+        }
         Message::WindowResized(width) => {
             // Coalesce: a live window drag fires `Resized` faster than the
             // display can present. Stash the width and only rebuild/recompute
@@ -2522,7 +2558,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             state.sidebar_width =
                 (state.sidebar_width - dx).clamp(sidebar::MIN_WIDTH, sidebar::MAX_WIDTH);
         }
-        Message::SetTwoRow(on) => state.two_row = on,
+        Message::SetRowMode(mode) => state.row_mode = mode,
         Message::RenameStart(cid) => {
             // Opening another strip's name accepts the one being typed.
             if state.renaming.is_some_and(|open| open != cid) {
@@ -2814,11 +2850,11 @@ fn handle_global_event(
             Some(Message::WheelZoom(y))
         }
         iced::Event::Window(window::Event::Resized(size)) => {
-            Some(Message::WindowResized(size.width))
+            Some(Message::WindowSize(size.width, size.height))
         }
         iced::Event::Window(window::Event::CloseRequested) => Some(Message::SaveNow),
         iced::Event::Window(window::Event::Opened { size, .. }) => {
-            Some(Message::WindowResized(size.width))
+            Some(Message::WindowSize(size.width, size.height))
         }
         _ => None,
     }
@@ -4661,7 +4697,12 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
     // nothing changed.)
     let side_gap = theme::SPACE_XXL * scale;
     let side_by_side_width = input_width + side_gap + pb_width;
-    let sources: Element<'_, Message> = if state.two_row {
+    let two_rows = match state.row_mode {
+        RowMode::Two => true,
+        RowMode::Three => false,
+        RowMode::Auto => side_by_side_width <= available_width,
+    };
+    let sources: Element<'_, Message> = if two_rows {
         let side_by_side = row![
             column![
                 section_header("HARDWARE INPUTS", scale),
@@ -4961,7 +5002,7 @@ mod tests {
     use super::{
         any_channel_muted, any_channel_soloed, apply_pending_resize,
         apply_prefs, channel_is_muted, channel_is_soloed, is_undoable, new, prefs_of,
-        mute_armed, power_sum_output_meters, update, zoom, ChannelId, EditField, MeterAnim, Message, View, ZOOM_STEP,
+        mute_armed, power_sum_output_meters, update, zoom, ChannelId, EditField, MeterAnim, Message, RowMode, View, ZOOM_STEP,
     };
     use crate::sidebar;
     use crate::theme;
@@ -5715,7 +5756,7 @@ mod tests {
         state.view = View::Matrix;
         state.sidebar_open = false;
         state.sidebar_width = 300.0;
-        state.two_row = true;
+        state.row_mode = RowMode::Two;
         state.ui_scale = 1.25;
         state.sidebar_panels_open.groups = false;
         state.show_original_names = true;
@@ -5725,6 +5766,29 @@ mod tests {
         let mut fresh = new(true, None, None);
         apply_prefs(&mut fresh, saved.clone());
         assert_eq!(prefs_of(&fresh), saved);
+    }
+
+    #[test]
+    fn an_older_two_row_choice_survives_the_new_layout_setting() {
+        let mut state = new(true, None, None);
+        let old: crate::prefs::Prefs = serde_json::from_str(r#"{ "two_row": true }"#).unwrap();
+        apply_prefs(&mut state, old);
+        assert_eq!(state.row_mode, RowMode::Two);
+        let old: crate::prefs::Prefs = serde_json::from_str(r#"{ "two_row": false }"#).unwrap();
+        apply_prefs(&mut state, old);
+        assert_eq!(state.row_mode, RowMode::Auto, "false was only the old default");
+        assert!(!serde_json::to_string(&prefs_of(&state)).unwrap().contains("two_row"));
+    }
+
+    #[test]
+    fn the_window_size_is_kept_and_written_at_close() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::WindowSize(1500.0, 900.0));
+        assert_eq!(state.window_width, 1500.0, "the layout width follows");
+        assert!(!state.prefs_dirty, "a resize step does not rewrite the file");
+        assert_eq!(prefs_of(&state).window_size, Some((1500.0, 900.0)));
+        let _ = update(&mut state, Message::SaveNow);
+        assert!(!state.prefs_dirty, "flushed at close");
     }
 
     #[test]
@@ -5749,7 +5813,7 @@ mod tests {
         let mut state = new(true, None, None);
         let _ = update(&mut state, Message::Mute(ChannelId::Input(0), true));
         assert!(!state.prefs_dirty);
-        let _ = update(&mut state, Message::SetTwoRow(true));
+        let _ = update(&mut state, Message::SetRowMode(RowMode::Two));
         assert!(state.prefs_dirty);
         // No `prefs_path` in tests, so the flush writes nothing.
         let _ = update(&mut state, Message::Tick);
@@ -5868,7 +5932,7 @@ mod tests {
     fn the_mock_simulates_the_audio_engine() {
         let mut state = new(true, None, None);
         let e = state.engine.expect("the mock has a simulated engine");
-        assert_eq!((e.effective_rate(), e.effective_quantum()), (48_000, 1024));
+        assert_eq!((e.effective_rate(), e.effective_quantum()), (48_000, 256));
         let _ = update(&mut state, Message::EngineRate(96_000));
         let _ = update(&mut state, Message::EngineQuantum(128));
         let e = state.engine.unwrap();
@@ -5877,7 +5941,7 @@ mod tests {
         assert!(state.undo_stack.is_empty(), "not part of the mix");
         // Back to PipeWire's own values.
         let _ = update(&mut state, Message::EngineQuantum(0));
-        assert_eq!(state.engine.unwrap().effective_quantum(), 1024);
+        assert_eq!(state.engine.unwrap().effective_quantum(), 256);
     }
 
     #[test]

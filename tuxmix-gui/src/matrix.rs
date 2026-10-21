@@ -334,13 +334,17 @@ fn pair_gap(scale: f32) -> Element<'static, Message> {
     iced::widget::Space::new().width(PAIR_GAP * scale).into()
 }
 
-fn hairline() -> Element<'static, Message> {
-    container(iced::widget::Space::new().width(Length::Fill).height(1))
-        .style(|_theme: &iced::Theme| container::Style {
-            background: Some(iced::Background::Color(theme::BORDER)),
-            ..container::Style::default()
-        })
-        .into()
+fn hairline(width: f32) -> Element<'static, Message> {
+    container(
+        iced::widget::Space::new()
+            .width(Length::Fixed(width))
+            .height(1),
+    )
+    .style(|_theme: &iced::Theme| container::Style {
+        background: Some(iced::Background::Color(theme::BORDER)),
+        ..container::Style::default()
+    })
+    .into()
 }
 
 /// The hovered cell, spelled out for the view's caption:
@@ -532,13 +536,17 @@ fn grid_view(state: &TuxMix, size: iced::Size) -> Element<'_, Message> {
         header,
         body,
         iced::widget::Space::new().height(PAIR_GAP * scale),
-        hairline(),
+        hairline(grid_w),
         out_row,
         footer,
     ]
     .spacing(theme::SPACE_HAIRLINE);
+    // Sized to the grid, so the panel hugs it instead of running to the
+    // window's edge as an empty frame; it still scrolls sideways when the
+    // window is narrower than the grid.
     let sideways = scrollable(grid)
         .direction(scrollable::Direction::Horizontal(theme::thin_scrollbar()))
+        .width(Length::Shrink)
         .style(theme::scrollable);
     container(container(sideways).style(theme::panel).padding(pad))
         .width(Length::Fill)

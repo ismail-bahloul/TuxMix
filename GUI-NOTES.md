@@ -3854,3 +3854,26 @@ asking 128 -> 128; asking 64 -> 64 (the graph's driver node at quantum
 (TuxMix's picker) still overrides it. The picker's first entry is now
 plain "Auto": it used to show `clock.quantum`, which is no longer what
 the card runs; the latency line shows the real period.
+
+## 2026-10-21 (cont. 6): layout that uses the screen, and a remembered window
+
+- **Mixer rows: auto by default.** On a 1920 px window the three stacked
+  sections used half the width and pushed the outputs below the fold.
+  `RowMode` replaces the `two_row` switch: `Auto` (default) takes TotalMix's
+  2-row layout when inputs and playbacks fit side by side and 3 rows
+  otherwise; `Three`/`Two` force it. Options shows "mixer rows: auto | 3 |
+  2" (one word per cell: "3 rows"/"2 rows" wrapped in the 210 px column).
+  An older preferences file keeps its choice: `two_row: true` reads as
+  `Two`, `false` (just the old default) as `Auto`; `two_row` is read and no
+  longer written.
+- **Matrix panel hugs the grid** instead of running to the window's edge
+  as an empty frame (the sideways scrollable and the output hairline had
+  `Fill` widths); it still scrolls sideways in a narrow window.
+- **Window size is remembered.** Kept in `window_size` from `Resized`
+  (`Message::WindowSize`) and written at close only (`SaveNow`), so a drag
+  does not rewrite the file 20 times a second; `main` opens the window at
+  it, floored at the 960x600 minimum. Not exercised in Xvfb (no window
+  manager to send the close request); covered by
+  `the_window_size_is_kept_and_written_at_close`.
+- The mock's simulated clock defaults to 256 samples, what the real card
+  now runs with nothing forced.

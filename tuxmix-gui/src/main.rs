@@ -102,6 +102,10 @@ fn main() -> iced::Result {
     });
 
     let start_view = parse_view(&args);
+    let saved_size = prefs::path()
+        .and_then(|p| prefs::load(&p).window_size)
+        .map(|(w, h)| Size::new(w.max(960.0), h.max(600.0)))
+        .unwrap_or(Size::new(1280.0, 800.0));
     let start_fullscreen = args.iter().any(|a| a == "--fullscreen");
 
     iced::application(
@@ -129,7 +133,8 @@ fn main() -> iced::Result {
     .font(INTER_REGULAR)
     .default_font(Font::with_name("Inter"))
     .window(window::Settings {
-        size: Size::new(1280.0, 800.0),
+        // The size it had at the last close, floored at `min_size`.
+        size: saved_size,
         // Below this the top bar's tools and the sidebar no longer fit
         // beside a strip row, and the layout stops reading as one.
         min_size: Some(Size::new(960.0, 600.0)),

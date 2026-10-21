@@ -722,6 +722,26 @@ fn segmented_row<'a>(
     )
 }
 
+/// An N-way segmented switch in the shared track: `(label, lit, message)`
+/// per cell, `None` leaving a cell inert.
+fn segmented<'a>(cells: &[(&'a str, bool, Option<Message>)], scale: f32) -> Element<'a, Message> {
+    let mut r = row![].spacing(theme::SPACE_HAIRLINE * scale);
+    for (label, lit, msg) in cells {
+        r = r.push(
+            button(text(*label).size(theme::TEXT_XS * scale).center())
+                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+                .width(Length::Fill)
+                .style(theme::segment_cell(*lit))
+                .on_press_maybe(msg.clone()),
+        );
+    }
+    container(r)
+        .padding(theme::SPACE_TIGHT * scale)
+        .width(Length::Fill)
+        .style(theme::segment_track)
+        .into()
+}
+
 /// Wraps two switch cells in the shared `theme::segment_track`.
 fn segment_track<'a>(
     left: Element<'a, Message>,
@@ -835,7 +855,7 @@ fn store_row(
 }
 
 /// TotalMix's Options panel, cut to what this app can actually do. The
-/// mixer row count ("2 Row" in TotalMix, `Message::SetTwoRow`) and "names"
+/// mixer layout ("2 Row" in TotalMix, `Message::SetRowMode`) and "names"
 /// (TotalMix's "Show Names", `Message::SetShowOriginalNames`) are real.
 /// The rest of TotalMix's panel was dropped rather than shown as dead
 /// switches: "routing: free" (editing several submixes at once) and
@@ -858,14 +878,24 @@ fn options_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         .padding(indent(CONTENT_INDENT * scale))
         .width(Length::Fill);
 
+    use crate::app::RowMode;
     body = body.push(options_row(
-        Some("mixer"),
-        segmented_row(
-            "3 rows",
-            "2 rows",
-            !state.two_row,
-            Some(Message::SetTwoRow(false)),
-            Some(Message::SetTwoRow(true)),
+        // "rows" as the caption keeps the three cells one word each: in
+        // a 210 px column "3 rows" / "2 rows" wrapped onto two lines.
+        Some("mixer rows"),
+        segmented(
+            &[
+                ("auto", RowMode::Auto),
+                ("3", RowMode::Three),
+                ("2", RowMode::Two),
+            ]
+            .map(|(label, mode)| {
+                (
+                    label,
+                    state.row_mode == mode,
+                    Some(Message::SetRowMode(mode)),
+                )
+            }),
             scale,
         ),
         scale,
