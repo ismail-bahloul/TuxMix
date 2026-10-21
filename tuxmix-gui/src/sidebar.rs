@@ -467,6 +467,15 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
 /// kernel driver and no PipeWire there is no rate to report truthfully
 /// (the model's own field is a constant), so only the clock source shows.
 fn clock_line(state: &TuxMix, clock_source: &str) -> String {
+    // The card's own stream wins while it plays: its period is the card's
+    // real buffer, which the sound server may pin away from the quantum.
+    if let Some(card) = state.card_stream {
+        return format!(
+            "{} \u{00b7} {} smp \u{00b7} {clock_source}",
+            crate::app::rate_label(card.rate),
+            card.period
+        );
+    }
     match state.engine {
         Some(e) => format!(
             "{} \u{00b7} {} smp \u{00b7} {clock_source}",

@@ -108,6 +108,71 @@ fn set(key: &str, value: u32) -> Result<(), String> {
     }
 }
 
+/// What the card itself is running at, from the kernel's view of its open
+/// stream (`/proc/asound/<card>/pcm0p/sub0/hw_params`, else the capture
+/// side). This is the truth the graph clock cannot give: the sound server
+/// may open the card with its own fixed period (WirePlumber's
+/// `api.alsa.period-size`, IRQ mode), and then the card's latency does not
+/// follow the quantum at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CardStream {
+    pub rate: u32,
+    /// Frames per period: one hardware interrupt's worth.
+    pub period: u32,
+    /// Frames in the whole ring buffer.
+    pub buffer: u32,
+}
+
+impl CardStream {
+    /// One period's worth of time, in milliseconds.
+    pub fn period_ms(&self) -> f32 {
+        if self.rate == 0 {
+            return 0.0;
+        }
+        self.period as f32 * 1000.0 / self.rate as f32
+    }
+}
+
+/// Parses a `hw_params` file. `None` for "closed" (the card is idle).
+pub fn parse_hw_params(text: &str) -> Option<CardStream> {
+    let field = |name: &str| -> Option<u32> {
+        let line = text.lines().find(|l| l.starts_with(name))?;
+        line[name.len()..]
+            .trim_start_matches(':')
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    };
+    Some(CardStream {
+        rate: field("rate")?,
+        period: field("period_size")?,
+        buffer: field("buffer_size")?,
+    })
+}
+
+/// The open stream of the ALSA card whose `id` is `card_id`, playback
+/// first. `None` when no such card exists or it is idle.
+pub fn card_stream(card_id: &str) -> Option<CardStream> {
+    let cards = std::fs::read_dir("/proc/asound").ok()?;
+    for entry in cards.flatten() {
+        let dir = entry.path();
+        let is_card = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("card"));
+        let id = std::fs::read_to_string(dir.join("id")).unwrap_or_default();
+        if !is_card || id.trim() != card_id {
+            continue;
+        }
+        return ["pcm0p", "pcm0c"].iter().find_map(|pcm| {
+            let text = std::fs::read_to_string(dir.join(pcm).join("sub0/hw_params")).ok()?;
+            parse_hw_params(&text)
+        });
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +234,24 @@ update: id:0 key:'clock.force-rate' value:'0' type:''
         force_quantum(before.force_quantum).unwrap();
         force_rate(before.force_rate).unwrap();
         assert_eq!(read(), Some(before));
+    }
+
+    #[test]
+    fn parses_a_running_cards_hw_params() {
+        let text = "access: MMAP_INTERLEAVED\nformat: S32_LE\nsubformat: STD\n\
+                    channels: 12\nrate: 48000 (48000/1)\nperiod_size: 256\n\
+                    buffer_size: 512\n";
+        let s = parse_hw_params(text).unwrap();
+        assert_eq!(
+            s,
+            CardStream {
+                rate: 48_000,
+                period: 256,
+                buffer: 512
+            }
+        );
+        assert!((s.period_ms() - 5.333).abs() < 0.01);
+        assert_eq!(parse_hw_params("closed\n"), None);
     }
 
     #[test]

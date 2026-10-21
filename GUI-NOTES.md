@@ -3763,3 +3763,36 @@ the values already set), PipeWire left exactly as it was.
 
 Not done, and why: input sync/lock status (ADAT/SPDIF) is not exposed by
 the driver; it needs the status register decoded on the driver side first.
+
+## 2026-10-21 (cont. 2): the latency shown is the card's
+
+The buffer-size control set PipeWire's quantum and showed the quantum's
+latency, but with this project's own WirePlumber rule
+(`tools/alsa/wireplumber-rme.conf`: `api.alsa.disable-tsched = true`,
+`api.alsa.period-size = 256`) the card runs fixed 256-frame hardware
+periods whatever the quantum. Measured on the card while playing:
+`/proc/asound/card0/pcm0p/sub0/hw_params` = period 256 / buffer 512 with
+the graph at quantum 64. So the latency line now comes from the card's
+own open stream (`pw_clock::card_stream`, read with the clock every 3 s):
+"5.3 ms per period (256 samples at 48 kHz)", plus an amber note when the
+card's period differs from the quantum, saying the buffer size does not
+reach the card and why. Idle, it shows the quantum's latency and says the
+card's own period shows while audio plays. The device card prefers the
+card's stream too ("48 kHz · 256 smp"). Buffer sizes gain 48 and 96 (1
+and 2 ms at 48 kHz, whole USB packets); nothing below 32, the driver's
+default `urb_frames_min` and PipeWire's default `clock.min-quantum`
+(16 needs the module loaded with `urb_frames_min=16` and drops capture
+buffers, see the driver's KERNEL-DRIVER.md).
+
+Making the card actually follow the buffer size means changing that
+WirePlumber rule (it exists for an August crackle/STOP-START bug), which
+needs a listening test on the hardware: not done here.
+
+**Bug found while testing, fixed:** a buffer size picked in a `--mock`
+session was saved to the preferences and forced on the real PipeWire at
+the next real launch. It happened in this very test (a leftover test
+config replayed "128" onto the user's PipeWire for ~15 s; reverted to the
+recorded `0` at once). A simulated session now changes its simulated
+clock only, never the remembered choice
+(`a_simulated_session_never_changes_the_remembered_engine_choice`); the
+Xvfb harness now clears its config dir on every start.

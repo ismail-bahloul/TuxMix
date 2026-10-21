@@ -19,7 +19,7 @@ use tuxmix_core::{
 use crate::about;
 use crate::matrix;
 use crate::osc::{self, OscCommand, OscConfig, OscOutbound};
-use tuxmix_core::pw_clock::{self, PwClock};
+use tuxmix_core::pw_clock::{self, CardStream, PwClock};
 use tuxmix_core::pw_meter;
 use crate::scenes::{load_scene_file, save_scene_file};
 use crate::sidebar::{self, Group};
@@ -807,8 +807,13 @@ pub enum Message {
     EngineQuantum(u32),
     /// Periodic re-read of the PipeWire clock (another app may change it).
     EnginePoll,
-    EngineRead(Option<PwClock>),
+    /// The graph clock, and the card's own open stream (`None` = idle).
+    EngineRead(Option<PwClock>, Option<CardStream>),
 }
+
+/// The ALSA card id the kernel driver registers, for reading the card's
+/// own stream parameters (`pw_clock::card_stream`).
+const CARD_ID: &str = "BabyfacePro";
 
 /// The two inline text fields a strip can open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1053,6 +1058,10 @@ pub struct TuxMix {
     /// kept in the preferences and applied again at launch.
     pub engine_force_rate: u32,
     pub engine_force_quantum: u32,
+    /// What the card itself runs at while audio plays (kernel driver only):
+    /// its rate and hardware period, which the sound server may pin
+    /// regardless of the quantum. `None` while the card is idle.
+    pub card_stream: Option<CardStream>,
 }
 
 /// The mock's stand-in for PipeWire's clock: PipeWire's stock defaults.
@@ -1290,6 +1299,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         engine: simulated.then_some(SIMULATED_ENGINE),
         engine_force_rate: 0,
         engine_force_quantum: 0,
+        card_stream: None,
     }
 }
 
@@ -1358,10 +1368,8 @@ pub fn apply_prefs(state: &mut TuxMix, prefs: crate::prefs::Prefs) {
 /// other tool set. The mock applies them to its simulated clock only.
 pub fn restore_engine(state: &mut TuxMix) {
     if state.device.is_mock() {
-        if let Some(e) = state.engine.as_mut() {
-            e.force_rate = state.engine_force_rate;
-            e.force_quantum = state.engine_force_quantum;
-        }
+        // The simulated clock starts at its defaults: the remembered
+        // choices are the real PipeWire's.
         return;
     }
     if !state.device.rate_follows_sound_server() {
@@ -1378,6 +1386,7 @@ pub fn restore_engine(state: &mut TuxMix) {
         }
     }
     state.engine = pw_clock::read();
+    state.card_stream = pw_clock::card_stream(CARD_ID);
 }
 
 /// Writes the preferences if something changed (and a path is set).
@@ -1820,7 +1829,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::EngineRate(_)
             | Message::EngineQuantum(_)
             | Message::EnginePoll
-            | Message::EngineRead(_)
+            | Message::EngineRead(..)
             | Message::RenameStart(_)
             | Message::RenameChanged(_)
             | Message::RenameCommit
@@ -2534,7 +2543,12 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         }
         Message::SetShowOriginalNames(on) => state.show_original_names = on,
         Message::EngineRate(rate) => {
-            state.engine_force_rate = rate;
+            // A simulated session changes its simulated clock only, and
+            // never the remembered choice: that is applied to the real
+            // PipeWire at the next real launch.
+            if !state.device.is_mock() {
+                state.engine_force_rate = rate;
+            }
             if state.device.is_mock() {
                 if let Some(e) = state.engine.as_mut() {
                     e.force_rate = rate;
@@ -2547,7 +2561,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::EngineQuantum(quantum) => {
-            state.engine_force_quantum = quantum;
+            if !state.device.is_mock() {
+                state.engine_force_quantum = quantum;
+            }
             if state.device.is_mock() {
                 if let Some(e) = state.engine.as_mut() {
                     e.force_quantum = quantum;
@@ -2557,15 +2573,20 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                     log::warn!("Setting the PipeWire buffer size failed: {e}");
                 }
                 state.engine = pw_clock::read();
+                state.card_stream = pw_clock::card_stream(CARD_ID);
             }
         }
         Message::EnginePoll => {
             // Off the UI thread: a process spawn is ~10 ms.
-            return Task::perform(async { pw_clock::read() }, Message::EngineRead);
+            return Task::perform(
+                async { (pw_clock::read(), pw_clock::card_stream(CARD_ID)) },
+                |(clock, stream)| Message::EngineRead(clock, stream),
+            );
         }
-        Message::EngineRead(clock) => {
+        Message::EngineRead(clock, stream) => {
             if state.device.rate_follows_sound_server() {
                 state.engine = clock;
+                state.card_stream = stream;
             }
         }
         Message::PointerPressed => {
@@ -3258,7 +3279,13 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
     // "Auto" is PipeWire's own value (it may differ per graph); naming it
     // keeps the default visible next to the overrides.
     const RATES: [u32; 6] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000];
-    const QUANTA: [u32; 7] = [32, 64, 128, 256, 512, 1024, 2048];
+    // 48 and 96 are 1 and 2 ms at 48 kHz, whole USB packets; PipeWire takes
+    // quanta that are not powers of two. Nothing below 32: the driver's
+    // period floor is one URB, 32 frames unless the module is loaded with
+    // `urb_frames_min=16` (and at 16 the capture drops about one buffer
+    // every 7 s, see the driver's KERNEL-DRIVER.md), and PipeWire's own
+    // `clock.min-quantum` defaults to 32 as well.
+    const QUANTA: [u32; 9] = [32, 48, 64, 96, 128, 256, 512, 1024, 2048];
     let rate_opts: Vec<String> = std::iter::once(format!("Auto ({})", rate_label(clock.rate)))
         .chain(RATES.iter().map(|r| rate_label(*r)))
         .collect();
@@ -3302,18 +3329,9 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
         row![caption("Buffer size"), quantum_pick]
             .spacing(theme::SPACE_MD * scale)
             .align_y(iced::Alignment::Center),
-        row![
-            caption("Latency"),
-            text(format!(
-                "{:.1} ms per buffer at {}",
-                clock.latency_ms(),
-                rate_label(clock.effective_rate())
-            ))
-            .color(theme::TEXT_PRIMARY)
-            .size(theme::TEXT_XS * scale),
-        ]
-        .spacing(theme::SPACE_MD * scale)
-        .align_y(iced::Alignment::Center),
+        row![caption("Latency"), latency_readout(state, clock)]
+            .spacing(theme::SPACE_MD * scale)
+            .align_y(iced::Alignment::Center),
         text(
             "System-wide: every app using PipeWire follows these until \
              PipeWire restarts. TuxMix applies them again when it starts.",
@@ -3327,6 +3345,62 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
     .spacing(theme::SPACE_MD * scale)
     .width(Length::Fill)
     .into()
+}
+
+/// The latency line, from the card's own stream when it is playing: the
+/// quantum is only the graph's, and the sound server may open the card with
+/// a fixed hardware period of its own (WirePlumber's `api.alsa.period-size`
+/// in IRQ mode, which the project's own `wireplumber-rme.conf` sets). Then
+/// the buffer size above does not reach the card, and this says so instead
+/// of showing the quantum's latency as the card's.
+fn latency_readout(state: &TuxMix, clock: PwClock) -> Element<'_, Message> {
+    let scale = state.ui_scale;
+    let line = |s: String, c: Color| text(s).color(c).size(theme::TEXT_XS * scale);
+    match state.card_stream {
+        Some(card) => {
+            let mut col = column![line(
+                format!(
+                    "{:.1} ms per period ({} samples at {})",
+                    card.period_ms(),
+                    card.period,
+                    rate_label(card.rate)
+                ),
+                theme::TEXT_PRIMARY,
+            )]
+            .spacing(theme::SPACE_TIGHT * scale);
+            if card.period != clock.effective_quantum() {
+                col = col.push(line(
+                    format!(
+                        "The card runs fixed {}-sample periods set by the sound server \
+                         (WirePlumber's api.alsa.period-size), so the buffer size above \
+                         does not change its latency.",
+                        card.period
+                    ),
+                    theme::YSIM,
+                ));
+            }
+            col.into()
+        }
+        None if state.device.is_mock() => line(
+            format!(
+                "{:.1} ms per buffer at {}",
+                clock.latency_ms(),
+                rate_label(clock.effective_rate())
+            ),
+            theme::TEXT_PRIMARY,
+        )
+        .into(),
+        None => line(
+            format!(
+                "{:.1} ms per buffer at {} (the card is idle; its own period shows \
+                 while audio plays)",
+                clock.latency_ms(),
+                rate_label(clock.effective_rate())
+            ),
+            theme::TEXT_PRIMARY,
+        )
+        .into(),
+    }
 }
 
 /// Where the device popover's card starts, from the window top at scale 1:
@@ -5787,19 +5861,22 @@ mod tests {
     }
 
     #[test]
-    fn saved_engine_choices_come_back_at_launch() {
+    fn a_simulated_session_never_changes_the_remembered_engine_choice() {
+        // A choice made with `--mock` once landed in the preferences and
+        // was forced on the real PipeWire at the next real launch.
         let mut state = new(true, None, None);
         apply_prefs(
             &mut state,
             crate::prefs::Prefs {
-                engine_force_rate: Some(44_100),
-                engine_force_quantum: Some(256),
+                engine_force_quantum: Some(0),
                 ..Default::default()
             },
         );
         super::restore_engine(&mut state);
-        let e = state.engine.unwrap();
-        assert_eq!((e.effective_rate(), e.effective_quantum()), (44_100, 256));
+        let _ = update(&mut state, Message::EngineQuantum(128));
+        assert_eq!(state.engine.unwrap().effective_quantum(), 128, "simulated");
+        assert_eq!(state.engine_force_quantum, 0, "remembered choice untouched");
+        assert_eq!(prefs_of(&state).engine_force_quantum, Some(0));
     }
 
     #[test]
