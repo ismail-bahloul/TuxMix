@@ -3366,7 +3366,8 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
 /// The latency line, from the card's own stream when it is playing: the
 /// quantum is only the graph's, and the sound server may open the card with
 /// a fixed hardware period of its own (WirePlumber's `api.alsa.period-size`
-/// in IRQ mode, which the project's own `wireplumber-rme.conf` sets). Then
+/// in IRQ mode; `tools/alsa/wireplumber-rme.conf` pinned 256 until
+/// 2026-10-21 and no longer does, but a user rule still can). Then
 /// the buffer size above does not reach the card, and this says so instead
 /// of showing the quantum's latency as the card's.
 fn latency_readout(state: &TuxMix, clock: PwClock) -> Element<'_, Message> {
