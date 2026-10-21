@@ -89,3 +89,32 @@ Notes:
   plugin runs — the device has a single streaming session).
 - The ioplug buffer is bounded by the 1 s ring; latency ≈ the ALSA
   buffer size (ring/cadence tuning = the CC-beating latency goal).
+
+## Timing bench (PipeWire)
+
+`bench-pw-timing.sh` measures the kernel-driver path through PipeWire
+without listening: it plays silence and records at the same time, then
+reports the nodes' xrun counters (`pw-top ERR`) and the ALSA period and
+buffer the card really uses (`hw_params`).
+
+```bash
+# the installed rule, 60 s each at 256, 64 and 32 frames
+tools/alsa/bench-pw-timing.sh --quantum 256,64,32
+
+# 10-minute soak at 32 frames
+tools/alsa/bench-pw-timing.sh --quantum 32 --duration 600
+
+# timer-based scheduling (expected to be unstable: it can stop/start-loop)
+tools/alsa/bench-pw-timing.sh --variant tsched --quantum 64 --duration 60
+```
+
+`--variant tsched` edits the WirePlumber rule to set
+`api.alsa.disable-tsched = false`; the rule is backed up and restored
+byte-exact at exit and `clock.force-quantum` is reset. Exit status is 0
+only if every point was clean.
+
+Measurements of 2026-10-21 (commit "alsa: let the Babyface follow the
+PipeWire buffer"): the installed rule follows the quantum exactly
+(256/64/32, 3 periods) with 0 xrun, and a 10-minute soak at 32 was
+clean. Timer-based scheduling is unreliable: one run stop/start-looped at
+256/64/32, another was clean at 256 then looped at 64 and 32.

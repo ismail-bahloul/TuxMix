@@ -3819,10 +3819,13 @@ full-duplex per point at 48 kHz; xruns from `pw-top ERR`, period from
   quantum exactly (256->256, 64->64, 32->32 frames, 3 periods, buffer =
   3 x quantum), 0 xrun at 256/64/32, and 0 xrun over 10 min at 32
   (buffer 96 = 2.0 ms). That is the new rule.
-- Timer-based scheduling (`api.alsa.disable-tsched = false`) is still
-  broken: the card falls back to period 1024 / buffer 16384 whatever the
-  quantum and stop/start-loops (749 xruns in 8 s at 256, ~1490 at 64 and
-  32). The August crackle is NOT fixed in tsched mode.
+- Timer-based scheduling (`api.alsa.disable-tsched = false`) is
+  unreliable, not reproducibly broken: period 1024 / buffer 16384
+  whatever the quantum, with stop/start loops that can start after tens
+  of seconds. One run looped at 256/64/32 (749-1492 xruns in 8 s);
+  another was clean at 256 for 60 s, then looped at 64 (16k xruns) and at
+  32. A 60 s clean run proves nothing, so the August crackle is not
+  fixed for tsched mode.
 - "No timing props at all" is not tsched on this build: PipeWire already
   defaults `disable-tsched` to true, so it behaves like the new rule.
   Keeping the prop explicit in `tools/alsa/wireplumber-rme.conf` stops a
@@ -3834,3 +3837,7 @@ full-duplex per point at 48 kHz; xruns from `pw-top ERR`, period from
 With `clock.quantum` at its default 64 the card now runs 64 (1.33 ms)
 instead of the old pinned 256 (5.33 ms). The buffer picker reaches the
 card for the first time; 32 is validated end-to-end through PipeWire.
+
+The bench is reproducible with `tools/alsa/bench-pw-timing.sh`
+(variants current/pinned/tsched; the rule is backed up and restored
+byte-exact, `clock.force-quantum` is reset).
