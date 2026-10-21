@@ -3807,3 +3807,30 @@ driver's period floor allows them (`pw_clock::driver_period_floor`, the
 module's `urb_frames_min`, read at launch into `driver_floor`). With the
 stock module the list starts at 32 and the note under it says what 16
 and 24 need. 8 is never offered. The mock stands for the stock driver.
+
+## 2026-10-21 (cont. 4): the rule now lets the card follow the buffer
+
+Objective bench of the WirePlumber timing rule (60 s of silent 12-channel
+full-duplex per point at 48 kHz; xruns from `pw-top ERR`, period from
+`/proc/asound/card0/pcm0{,c}/sub0/hw_params`), then a 10-minute soak:
+
+- IRQ/polled scheduling (`api.alsa.disable-tsched = true`) with
+  `api.alsa.period-size`/`period-num` removed: the card follows the graph
+  quantum exactly (256->256, 64->64, 32->32 frames, 3 periods, buffer =
+  3 x quantum), 0 xrun at 256/64/32, and 0 xrun over 10 min at 32
+  (buffer 96 = 2.0 ms). That is the new rule.
+- Timer-based scheduling (`api.alsa.disable-tsched = false`) is still
+  broken: the card falls back to period 1024 / buffer 16384 whatever the
+  quantum and stop/start-loops (749 xruns in 8 s at 256, ~1490 at 64 and
+  32). The August crackle is NOT fixed in tsched mode.
+- "No timing props at all" is not tsched on this build: PipeWire already
+  defaults `disable-tsched` to true, so it behaves like the new rule.
+  Keeping the prop explicit in `tools/alsa/wireplumber-rme.conf` stops a
+  future default change from silently reactivating the bug.
+- The old comment claimed the period was floored at `frames_per_urb`;
+  the floor is `urb_frames_min` (32), proven by the 32-frame run. Fixed
+  in the rule's comments.
+
+With `clock.quantum` at its default 64 the card now runs 64 (1.33 ms)
+instead of the old pinned 256 (5.33 ms). The buffer picker reaches the
+card for the first time; 32 is validated end-to-end through PipeWire.
