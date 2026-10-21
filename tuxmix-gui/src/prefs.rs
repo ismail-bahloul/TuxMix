@@ -3,7 +3,7 @@
 //! `tuxmix_core::scene`). One JSON file in the XDG config directory
 //! (`$XDG_CONFIG_HOME/tuxmix/gui.json`, else `~/.config/tuxmix/gui.json`):
 //! the open view, the sidebar's state, the mixer row count, the zoom, and
-//! the user's channel names.
+//! the user's channel names, the PipeWire rate / buffer size forced here.
 //!
 //! Every field is optional on read (`#[serde(default)]`), so a file from
 //! an older build, or a hand-edited one missing keys, still loads and
@@ -35,6 +35,10 @@ pub struct Prefs {
     /// TotalMix's "Show Names": display the original names even where the
     /// user renamed a channel.
     pub show_original_names: bool,
+    /// The PipeWire rate / buffer size forced from the device settings
+    /// (`0` = PipeWire's own), applied again at launch.
+    pub engine_force_rate: Option<u32>,
+    pub engine_force_quantum: Option<u32>,
 }
 
 /// Where the preferences live. `None` only if neither `XDG_CONFIG_HOME`
@@ -91,6 +95,8 @@ mod tests {
             ui_scale: Some(1.25),
             labels: vec![(ChannelId::Input(0), "Vocal".into())],
             show_original_names: true,
+            engine_force_rate: Some(96_000),
+            engine_force_quantum: Some(128),
         };
         save(&file, &prefs).unwrap();
         assert_eq!(load(&file), prefs);

@@ -442,14 +442,10 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
                 text(status_label)
                     .size(theme::TEXT_XS * scale)
                     .color(status_color),
-                text(format!(
-                    "{} \u{00b7} {}",
-                    crate::app::rate_label(settings.sample_rate),
-                    settings.clock_source
-                ))
-                .size(theme::TEXT_XS * scale)
-                .color(theme::TEXT_SEC)
-                .wrapping(iced::advanced::text::Wrapping::None),
+                text(clock_line(state, &settings.clock_source))
+                    .size(theme::TEXT_XS * scale)
+                    .color(theme::TEXT_SEC)
+                    .wrapping(iced::advanced::text::Wrapping::None),
             ]
             .spacing(theme::SPACE_HAIRLINE * scale),
         )
@@ -463,6 +459,26 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         "Device settings: clock, sample rate, pitch, global options",
         scale,
     )
+}
+
+/// The device card's third line: what the card is running at. With the
+/// sound server in charge, that is PipeWire's rate and buffer ("48 kHz ·
+/// 64 smp · Internal"); the USB backend sets the rate itself. With the
+/// kernel driver and no PipeWire there is no rate to report truthfully
+/// (the model's own field is a constant), so only the clock source shows.
+fn clock_line(state: &TuxMix, clock_source: &str) -> String {
+    match state.engine {
+        Some(e) => format!(
+            "{} \u{00b7} {} smp \u{00b7} {clock_source}",
+            crate::app::rate_label(e.effective_rate()),
+            e.effective_quantum()
+        ),
+        None if state.device.rate_follows_sound_server() => clock_source.to_string(),
+        None => format!(
+            "{} \u{00b7} {clock_source}",
+            crate::app::rate_label(state.device.settings().sample_rate)
+        ),
+    }
 }
 
 /// Real: pops/pushes `undo_stack`/`redo_stack` (see `Message::Undo`'s

@@ -113,6 +113,7 @@ fn main() -> iced::Result {
                 app::apply_prefs(&mut state, prefs::load(&path));
                 state.prefs_path = Some(path);
             }
+            app::restore_engine(&mut state);
             if let Some(view) = start_view {
                 state.view = view;
             }

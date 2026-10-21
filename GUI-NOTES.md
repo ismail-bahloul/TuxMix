@@ -3727,3 +3727,39 @@ panel folded, the rail shows a gear under the status dot that opens the
 same popover without unfolding. `theme::field_button` is gone. Verified
 in Xvfb: card, popover beside it, a rate change to 96000 shows on the
 card, the rail gear opens it folded.
+
+## 2026-10-21 (cont.): sample rate and buffer size, from the sound server
+
+User asked about missing settings, buffer size first. Found on the way: on
+the kernel-driver backend the "Sample rate" list did nothing (the ALSA
+backend's `set_sample_rate` is the trait's no-op) and the "48 kHz" shown
+was the model's constant, not the card's rate. That is structural: with
+the kernel driver the sound server opens the card, so PipeWire's graph
+clock is what the hardware runs at, and the buffer size (the Windows ASIO
+setting) is PipeWire's quantum.
+
+`tuxmix_core::pw_clock` reads and forces them through `pw-metadata -n
+settings 0` (`clock.rate`/`clock.quantum`, overrides
+`clock.force-rate`/`clock.force-quantum`, `0` = none), no build
+dependency, like `pw_meter`'s `pw-record`. Device settings gains an
+"Audio engine · PipeWire" section: sample rate and buffer size pickers
+with "Auto (PipeWire's value)" first, the resulting latency per buffer,
+and a line saying it is system-wide and lasts until PipeWire restarts.
+The device card reads "48 kHz · 64 smp · Internal" from the live clock,
+re-read every 3 s off the UI thread (`EnginePoll`). Decided with the
+user: session-only overrides, re-applied at launch from the preferences
+(`engine_force_rate`/`engine_force_quantum`, `restore_engine`); a saved
+"Auto" is not re-sent, so launching never lifts another tool's override.
+
+Per backend: kernel driver -> PipeWire (above; with no PipeWire the
+section says so and the card shows the clock source only, since there is
+no true rate to show); USB backend -> keeps its own device sample-rate
+list in the Clock section (it streams the device itself); mock -> a
+simulated clock in memory, so `--mock` and the tests never touch the real
+PipeWire. Verified: simulated section and card in Xvfb (128 samples ->
+2.7 ms, card "48 kHz · 128 smp"); the live path with the ignored test
+`pw_clock::live_read_and_neutral_write` (reads the real clock, writes back
+the values already set), PipeWire left exactly as it was.
+
+Not done, and why: input sync/lock status (ADAT/SPDIF) is not exposed by
+the driver; it needs the status register decoded on the driver side first.
