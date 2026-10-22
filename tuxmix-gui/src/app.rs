@@ -4820,8 +4820,21 @@ fn quick_channel_options(state: &TuxMix) -> Vec<(ChannelId, String)> {
 /// the room the zoom had just taken away.
 ///
 /// 1.8 rather than 2 so the whole group still fits, centered, in the default
-/// 1280x800 window at 100%.
+/// 1280x800 window at 100%. That is now the floor: a taller window grows
+/// the strips up to `QUICK_SCALE_MAX` (see `quick_fit`), where at 1080p a
+/// fixed 1.8 left the bottom half of the view empty.
 const QUICK_SCALE_MULT: f32 = 1.8;
+/// The largest the Quick strips grow on a tall window.
+const QUICK_SCALE_MAX: f32 = 3.0;
+
+/// The strip multiple that fills `height` (the view's height at zoom 1),
+/// between `QUICK_SCALE_MULT` and `QUICK_SCALE_MAX`. Measured at zoom 1
+/// and then multiplied by the zoom, so the zoom keeps growing the strips
+/// (and the view scrolls once they no longer fit) instead of being
+/// cancelled by a fit that hands back the room it took.
+fn quick_fit(height: f32) -> f32 {
+    ((height - QUICK_CHROME) / QUICK_STRIP_UNIT).clamp(QUICK_SCALE_MULT, QUICK_SCALE_MAX)
+}
 
 /// The Quick content's height at `scale` 1, split between the part that does
 /// not grow with the strips (the header, the picker, the captions) and the
@@ -4846,7 +4859,6 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
     let quick_channel = state.quick_channel;
     let sel_out = state.sel_out;
     let dest_cid = ChannelId::Output(sel_out * 2);
-    let big_scale = scale * QUICK_SCALE_MULT;
 
     // Rebuilt on every layout pass: the content sits behind a `responsive`
     // (the centered form needs the available size, which a `Length::Fill`
@@ -4863,7 +4875,7 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
         })
         .collect();
 
-    let build_content = move || -> Element<'_, Message> {
+    let build_content = move |big_scale: f32| -> Element<'_, Message> {
         let labels_for_pick = labels.clone();
         let cids = cids.clone();
         let strip_w = strip::STRIP_W * big_scale;
@@ -4973,15 +4985,16 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
     // of `scale`, so it grows with the zoom the same way the content it
     // measures does.
     let content = responsive(move |size| {
-        let needed = (QUICK_CHROME + QUICK_STRIP_UNIT * QUICK_SCALE_MULT) * scale;
+        let fit = quick_fit(size.height);
+        let needed = (QUICK_CHROME + QUICK_STRIP_UNIT * fit) * scale;
         if size.height >= needed {
-            container(build_content())
+            container(build_content(scale * fit))
                 .center_x(Length::Fill)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into()
         } else {
-            scrollable(build_content())
+            scrollable(build_content(scale * fit))
                 .direction(scrollable::Direction::Vertical(theme::thin_scrollbar()))
                 .width(Length::Fill)
                 .style(theme::scrollable)
@@ -5967,6 +5980,15 @@ mod tests {
         assert_eq!(state.engine.unwrap().effective_quantum(), 128, "simulated");
         assert_eq!(state.engine_force_quantum, 0, "remembered choice untouched");
         assert_eq!(prefs_of(&state).engine_force_quantum, Some(0));
+    }
+
+    #[test]
+    fn quick_strips_fill_a_tall_view_within_bounds() {
+        use super::{quick_fit, QUICK_SCALE_MAX, QUICK_SCALE_MULT};
+        assert_eq!(quick_fit(500.0), QUICK_SCALE_MULT, "a short view keeps the floor");
+        assert_eq!(quick_fit(5000.0), QUICK_SCALE_MAX, "a huge one stops at the cap");
+        let f = quick_fit(1000.0);
+        assert!(f > QUICK_SCALE_MULT && f < QUICK_SCALE_MAX, "1080p grows: {f}");
     }
 
     #[test]

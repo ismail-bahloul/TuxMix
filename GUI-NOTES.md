@@ -3907,3 +3907,10 @@ change reverted).
   Compliant mode (the split is an RME-protocol register).
   `Message::StereoSplitChanged` and `StripParams::has_split`/`split` went
   with it.
+
+**Quick view fills the height.** The two Quick strips were a fixed 1.8x,
+which left the bottom half of the view empty at 1080p. They now grow to
+fill the view's height (`quick_fit`), between 1.8x (the old size, which
+still fits 1280x800) and 3x; measured at zoom 1 and multiplied by the
+zoom, so Ctrl+zoom still grows them and the view scrolls once they no
+longer fit. Checked at 1920x1080 and 1280x800.
