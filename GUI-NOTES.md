@@ -3914,3 +3914,30 @@ fill the view's height (`quick_fit`), between 1.8x (the old size, which
 still fits 1280x800) and 3x; measured at zoom 1 and multiplied by the
 zoom, so Ctrl+zoom still grows them and the view scrolls once they no
 longer fit. Checked at 1920x1080 and 1280x800.
+
+## 2026-10-22 (cont.): the TUI catches up on readability
+
+Looked at the TUI in a virtual terminal (`tmux`, `--mock`). A strip was one
+text line that ran into its neighbor ("0dB +4dBAS1/2"), the fader was not
+drawn at all (the mixer is keyboard-driven, but a level you cannot see is
+a level you cannot trust), the meter was a one-line percentage gauge, the
+footer printed `IN:IN:0` and every key for every section, and the top bar
+listed all keys on one overflowing line.
+
+- **Strips are blocks** (`render_strips`, `StripView`): name (cut with an
+  ellipsis, never into the next cell) and type tag, a vertical fader and
+  a vertical meter side by side, the level and pan, then badges that wrap
+  (M blue, S amber, 48V, PAD, Ø, gain, sensitivity, SPLIT, LOOP, CUE).
+  The selected strip gets a background and a `▸`. The fader and meter use
+  the GUI's tapered -60..+6 dB law (`taper`), so a level sits at the same
+  height in both interfaces; the meter is green to -12 dB, amber to -3,
+  red above, dashed when the backend has no reading.
+- **The footer shows what the focused section can do** ("Playback 0 │
+  +/-:level ... m:mute s:solo ,/.:pan n:split t:stereo │ arrows:move
+  Tab:matrix q:quit"), and the RME-protocol keys only when they work; the
+  top bar keeps the device-wide keys.
+- **No solo on outputs** here either: the key is ignored on the outputs
+  section and no S badge is drawn (neither hardware backend has one).
+
+Not done in the TUI: custom channel names and the saved window layout
+(GUI-only preferences today), and the audio-engine (PipeWire) readout.

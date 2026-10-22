@@ -30,7 +30,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph},
+    widgets::{Block, Borders, Paragraph, Widget},
     Frame, Terminal,
 };
 use std::io::{self, Stdout};
@@ -862,7 +862,10 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                                 set_channel_mute(dev, cid, !m);
                             }
                         }
-                        KeyCode::Char('s') => {
+                        KeyCode::Char('s') if section != 2 => {
+                            // No solo on outputs: neither hardware backend
+                            // has one (TotalMix neither), so it would only
+                            // toggle a flag in the simulation.
                             let cid = selected_channel_id(dev, section, channel);
                             if let Ok(s) = dev.solo(cid) {
                                 set_channel_solo(dev, cid, !s);
@@ -1186,9 +1189,9 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
 /// neither, and a class-compliant card is only ever reached over ALSA.
 fn top_hints(protocol_features: bool) -> &'static str {
     if protocol_features {
-        "  q:quit Tab:toggle e:EQ(AN1-4) o:submix y/h:pitch r:rate u/j:width x:ms a:an1>2 k:link f:eqrec w:spdifout c:cue(out) l:loop"
+        "  o:submix  r:rate  y/h:pitch  u/j:width  x:MS  a:AN1>2  k:input link  f:EQ rec  w:SPDIF out"
     } else {
-        "  q:quit Tab:toggle o:submix r:rate"
+        "  o:submix  r:rate"
     }
 }
 
@@ -1309,36 +1312,46 @@ fn ui(
                     PairItem::Single(c) => (c, dev.inputs()[c].name.clone()),
                 };
                 let ch = &dev.inputs()[ch_idx];
-                let m = in_meters.get(ch_idx).copied().unwrap_or(0.0);
-                let mut label =
-                    format!("{} [{:?}] {}", name, ch.channel_type, db_text(ch.volumes[sel_out]));
+                let mut badges = Vec::new();
                 if ch.mute {
-                    label.push_str(" [M]");
+                    badges.push(("M".to_string(), MUTE_COLOR));
                 }
                 if ch.solo {
-                    label.push_str(" [S]");
+                    badges.push(("S".to_string(), SOLO_COLOR));
                 }
                 if ch.phantom {
-                    label.push_str(" 48V");
+                    badges.push(("48V".to_string(), BADGE_COLOR));
                 }
                 if ch.pad {
-                    label.push_str(" PAD");
+                    badges.push(("PAD".to_string(), BADGE_COLOR));
+                }
+                if ch.phase {
+                    badges.push(("\u{00D8}".to_string(), BADGE_COLOR));
                 }
                 if let Some(gain) = ch.gain {
                     // Gain is tracked in dB (0-65) like TotalMix.
-                    label.push_str(&format!(" {:.0}dB", gain));
+                    badges.push((format!("{gain:.0}dB"), Color::Gray));
                 }
                 if let Some(sens) = ch.sensitivity {
-                    label.push_str(match sens {
-                        tuxmix_core::Sensitivity::Plus4dBu => " +4dBu",
-                        tuxmix_core::Sensitivity::Minus10dBV => " -10dBV",
-                    });
+                    badges.push((
+                        match sens {
+                            tuxmix_core::Sensitivity::Plus4dBu => "+4dBu",
+                            tuxmix_core::Sensitivity::Minus10dBV => "-10dBV",
+                        }
+                        .to_string(),
+                        Color::Gray,
+                    ));
                 }
-                if ch.phase {
-                    label.push_str(" [Ø]");
+                StripView {
+                    name,
+                    tag: Some(format!("{:?}", ch.channel_type)),
+                    vol: ch.volumes[sel_out],
+                    level: db_text(ch.volumes[sel_out]),
+                    pan: Some(pan_text(ch.pans[sel_out])),
+                    badges,
+                    meter: in_meters.get(ch_idx).copied().unwrap_or(0.0),
+                    meter_available: dev.has_input_meter(ch_idx),
                 }
-                label.push_str(&format!(" {}", pan_text(ch.pans[sel_out])));
-                (label, m, dev.has_input_meter(ch_idx))
             },
         );
         let pb_items = playback_items(dev);
@@ -1363,19 +1376,26 @@ fn ui(
                     PairItem::Single(c) => (c, dev.playbacks()[c].name.clone()),
                 };
                 let ch = &dev.playbacks()[ch_idx];
-                let m = pb_meters.get(ch_idx).copied().unwrap_or(0.0);
-                let mut label = format!("{} {}", name, db_text(ch.volumes[sel_out]));
+                let mut badges = Vec::new();
                 if ch.mute {
-                    label.push_str(" [M]");
+                    badges.push(("M".to_string(), MUTE_COLOR));
                 }
                 if ch.solo {
-                    label.push_str(" [S]");
+                    badges.push(("S".to_string(), SOLO_COLOR));
                 }
                 if ch.split {
-                    label.push_str(" [SPLIT]");
+                    badges.push(("SPLIT".to_string(), BADGE_COLOR));
                 }
-                label.push_str(&format!(" {}", pan_text(ch.pans[sel_out])));
-                (label, m, playback_meter_available(dev, pb_channels, ch_idx))
+                StripView {
+                    name,
+                    tag: Some("PB".to_string()),
+                    vol: ch.volumes[sel_out],
+                    level: db_text(ch.volumes[sel_out]),
+                    pan: Some(pan_text(ch.pans[sel_out])),
+                    badges,
+                    meter: pb_meters.get(ch_idx).copied().unwrap_or(0.0),
+                    meter_available: playback_meter_available(dev, pb_channels, ch_idx),
+                }
             },
         );
         let out_items = output_items(dev);
@@ -1400,24 +1420,29 @@ fn ui(
                     PairItem::Single(c) => (c, dev.outputs()[c].name.clone()),
                 };
                 let ch = &dev.outputs()[ch_idx];
-                let mut label = format!("{} {}", name, db_text(ch.volume));
+                // No solo badge: neither hardware backend has an output
+                // solo (see the GUI notes), so one would only ever light in
+                // the simulation.
+                let mut badges = Vec::new();
                 if ch.mute {
-                    label.push_str(" [M]");
-                }
-                if ch.solo {
-                    label.push_str(" [S]");
+                    badges.push(("M".to_string(), MUTE_COLOR));
                 }
                 if ch.loopback {
-                    label.push_str(" [LOOP]");
+                    badges.push(("LOOP".to_string(), BADGE_COLOR));
                 }
                 if ch.cue {
-                    label.push_str(" [CUE]");
+                    badges.push(("CUE".to_string(), BADGE_COLOR));
                 }
-                (
-                    label,
-                    out_meters.get(ch_idx).copied().unwrap_or(0.0),
-                    output_meter_available(dev, pb_channels, ch_idx),
-                )
+                StripView {
+                    name,
+                    tag: Some("OUT".to_string()),
+                    vol: ch.volume,
+                    level: db_text(ch.volume),
+                    pan: None,
+                    badges,
+                    meter: out_meters.get(ch_idx).copied().unwrap_or(0.0),
+                    meter_available: output_meter_available(dev, pb_channels, ch_idx),
+                }
             },
         );
     }
@@ -1426,26 +1451,43 @@ fn ui(
     } else if show_matrix {
         "Tab: return to mixer".into()
     } else {
+        // Only the keys of the focused section, and of what the connection
+        // can do: the keys that drive RME's own protocol are listed only
+        // when they work (the class-compliant personality says what is
+        // missing instead of advertising it).
+        let proto = dev.protocol_features();
+        let (section_name, keys) = match sel_sec {
+            0 => (
+                "Input",
+                if proto {
+                    "m:mute s:solo ,/.:pan p:48V P:pad [/]:gain v:sens i:phase e:eq t:stereo"
+                } else {
+                    "m:mute s:solo ,/.:pan p:48V P:pad [/]:gain v:sens t:stereo"
+                },
+            ),
+            1 => (
+                "Playback",
+                if proto {
+                    "m:mute s:solo ,/.:pan n:split t:stereo"
+                } else {
+                    "m:mute s:solo ,/.:pan t:stereo"
+                },
+            ),
+            _ => (
+                "Output",
+                if proto {
+                    "m:mute l:loop c:cue t:stereo"
+                } else {
+                    "m:mute c:cue t:stereo"
+                },
+            ),
+        };
         format!(
-            // The keys that drive RME's own protocol are only listed when
-            // they can do something: on the class-compliant personality the
-            // footer says what is missing instead of advertising it.
-            "IN:{}:{}  +/-:vol  PgUp/PgDn:0.1dB  ,/.:pan  m:mute  s:solo  p:48V  P:pad  [/] or g/d:gain  v:sens{}  c:cue(OUT){}  t:stereo  arrows:navigate  q:quit",
-            match sel_sec {
-                0 => "IN",
-                1 => "PB",
-                _ => "OUT",
-            },
-            sel_chan,
-            if dev.protocol_features() {
-                "  i:phase(IN)  l:loop(OUT)  n:split(PB)  e:eq(IN)"
-            } else {
-                ""
-            },
-            if dev.protocol_features() {
+            "{section_name} {sel_chan}  \u{2502}  +/-:level PgUp/PgDn:0.1dB  {keys}  \u{2502}  arrows:move Tab:matrix q:quit{}",
+            if proto {
                 ""
             } else {
-                "  no RME-protocol features here: class compliant mode"
+                "  \u{2502}  class compliant: no RME-protocol features"
             },
         )
     };
@@ -1455,6 +1497,50 @@ fn ui(
     );
 }
 
+/// What one strip cell shows. Built per channel by the section's closure,
+/// drawn by `render_strips`.
+struct StripView {
+    name: String,
+    /// Channel-type tag next to the name ("Mic", "ADAT"...), if any.
+    tag: Option<String>,
+    /// Fader position as linear volume (0..2), drawn on the vertical fader.
+    vol: f32,
+    level: String,
+    pan: Option<String>,
+    /// Badges under the level: (label, color) when lit.
+    badges: Vec<(String, Color)>,
+    meter: f32,
+    meter_available: bool,
+}
+
+const MUTE_COLOR: Color = Color::Rgb(0x3d, 0x9d, 0xf6);
+const SOLO_COLOR: Color = Color::Rgb(0xf0, 0xb4, 0x29);
+const BADGE_COLOR: Color = Color::Rgb(0xf2, 0xf3, 0xf5);
+const SEL_BG: Color = Color::Rgb(0x26, 0x27, 0x2b);
+
+/// A linear amplitude (1.0 = 0 dB) as a 0..1 position on the console's
+/// tapered scale, the same law the GUI's faders and meters use (-60..+6 dB,
+/// exponent 0.6), so a level sits at the same height in both interfaces.
+fn taper(amp: f32) -> f32 {
+    if amp <= 0.0 {
+        return 0.0;
+    }
+    let db = (20.0 * amp.log10()).clamp(-60.0, 6.0);
+    let x = ((db - 6.0) / (-60.0 - 6.0)).clamp(0.0, 1.0);
+    (1.0 - x.powf(0.6)).clamp(0.0, 1.0)
+}
+
+/// Cuts `text` to `width` columns, ending with an ellipsis when it was cut.
+fn fit(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let keep = width.saturating_sub(1);
+    let mut out: String = text.chars().take(keep).collect();
+    out.push('\u{2026}');
+    out
+}
+
 fn render_strips(
     f: &mut Frame,
     title: &str,
@@ -1462,78 +1548,147 @@ fn render_strips(
     count: usize,
     is_focused: bool,
     selected: usize,
-    label_fn: impl Fn(usize) -> (String, f32, bool),
+    view_fn: impl Fn(usize) -> StripView,
 ) {
     let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
+    if count == 0 || inner.width == 0 || inner.height < 3 {
+        return;
+    }
     let cols = count.min(6) as u16;
     let rows = ((count as u16) + cols - 1) / cols;
     let row_h = (inner.height / rows.max(1)).max(3);
     for i in 0..count {
-        let (label, meter, meter_available) = label_fn(i);
+        let v = view_fn(i);
         let col = i as u16 % cols;
         let row = i as u16 / cols;
         let w = inner.width / cols;
-        let ch_area = Rect::new(
+        let cell = Rect::new(
             inner.left() + col * w,
             inner.top() + row * row_h,
-            w,
-            row_h - 1,
+            w.saturating_sub(1),
+            row_h.saturating_sub(1),
         );
+        if cell.width < 8 || cell.height < 2 {
+            continue;
+        }
         let is_sel = is_focused && i == selected;
-        let mut style = Style::default();
-        if is_sel {
-            style = style
-                .bg(Color::Rgb(0x2a, 0x6a, 0x88))
-                .add_modifier(Modifier::BOLD);
+        let base = if is_sel {
+            Style::default().bg(SEL_BG)
+        } else {
+            Style::default()
+        };
+        f.render_widget(Block::default().style(base), cell);
+
+        // Name line: bold, the type tag dimmed, cut to the cell.
+        let tag_w = v.tag.as_ref().map_or(0, |t| t.chars().count() + 1);
+        let name = fit(&v.name, (cell.width as usize).saturating_sub(tag_w + 2));
+        let mut spans = vec![
+            Span::styled(
+                if is_sel { "\u{25B8} " } else { "  " },
+                base.fg(BADGE_COLOR),
+            ),
+            Span::styled(name, base.add_modifier(Modifier::BOLD)),
+        ];
+        if let Some(tag) = &v.tag {
+            spans.push(Span::styled(
+                format!(" {tag}"),
+                base.fg(Color::DarkGray),
+            ));
         }
         f.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
-                if is_sel {
-                    format!("> {} <", label)
-                } else {
-                    label
-                },
-                style,
-            )])),
-            ch_area,
+            Paragraph::new(Line::from(spans)),
+            Rect::new(cell.x, cell.y, cell.width, 1),
         );
-        // Always draw the meter track (TotalMix-style); label only when
-        // there is signal, so empty strips still show their meter.
-        let ma = Rect::new(
-            ch_area.left(),
-            ch_area.bottom().saturating_sub(2),
-            ch_area.width.min(20),
-            1,
-        );
-        // `meter_available` is a per-session backend capability, not a
-        // per-frame reading (see `DeviceHandle::has_input_meter`/
-        // `has_playback_meters`) — a flat 0% gauge would claim "silence"
-        // where the real state is "not measured on this backend", so an
-        // unavailable meter renders as a dim dashed track instead.
-        let gauge = if meter_available {
-            let c = if meter < 0.6 {
+
+        // Vertical fader and meter side by side, left of the readouts.
+        let bar_top = cell.y + 1;
+        let bar_h = cell.height.saturating_sub(1);
+        if bar_h == 0 {
+            continue;
+        }
+        let fader_x = cell.x + 2;
+        let meter_x = cell.x + 4;
+        let fader_fill = (taper(v.vol) * bar_h as f32).round() as u16;
+        let meter_fill = (taper(v.meter) * bar_h as f32).round() as u16;
+        let buf = f.buffer_mut();
+        for k in 0..bar_h {
+            let y = bar_top + bar_h - 1 - k; // k = 0 is the bottom cell
+            // Fader: a thin track, filled up to the cap.
+            let on = k < fader_fill;
+            buf.set_string(
+                fader_x,
+                y,
+                if k + 1 == fader_fill { "\u{2501}" } else if on { "\u{2503}" } else { "\u{2502}" },
+                base.fg(if on { BADGE_COLOR } else { Color::DarkGray }),
+            );
+            // Meter: green below -12 dB, amber to -3, red above; dashed
+            // and dim when the backend has no reading at all.
+            if !v.meter_available {
+                buf.set_string(meter_x, y, if k % 2 == 0 { "\u{2504}" } else { " " }, base.fg(Color::DarkGray));
+                continue;
+            }
+            let frac = (k as f32 + 0.5) / bar_h as f32;
+            let color = if frac < taper(0.25) {
                 Color::Green
-            } else if meter < 0.85 {
+            } else if frac < taper(0.7) {
                 Color::Yellow
             } else {
                 Color::Red
             };
-            let mut gauge = Gauge::default()
-                .gauge_style(Style::default().fg(c))
-                .percent((meter * 100.0) as u16);
-            if meter > 0.0 {
-                gauge = gauge.label(format!("{:.0}%", meter * 100.0));
+            if k < meter_fill {
+                buf.set_string(meter_x, y, "\u{2588}", base.fg(color));
+            } else {
+                buf.set_string(meter_x, y, "\u{2591}", base.fg(Color::Rgb(0x30, 0x31, 0x36)));
             }
-            gauge
-        } else {
-            Gauge::default()
-                .gauge_style(Style::default().fg(Color::DarkGray))
-                .percent(0)
-                .label("n/a")
+        }
+
+        // Readouts to the right of the bars.
+        let text_x = cell.x + 7;
+        if text_x >= cell.right() {
+            continue;
+        }
+        let text_w = (cell.right() - text_x) as usize;
+        let mut line_y = bar_top;
+        let put = |buf: &mut ratatui::buffer::Buffer, y: u16, spans: Vec<Span>| {
+            if y < cell.bottom() {
+                Paragraph::new(Line::from(spans)).render(Rect::new(text_x, y, text_w as u16, 1), buf);
+            }
         };
-        f.render_widget(gauge, ma);
+        put(
+            f.buffer_mut(),
+            line_y,
+            vec![Span::styled(fit(&v.level, text_w), base)],
+        );
+        line_y += 1;
+        if let Some(pan) = &v.pan {
+            put(
+                f.buffer_mut(),
+                line_y,
+                vec![Span::styled(format!("pan {pan}"), base.fg(Color::Gray))],
+            );
+            line_y += 1;
+        }
+        // Badges wrap onto as many lines as the width needs.
+        let mut spans: Vec<Span> = Vec::new();
+        let mut used = 0usize;
+        for (label, color) in &v.badges {
+            let w = label.chars().count() + 1;
+            if used + w > text_w && !spans.is_empty() {
+                put(f.buffer_mut(), line_y, std::mem::take(&mut spans));
+                line_y += 1;
+                used = 0;
+            }
+            spans.push(Span::styled(
+                format!("{label} "),
+                base.fg(*color).add_modifier(Modifier::BOLD),
+            ));
+            used += w;
+        }
+        if !spans.is_empty() {
+            put(f.buffer_mut(), line_y, spans);
+        }
     }
 }
 
@@ -1905,38 +2060,29 @@ mod tests {
 
     #[test]
     fn top_hints_drop_the_protocol_keys_on_a_class_compliant_card() {
-        let full = super::top_hints(true);
-        for key in [
-            "e:EQ",
+        // `e`, `l`, `c`, `n`, `i` live in the footer now, per section; this
+        // bar keeps the device-wide keys.
+        let protocol_keys = [
             "y/h:pitch",
             "u/j:width",
-            "x:ms",
-            "a:an1>2",
-            "k:link",
-            "f:eqrec",
-            "l:loop",
-        ] {
+            "x:MS",
+            "a:AN1>2",
+            "k:input link",
+            "f:EQ rec",
+            "w:SPDIF out",
+        ];
+        let full = super::top_hints(true);
+        for key in protocol_keys {
             assert!(full.contains(key), "full hint bar should list {key}");
         }
         let cc = super::top_hints(false);
-        for key in [
-            "e:EQ",
-            "y/h:pitch",
-            "u/j:width",
-            "x:ms",
-            "a:an1>2",
-            "k:link",
-            "f:eqrec",
-            "l:loop",
-            "w:spdifout",
-            "c:cue",
-        ] {
+        for key in protocol_keys {
             assert!(
                 !cc.contains(key),
                 "class-compliant hint bar must not advertise {key}"
             );
         }
-        for key in ["q:quit", "Tab:toggle", "o:submix", "r:rate"] {
+        for key in ["o:submix", "r:rate"] {
             assert!(cc.contains(key), "{key} still works on a class-compliant card");
         }
     }
@@ -2108,5 +2254,23 @@ mod tests {
     fn pair_bus_label_combines_channel_names() {
         assert_eq!(pair_bus_label("AN1", "AN2"), "AN1/2");
         assert_eq!(pair_bus_label("ADAT7", "ADAT8"), "ADAT7/8");
+    }
+
+    #[test]
+    fn the_fader_taper_matches_the_gui_scale() {
+        // 0 dB sits well above half height, +6 dB is the top, silence the
+        // bottom: the same law the GUI's faders use.
+        assert_eq!(taper(0.0), 0.0);
+        assert!((taper(2.0) - 1.0).abs() < 1e-4, "+6 dB is the top");
+        let unity = taper(1.0);
+        assert!(unity > 0.6 && unity < 0.8, "0 dB reads at {unity}");
+        assert!(taper(0.5) < unity && taper(1.5) > unity);
+    }
+
+    #[test]
+    fn long_names_are_cut_with_an_ellipsis_not_run_into_the_next_cell() {
+        assert_eq!(fit("AN1/2", 10), "AN1/2");
+        assert_eq!(fit("A very long channel name", 8), "A very \u{2026}");
+        assert_eq!(fit("abc", 0), "\u{2026}".chars().take(0).collect::<String>() + "\u{2026}");
     }
 }
