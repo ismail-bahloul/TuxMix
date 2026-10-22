@@ -3997,3 +3997,17 @@ off, so the tests that exercise manual zoom stay independent. Verified at
 sidebar on its rail). Someone whose preferences already hold
 `zoom_fit: false` (written by the pre-default build at the first close)
 keeps manual zoom; "Fit" in the zoom bar turns it on.
+
+**Bug: fit did nothing on the author's machine.** User report: resizing
+the window changed nothing. Their `~/.config/tuxmix/gui.json` held
+`zoom_fit: false`, written at close by an intermediate build when "off"
+was the default, then respected as a deliberate choice. The mistake was
+saving a default as if it were a decision. The key is now `fit_choice`,
+written only after the user pressed Fit or zoomed by hand
+(`zoom_fit_chosen`); the old `zoom_fit` key is no longer read, so files
+written by that build stop freezing fit off. Verified with a copy of the
+real file in a temporary config dir (never the real one): the window
+refits at 1500x900 (75 %) and 1700x1000 (85 %). Regression test
+`a_default_is_never_saved_as_a_choice`. That file also holds
+`row_mode: Three`; with three stacked rows the height is the limit, so fit
+stays small on a 16:9 window (auto rows picks the two-row layout there).

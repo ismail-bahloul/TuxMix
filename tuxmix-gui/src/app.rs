@@ -931,6 +931,9 @@ pub struct TuxMix {
     /// load (`apply_prefs`), as TotalMix 2 sizes itself to its window; off
     /// in a bare `new()`, which tests build on.
     pub zoom_fit: bool,
+    /// Whether the user decided it (pressed Fit or zoomed by hand), the
+    /// only case worth saving: see `prefs::Prefs::fit_choice`.
+    pub zoom_fit_chosen: bool,
     /// The first launch has no saved zoom: pick one from the monitor.
     pub initial_zoom_pending: bool,
     /// The sidebar was folded by a narrow window (not by the user), so it
@@ -1285,6 +1288,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         // as soon as the first `Opened`/`Resized` event arrives.
         window_size: None,
         zoom_fit: false,
+        zoom_fit_chosen: false,
         initial_zoom_pending: false,
         auto_folded: false,
         window_width: 1280.0,
@@ -1363,7 +1367,7 @@ pub fn prefs_of(state: &TuxMix) -> crate::prefs::Prefs {
         labels,
         show_original_names: state.show_original_names,
         window_size: state.window_size,
-        zoom_fit: Some(state.zoom_fit),
+        fit_choice: state.zoom_fit_chosen.then_some(state.zoom_fit),
         engine_force_rate: Some(state.engine_force_rate),
         engine_force_quantum: Some(state.engine_force_quantum),
     }
@@ -1405,7 +1409,8 @@ pub fn apply_prefs(state: &mut TuxMix, prefs: crate::prefs::Prefs) {
     }
     // Fit is the default, as in TotalMix 2: a saved choice (on or off) wins,
     // and a first launch has none.
-    state.zoom_fit = prefs.zoom_fit.unwrap_or(true);
+    state.zoom_fit = prefs.fit_choice.unwrap_or(true);
+    state.zoom_fit_chosen = prefs.fit_choice.is_some();
     state.labels = prefs
         .labels
         .into_iter()
@@ -2154,9 +2159,13 @@ fn update_message(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::ZoomOut => zoom(state, -ZOOM_STEP),
         Message::ZoomReset => {
             state.zoom_fit = false;
+            state.zoom_fit_chosen = true;
             state.ui_scale = theme::SCALE_DEFAULT;
         }
-        Message::SetZoomFit(on) => state.zoom_fit = on,
+        Message::SetZoomFit(on) => {
+            state.zoom_fit = on;
+            state.zoom_fit_chosen = true;
+        }
         Message::MonitorSize(size) => {
             if std::mem::take(&mut state.initial_zoom_pending) && !state.zoom_fit {
                 if let Some(size) = size {
@@ -4096,6 +4105,7 @@ const ZOOM_STEP: f32 = 0.1;
 /// (`SCALE_MIN`..`SCALE_MAX`). `ZoomReset` sets `SCALE_DEFAULT` directly.
 fn zoom(state: &mut TuxMix, delta: f32) {
     state.zoom_fit = false;
+    state.zoom_fit_chosen = true;
     state.ui_scale = (state.ui_scale + delta).clamp(theme::SCALE_MIN, theme::SCALE_MAX);
 }
 
@@ -6220,7 +6230,7 @@ mod tests {
         let mut state = new(true, None, None);
         apply_prefs(
             &mut state,
-            crate::prefs::Prefs { zoom_fit: Some(false), ..Default::default() },
+            crate::prefs::Prefs { fit_choice: Some(false), ..Default::default() },
         );
         assert!(state.initial_zoom_pending, "nothing saved: ask the monitor");
         let _ = update(&mut state, Message::MonitorSize(Some(iced::Size::new(2560.0, 1440.0))));
@@ -6315,9 +6325,33 @@ mod tests {
         assert!(state.zoom_fit, "a first launch fits the window");
         apply_prefs(
             &mut state,
-            crate::prefs::Prefs { zoom_fit: Some(false), ..Default::default() },
+            crate::prefs::Prefs { fit_choice: Some(false), ..Default::default() },
         );
         assert!(!state.zoom_fit, "a saved manual choice is kept");
+    }
+
+    #[test]
+    fn a_default_is_never_saved_as_a_choice() {
+        // The bug: the default "fit off" of an earlier build was written at
+        // close and then respected as the user's own choice forever.
+        let mut state = new(true, None, None);
+        apply_prefs(&mut state, crate::prefs::Prefs::default());
+        assert!(state.zoom_fit);
+        assert_eq!(prefs_of(&state).fit_choice, None, "untouched: nothing saved");
+
+        let _ = update(&mut state, Message::SetZoomFit(false));
+        assert_eq!(prefs_of(&state).fit_choice, Some(false), "pressed: saved");
+
+        let mut zoomed = new(true, None, None);
+        apply_prefs(&mut zoomed, crate::prefs::Prefs::default());
+        let _ = update(&mut zoomed, Message::ZoomIn);
+        assert_eq!(prefs_of(&zoomed).fit_choice, Some(false), "a manual zoom is a choice");
+
+        // The old key is ignored, whatever it holds.
+        let old: crate::prefs::Prefs = serde_json::from_str(r#"{ "zoom_fit": false }"#).unwrap();
+        let mut fresh = new(true, None, None);
+        apply_prefs(&mut fresh, old);
+        assert!(fresh.zoom_fit, "the pre-fix key no longer freezes fit off");
     }
 
     #[test]

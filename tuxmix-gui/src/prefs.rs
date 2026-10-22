@@ -44,8 +44,13 @@ pub struct Prefs {
     pub engine_force_rate: Option<u32>,
     /// Logical size of the window at the last close.
     pub window_size: Option<(f32, f32)>,
-    /// Fit-to-window zoom on (see `app::fit_scale`).
-    pub zoom_fit: Option<bool>,
+    /// The user's own choice of fit-to-window zoom (see `app::fit_scale`):
+    /// written only once they pressed Fit or zoomed by hand, so an unset
+    /// choice stays the default (fit on) instead of freezing whatever the
+    /// default was when the file was written. (An earlier `zoom_fit` key did
+    /// exactly that, saving the then-default "off" as if chosen: it is no
+    /// longer read.)
+    pub fit_choice: Option<bool>,
     pub engine_force_quantum: Option<u32>,
 }
 
@@ -106,7 +111,7 @@ mod tests {
             show_original_names: true,
             engine_force_rate: Some(96_000),
             window_size: Some((1600.0, 900.0)),
-            zoom_fit: Some(true),
+            fit_choice: Some(true),
             engine_force_quantum: Some(128),
         };
         save(&file, &prefs).unwrap();
