@@ -3972,3 +3972,14 @@ zoom: section 8) and gains what was missing around it:
   growing as much as the strips. It also **folds itself below 1100 px** and
   reopens when the window widens, unless the user folded it
   (`auto_folded`).
+
+**Follow-up (same day): the window can shrink.** User report: it would not
+get narrower than ~960 px, though at 80 % the whole mixer fits beside the
+sidebar in 970 px. The 960x600 minimum was a round number of mine, not a
+measurement. Now `MIN_WINDOW` = 640x420 (checked at 640x420 and 760x500:
+top bar whole, sidebar on its rail, strip rows scrolling). Fit's floor is
+the manual zoom's own minimum, 75 % (was 90 %). The sidebar's auto-fold is
+no longer a fixed 1100 px: `sidebar_does_not_fit` compares the window to
+the widest strip row at the current zoom plus the sidebar, so at 80 % it
+stays open down to ~970 px and at 130 % it folds from ~1300. Fit's steps
+are rounded to 1 % (0.75 + 13 x 0.05 drifted to 1.4000001 in f32).

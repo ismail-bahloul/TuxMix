@@ -104,7 +104,7 @@ fn main() -> iced::Result {
     let start_view = parse_view(&args);
     let saved_size = prefs::path()
         .and_then(|p| prefs::load(&p).window_size)
-        .map(|(w, h)| Size::new(w.max(960.0), h.max(600.0)))
+        .map(|(w, h)| Size::new(w.max(app::MIN_WINDOW.0), h.max(app::MIN_WINDOW.1)))
         .unwrap_or(Size::new(1280.0, 800.0));
     let start_fullscreen = args.iter().any(|a| a == "--fullscreen");
 
@@ -144,9 +144,8 @@ fn main() -> iced::Result {
     .window(window::Settings {
         // The size it had at the last close, floored at `min_size`.
         size: saved_size,
-        // Below this the top bar's tools and the sidebar no longer fit
-        // beside a strip row, and the layout stops reading as one.
-        min_size: Some(Size::new(960.0, 600.0)),
+        // See `app::MIN_WINDOW`.
+        min_size: Some(Size::new(app::MIN_WINDOW.0, app::MIN_WINDOW.1)),
         fullscreen: start_fullscreen,
         icon: window_icon(),
         platform_specific: window::settings::PlatformSpecific {

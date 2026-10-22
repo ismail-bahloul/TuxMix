@@ -2174,8 +2174,10 @@ fn update_message(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::WindowSize(w, h) => {
             // A narrow window folds the sidebar, and a wider one brings it
             // back (only if the window folded it: a user's own fold stays).
-            let was_narrow = state.window_size.is_some_and(|(pw, _)| pw < AUTO_FOLD_WIDTH);
-            let narrow = w < AUTO_FOLD_WIDTH;
+            let was_narrow = state
+                .window_size
+                .is_some_and(|(pw, _)| sidebar_does_not_fit(state, pw));
+            let narrow = sidebar_does_not_fit(state, w);
             if narrow && !was_narrow && state.sidebar_open {
                 state.sidebar_open = false;
                 state.auto_folded = true;
@@ -3941,18 +3943,35 @@ fn apply_pending_resize(state: &mut TuxMix) {
 
 // ── Scale: initial zoom, fit, sidebar ────────────────────────────
 
-/// Below this window width the sidebar folds itself (see
-/// `Message::WindowSize`); there is no room beside a strip row.
-const AUTO_FOLD_WIDTH: f32 = 1100.0;
+/// The smallest window the app opens at (logical px). Width: a strip row at
+/// the minimum zoom plus the folded rail and the top bar's tools; height: one
+/// row of strips under the top bar (the rest scrolls). It was 960x600, a
+/// round number rather than a measured one, and it kept a window that fits
+/// everything at 80 % from being any smaller.
+pub(crate) const MIN_WINDOW: (f32, f32) = (640.0, 420.0);
+
+/// Whether, in a window `w` wide, the sidebar would leave the widest strip
+/// row less room than it needs at the current zoom (the sidebar then folds
+/// itself, see `Message::WindowSize`). Measured against the real row widths
+/// rather than a fixed threshold: at 80 % everything fits beside the
+/// sidebar in 970 px, at 130 % it needs more than 1300.
+fn sidebar_does_not_fit(state: &TuxMix, w: f32) -> bool {
+    let (inputs, playbacks, outputs) = unit_row_widths(state);
+    let row = inputs.max(playbacks).max(outputs) * state.ui_scale;
+    let sidebar = state.sidebar_width * sidebar_scale(state);
+    // Slack so the fold is not on the very edge of "just fits".
+    w < row + sidebar + 2.0 * theme::SPACE_XL + 4.0 + 24.0
+}
 /// The sidebar scales with the zoom only up to this: it is a column of
 /// small controls, and at the strips' 175 % it was as wide as half a
 /// small window for no gain.
 const SIDEBAR_SCALE_MAX: f32 = 1.25;
-/// Fit's range and step. The floor is the smallest size still readable
-/// (below it the rows scroll, as they always did); the ceiling keeps strips
+/// Fit's range and step. The floor is the manual zoom's own minimum, the
+/// smallest size still readable (below it the rows scroll, as they always
+/// did); the ceiling keeps strips
 /// from growing absurd on a huge window; the step keeps the scale from
 /// sliding through fractions (blurred 1px lines) while a window is dragged.
-const FIT_MIN: f32 = 0.9;
+const FIT_MIN: f32 = theme::SCALE_MIN;
 const FIT_MAX: f32 = 1.4;
 const FIT_STEP: f32 = 0.05;
 /// One mixer section's height at scale 1 (header, hint, strip), measured.
@@ -4034,7 +4053,8 @@ pub(crate) fn fit_scale(state: &TuxMix) -> f32 {
     let (inputs, playbacks, outputs) = unit_row_widths(state);
     let steps = ((FIT_MAX - FIT_MIN) / FIT_STEP).round() as i32;
     for k in (0..=steps).rev() {
-        let s = FIT_MIN + k as f32 * FIT_STEP;
+        // Rounded to 1 %: 0.75 + 13 x 0.05 drifts to 1.4000001 in f32.
+        let s = (((FIT_MIN + k as f32 * FIT_STEP) * 100.0).round() / 100.0).min(FIT_MAX);
         let sidebar = if state.sidebar_open {
             state.sidebar_width * s.min(SIDEBAR_SCALE_MAX)
         } else {
@@ -6213,7 +6233,7 @@ mod tests {
         state.zoom_fit = true;
         state.window_size = Some((3840.0, 2160.0));
         assert_eq!(fit_scale(&state), FIT_MAX, "a huge window stops at the ceiling");
-        state.window_size = Some((960.0, 600.0));
+        state.window_size = Some(super::MIN_WINDOW);
         assert_eq!(fit_scale(&state), FIT_MIN, "a small one stops at the floor (rows scroll)");
         state.window_size = Some((1920.0, 1080.0));
         let s = fit_scale(&state);
@@ -6230,7 +6250,7 @@ mod tests {
         let _ = update(&mut state, Message::WindowSize(1920.0, 1080.0));
         let _ = update(&mut state, Message::SetZoomFit(true));
         let at_1080 = state.ui_scale;
-        let _ = update(&mut state, Message::WindowSize(960.0, 600.0));
+        let _ = update(&mut state, Message::WindowSize(super::MIN_WINDOW.0, super::MIN_WINDOW.1));
         assert!(state.ui_scale < at_1080, "a smaller window refits smaller");
         let _ = update(&mut state, Message::ZoomIn);
         assert!(!state.zoom_fit, "a manual step leaves fit mode");
@@ -6244,15 +6264,25 @@ mod tests {
         let mut state = new(true, None, None);
         let _ = update(&mut state, Message::WindowSize(1400.0, 900.0));
         assert!(state.sidebar_open);
-        let _ = update(&mut state, Message::WindowSize(1000.0, 900.0));
+        let _ = update(&mut state, Message::WindowSize(800.0, 900.0));
         assert!(!state.sidebar_open && state.auto_folded);
         let _ = update(&mut state, Message::WindowSize(1400.0, 900.0));
         assert!(state.sidebar_open && !state.auto_folded);
         // A fold the user made stays folded.
         let _ = update(&mut state, Message::ToggleSidebar);
-        let _ = update(&mut state, Message::WindowSize(1000.0, 900.0));
+        let _ = update(&mut state, Message::WindowSize(800.0, 900.0));
         let _ = update(&mut state, Message::WindowSize(1400.0, 900.0));
         assert!(!state.sidebar_open, "the user's own fold is respected");
+    }
+
+    #[test]
+    fn the_fold_threshold_follows_the_zoom() {
+        // Everything fits beside the sidebar at 80 % in ~970 px, not at 130 %.
+        let mut state = new(true, None, None);
+        state.ui_scale = 0.8;
+        assert!(!super::sidebar_does_not_fit(&state, 971.0));
+        state.ui_scale = 1.3;
+        assert!(super::sidebar_does_not_fit(&state, 971.0));
     }
 
     #[test]
