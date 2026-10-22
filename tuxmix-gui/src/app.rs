@@ -3981,11 +3981,13 @@ const SIDEBAR_SCALE_MAX: f32 = 1.25;
 /// Fit's range and step: the manual zoom's own range. The floor is the
 /// smallest size still readable (below it the rows scroll, as they always
 /// did); the ceiling keeps strips
-/// from growing absurd on a huge window; the step keeps the scale from
-/// sliding through fractions (blurred 1px lines) while a window is dragged.
+/// from growing absurd on a huge window. The step is 1 %: at 5 % the scale
+/// jumped visibly while a window was dragged, and the blur that coarse steps
+/// were meant to avoid comes from 1px canvas lines landing between pixels,
+/// which a step of any size cannot prevent.
 const FIT_MIN: f32 = theme::SCALE_MIN;
 const FIT_MAX: f32 = theme::SCALE_MAX;
-const FIT_STEP: f32 = 0.05;
+const FIT_STEP: f32 = 0.01;
 /// One mixer section's height at scale 1 (header, hint, strip), measured.
 const FIT_ROW_H: f32 = 360.0;
 
@@ -6262,7 +6264,7 @@ mod tests {
         state.window_size = Some((1920.0, 1080.0));
         let s = fit_scale(&state);
         assert!((FIT_MIN..=FIT_MAX).contains(&s));
-        assert!(((s / 0.05).round() * 0.05 - s).abs() < 1e-4, "{s} is a 5% step");
+        assert!(((s / 0.01).round() * 0.01 - s).abs() < 1e-4, "{s} is a 1% step");
         // A taller window never picks a smaller scale.
         state.window_size = Some((1920.0, 1300.0));
         assert!(fit_scale(&state) >= s);
@@ -6352,6 +6354,23 @@ mod tests {
         let mut fresh = new(true, None, None);
         apply_prefs(&mut fresh, old);
         assert!(fresh.zoom_fit, "the pre-fix key no longer freezes fit off");
+    }
+
+    #[test]
+    fn a_wider_window_never_shrinks_the_fit() {
+        use super::fit_scale;
+        for mode in [RowMode::Auto, RowMode::Three, RowMode::Two] {
+            let mut state = new(true, None, None);
+            state.zoom_fit = true;
+            state.row_mode = mode;
+            let mut last = 0.0;
+            for w in (700..=2400).step_by(50) {
+                state.window_size = Some((w as f32, 1000.0));
+                let s = fit_scale(&state);
+                assert!(s + 1e-4 >= last, "{mode:?}: {w} px gave {s}, after {last}");
+                last = s;
+            }
+        }
     }
 
     #[test]

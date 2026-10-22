@@ -4011,3 +4011,11 @@ refits at 1500x900 (75 %) and 1700x1000 (85 %). Regression test
 `a_default_is_never_saved_as_a_choice`. That file also holds
 `row_mode: Three`; with three stacked rows the height is the limit, so fit
 stays small on a 16:9 window (auto rows picks the two-row layout there).
+
+**Fit steps are 1 %** (were 5 %, which jumped visibly during a drag). Measured
+`fit_scale` against width at a fixed height of 1000: in Auto rows it is
+flat (0.87) from 800 to 1300 px, then grows with the width once the
+two-row layout fits; with rows forced to 3 it is flat from 800 px up. The
+plateau is the "everything visible" rule: three stacked rows are limited by
+the height, so widening the window cannot enlarge them without scrolling.
+Test `a_wider_window_never_shrinks_the_fit` pins the monotonic part.
