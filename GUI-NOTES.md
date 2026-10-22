@@ -3877,3 +3877,33 @@ the card runs; the latency line shows the real period.
   `the_window_size_is_kept_and_written_at_close`.
 - The mock's simulated clock defaults to 256 samples, what the real card
   now runs with nothing forced.
+
+## 2026-10-22: solo on linked pairs, and buttons that do nothing on the card
+
+User report: S never lights, and the buses' settings buttons do not work.
+Both checked on the real card (kernel-driver backend, in Xvfb, every
+change reverted).
+
+- **Solo on a linked pair (the real bug, both hardware backends).** A
+  linked pair is soloed one channel at a time (`set_input_solo` /
+  `set_playback_solo` call `set_solo` for L then R), and `set_solo` is an
+  exclusive solo: soloing R cleared L's flag and zeroed L's sends. The
+  strip shows L, so S never lit, and a soloed pair played one side only.
+  The mock has no exclusive solo, which is why it never showed. Fixed in
+  `babyface.rs` and `usb.rs`: the exclusive pass spares the soloed
+  strip's stereo partner when the pair is linked. Verified on the card by
+  reading the driver's crosspoint controls while soloing IN3/4: AN3 and
+  AN4 sends untouched, every other source (AN1...) zeroed, all restored
+  on un-solo; the strip's S lights.
+- **Outputs lose their S.** Both hardware backends ignore an output solo
+  (`set_solo` returns early: TotalMix has none), so it lit only in the
+  mock. Output strips now show M and C; a collapsed output keeps an empty
+  slot so the meters stay aligned.
+- **The buses' settings work on the card** (playback and output STEREO
+  split and relink, checked), but a playback had two buttons for one
+  state: the strip's "SP" (stereo split) and the flyout's STEREO, since a
+  playback pair's link is `!split`. "SP" is gone; STEREO has a tooltip
+  saying what it does, and is inert with a reason for a playback in Class
+  Compliant mode (the split is an RME-protocol register).
+  `Message::StereoSplitChanged` and `StripParams::has_split`/`split` went
+  with it.

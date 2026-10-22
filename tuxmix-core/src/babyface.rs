@@ -1613,6 +1613,14 @@ impl RmeDevice for BabyfacePro {
             ChannelId::Playback(c) => (None, Some(c)),
             ChannelId::Output(_) => return Ok(()),
         };
+        // A linked pair is soloed one channel at a time
+        // (`set_input_solo`/`set_playback_solo`), so the exclusive solo
+        // below must spare the strip's stereo partner: it used to clear
+        // the partner's flag and zero its sends, so a soloed linked pair
+        // played one side only and its strip (which shows the left
+        // channel) never lit.
+        let partner_i = solo_i.filter(|i| self.input_pair_linked(i / 2)).map(|i| i ^ 1);
+        let partner_c = solo_c.filter(|c| self.playback_linked(c / 2)).map(|c| c ^ 1);
         match channel {
             ChannelId::Input(i) => self.inputs[i].solo = solo,
             ChannelId::Playback(c) => self.playbacks[c].solo = solo,
@@ -1621,7 +1629,7 @@ impl RmeDevice for BabyfacePro {
 
         let n_outputs = self.profile.output_pair_count();
         for j in 0..self.inputs.len() {
-            if solo_i == Some(j) {
+            if solo_i == Some(j) || partner_i == Some(j) {
                 continue;
             }
             if solo {
@@ -1638,7 +1646,7 @@ impl RmeDevice for BabyfacePro {
             }
         }
         for j in 0..self.playbacks.len() {
-            if solo_c == Some(j) {
+            if solo_c == Some(j) || partner_c == Some(j) {
                 continue;
             }
             if solo {

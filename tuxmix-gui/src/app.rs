@@ -665,10 +665,6 @@ pub enum Message {
     CueChanged(ChannelId, bool),
     /// Phase Ø invert — Hardware Input strips, the 4 analog inputs only.
     PhaseChanged(ChannelId, bool),
-    /// Stereo split — Playback strips only, hard-pans the pair into the
-    /// AN1/2 monitor bus (distinct from the stereo-link "one strip or
-    /// two" UI concept, see `StripParams::has_split`'s own comment).
-    StereoSplitChanged(ChannelId, bool),
 
     VolumeChanged(ChannelId, usize, f32),
     FaderPressed(ChannelId, usize, f32, Option<(f32, f32)>),
@@ -1908,7 +1904,6 @@ fn needs_protocol_features(message: &Message) -> bool {
         Message::TrimChanged(..)
             | Message::TrimReset(_)
             | Message::PhaseChanged(..)
-            | Message::StereoSplitChanged(..)
             | Message::LoopbackChanged(..)
             | Message::PitchChanged(_)
             | Message::WidthChanged(_)
@@ -2301,11 +2296,6 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::PhaseChanged(cid, invert) => {
             if let ChannelId::Input(idx) = cid {
                 let _ = state.device.set_phase(idx, invert);
-            }
-        }
-        Message::StereoSplitChanged(cid, split) => {
-            if let ChannelId::Playback(idx) = cid {
-                let _ = state.device.set_stereo_split(idx, split);
             }
         }
         Message::VolumeChanged(cid, out, v) => {
@@ -3737,8 +3727,6 @@ fn strip_params<'a>(
         trim: 0.0,
         has_phase: false,
         phase: false,
-        has_split: false,
-        split: false,
         loopback: false,
         stereo_linked: false,
         open_flyout: state
@@ -3816,8 +3804,6 @@ fn strip_params<'a>(
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
                 meter_available: playback_meter_available(state, i),
-                has_split: true,
-                split: ch.split,
                 stereo_linked: state.device.playback_linked(i / 2),
                 mute: ch.mute,
                 solo: ch.solo,
@@ -3998,13 +3984,30 @@ fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, M
     // `RmeDevice::{input_pair,playback,output}_linked`'s doc comments for
     // why this is a pure display/control-grouping concept, not tied to
     // a specific hardware register).
-    col = col.push(
+    // A playback pair's link is its hardware stereo split (the pair goes
+    // split-mono into AN1/2), an RME-protocol register: in Class Compliant
+    // mode the switch is shown but inert, saying why.
+    let can_toggle = !matches!(cid, ChannelId::Playback(_)) || p.protocol_features;
+    let tip = match (cid, can_toggle) {
+        (ChannelId::Playback(_), false) => {
+            "Splitting a playback pair needs the RME protocol (not in Class Compliant mode)"
+        }
+        (ChannelId::Playback(_), true) => {
+            "Stereo: one strip for the pair. Off: two mono strips, split L/R into AN1/2"
+        }
+        _ => "Stereo: one strip for the pair. Off: the two channels as separate strips",
+    };
+    col = col.push(hint(
         button(text("STEREO").size(theme::TEXT_SM * scale))
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
             .width(Length::Fill)
             .style(theme::toggle_button(p.stereo_linked, theme::ACCENT))
-            .on_press(Message::StereoLinkChanged(cid, !p.stereo_linked)),
-    );
+            .on_press_maybe(
+                can_toggle.then_some(Message::StereoLinkChanged(cid, !p.stereo_linked)),
+            ),
+        tip,
+        scale,
+    ));
 
     let ChannelId::Input(idx) = cid else {
         return flyout_card(col, width, scale);
@@ -5499,15 +5502,18 @@ mod tests {
     }
 
     #[test]
-    fn stereo_split_changed_mirrors_across_the_playback_pair() {
+    fn unlinking_a_playback_pair_splits_both_channels() {
+        // A playback pair's link is its hardware stereo split: the STEREO
+        // switch is the one control for it (the strip's "SP" button was the
+        // same state a second time, and is gone).
         let mut state = new(true, None, None);
         let cid = ChannelId::Playback(0); // PB1 (channels 0/1)
 
-        let _ = update(&mut state, Message::StereoSplitChanged(cid, true));
+        let _ = update(&mut state, Message::StereoLinkChanged(cid, false));
         assert!(state.device.playbacks()[0].split);
         assert!(state.device.playbacks()[1].split, "split mirrors across both channels of the pair");
 
-        let _ = update(&mut state, Message::StereoSplitChanged(cid, false));
+        let _ = update(&mut state, Message::StereoLinkChanged(cid, true));
         assert!(!state.device.playbacks()[0].split);
         assert!(!state.device.playbacks()[1].split);
     }

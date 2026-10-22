@@ -781,6 +781,14 @@ impl RmeDevice for BabyfaceProUsb {
             ChannelId::Playback(c) => (None, Some(c)),
             ChannelId::Output(_) => return Ok(()),
         };
+        // A linked pair is soloed one channel at a time
+        // (`set_input_solo`/`set_playback_solo`), so the exclusive solo
+        // below must spare the strip's stereo partner: it used to clear
+        // the partner's flag and zero its sends, so a soloed linked pair
+        // played one side only and its strip (which shows the left
+        // channel) never lit.
+        let partner_i = solo_i.filter(|i| self.input_pair_linked(i / 2)).map(|i| i ^ 1);
+        let partner_c = solo_c.filter(|c| self.playback_linked(c / 2)).map(|c| c ^ 1);
         // The soloed strip: set its flag and compute its low-map marker
         // (or restore it from the model on un-solo). The low map is the
         // AN1/2 submix mirror TotalMix keeps in sync.
@@ -817,7 +825,7 @@ impl RmeDevice for BabyfaceProUsb {
         // TotalMix default): soloing a strip clears the other strips'
         // solo flags so a later un-solo restores them cleanly.
         for j in 0..self.inputs.len() {
-            if solo_i == Some(j) {
+            if solo_i == Some(j) || partner_i == Some(j) {
                 continue;
             }
             if solo {
@@ -842,7 +850,7 @@ impl RmeDevice for BabyfaceProUsb {
             }
         }
         for j in 0..self.playbacks.len() {
-            if solo_c == Some(j) {
+            if solo_c == Some(j) || partner_c == Some(j) {
                 continue;
             }
             if solo {

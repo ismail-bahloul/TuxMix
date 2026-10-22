@@ -187,14 +187,6 @@ pub struct StripParams<'a> {
     /// that set, reused rather than a parallel gate that could drift).
     pub has_phase: bool,
     pub phase: bool,
-    /// Whether this playback strip has a Stereo Split switch — every
-    /// Playback pair (`PlaybackChannel::split`, `RmeDevice::
-    /// set_stereo_split`). Distinct from `stereo_linked` below (a pure
-    /// UI concept — whether L/R show as one strip or two) even though
-    /// both use the word "split": this one is a real hardware register
-    /// that hard-pans the pair into the AN1/2 monitor bus.
-    pub has_split: bool,
-    pub split: bool,
     /// Output-only: `OutputChannel::loopback`.
     pub loopback: bool,
     /// Whether this channel's pair is currently a linked stereo bus
@@ -457,10 +449,17 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         scale,
     );
 
+    // No solo on outputs (see `full_strip`); an empty slot keeps the
+    // collapsed cards' meters aligned across the row.
+    let solo_slot: Element<'a, Message> = if matches!(cid, ChannelId::Output(_)) {
+        iced::widget::Space::new().height(btn_h).into()
+    } else {
+        solo_btn.into()
+    };
     let rows = column![
         rotated_label(short_label(&p.name).to_string(), theme::TEXT_SM * scale, scale),
         mute_btn,
-        solo_btn,
+        solo_slot,
         container(vu_meter(
             p.meter,
             COLLAPSED_METER_H * scale,
@@ -574,7 +573,16 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // was sized for a wider sibling row (48V/PAD, or just a long channel
     // name) — filling the row makes every row use the card's full width
     // instead of only the widest one.
-    let mut ms_row = row![mute_btn, solo_btn].spacing(theme::SPACE_TIGHT).width(Length::Fill);
+    // Outputs have no solo: TotalMix has none, and neither backend that
+    // drives the hardware does anything with one (`set_solo` returns early
+    // for outputs), so an output's S lit only in the simulation.
+    let mut ms_row = if matches!(cid, ChannelId::Output(_)) {
+        row![mute_btn]
+    } else {
+        row![mute_btn, solo_btn]
+    }
+    .spacing(theme::SPACE_TIGHT)
+    .width(Length::Fill);
     if p.has_cue {
         ms_row = ms_row.push(hint(
             button(centered_label("C", theme::TEXT_SM * scale))
@@ -758,18 +766,10 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             scale,
         ));
     }
-    if p.has_split && p.protocol_features {
-        icon_col = icon_col.push(hint(
-            button(centered_label("SP", theme::TEXT_MICRO * scale))
-                .padding(0)
-                .width(ICON_BTN_W * scale)
-                .height(ICON_BTN_H * scale)
-                .style(theme::toggle_button(p.split, theme::ACCENT))
-                .on_press(Message::StereoSplitChanged(cid, !p.split)),
-            "Stereo split — hard-pan this pair into the AN1/2 monitor bus",
-            scale,
-        ));
-    }
+    // No "SP" button here any more: a playback pair's stereo split IS its
+    // link state (`RmeDevice::playback_linked` is `!split`), so it was the
+    // STEREO switch of the settings flyout a second time, lit under
+    // another name.
     if has_settings {
         let settings_open = p.open_flyout == Some(FlyoutKind::Settings);
         icon_col = icon_col.push(hint(
