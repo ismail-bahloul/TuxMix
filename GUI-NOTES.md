@@ -4019,3 +4019,26 @@ two-row layout fits; with rows forced to 3 it is flat from 800 px up. The
 plateau is the "everything visible" rule: three stacked rows are limited by
 the height, so widening the window cannot enlarge them without scrolling.
 Test `a_wider_window_never_shrinks_the_fit` pins the monotonic part.
+
+## 2026-10-22 (cont. 3): the fit-to-window mode is removed
+
+Fit (added and made the default the same day) is gone, at the user's
+call: back to the September model (fixed geometry, scroll, manual zoom,
+section 8), with the zoom set from the bar at the foot of the sidebar.
+What measured against it: scaling to "everything visible" is limited by
+whichever of width and height is tighter, so a stretch of window widths
+changes nothing (flat 0.87 from 800 to 1300 px at a height of 1000, and for
+good with rows forced to 3), which reads as "resizing does nothing"; the
+alternative (width-driven, scrolling vertically) gives stacked rows on a
+16:9 window a permanent vertical scroll. And it had already cost one bug: a
+default saved as if it were a choice (see above). Not worth a mode.
+
+Removed: `zoom_fit`, `Message::SetZoomFit`, `fit_scale`/`refit`/`FIT_*`,
+the update wrapper, the zoom bar's Fit button, the `fit_choice` preference
+and its tests. A preferences file holding `zoom_fit` or `fit_choice` is
+read fine (unknown keys are ignored). Kept, because none of it depends on
+fit: the visible zoom bar (`−  100%  +`), the first-launch zoom from the
+monitor, the sidebar's scale cap (125 %), its auto-fold sized to the real
+need, and the 640x420 minimum window. One leftover: the zoom fit left in a
+saved file (`ui_scale`, e.g. 76 %) is now just a manual zoom; the
+percentage resets it to 100 %.

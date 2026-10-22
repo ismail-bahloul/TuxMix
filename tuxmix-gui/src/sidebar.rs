@@ -340,10 +340,10 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
     .into()
 }
 
-/// The zoom control, fixed at the foot of the column: `-  100%  +  Fit`.
+/// The zoom control, fixed at the foot of the column: `-  100%  +`.
 /// The zoom was Ctrl+wheel / Ctrl+= only, which nothing on screen
-/// mentioned. The percentage resets to 100 %, "Fit" sizes the UI to the
-/// window (`app::fit_scale`) and any manual step turns it off again.
+/// mentioned. The percentage resets to 100 %. (A fit-to-window mode lived
+/// next to it for a day and was removed: see GUI-NOTES.md.)
 fn zoom_bar(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let pct = format!("{:.0}%", state.ui_scale * 100.0);
     let cell = |label: &'static str| {
@@ -374,14 +374,6 @@ fn zoom_bar(state: &TuxMix, scale: f32) -> Element<'_, Message> {
                     .style(theme::ghost_button)
                     .on_press(Message::ZoomIn),
                 "Zoom in (Ctrl +)",
-                scale,
-            ),
-            hint(
-                button(text("Fit").size(theme::TEXT_XS * scale).center())
-                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
-                    .style(theme::segment_button(state.zoom_fit))
-                    .on_press(Message::SetZoomFit(!state.zoom_fit)),
-                "Size the interface to the window",
                 scale,
             ),
         ]

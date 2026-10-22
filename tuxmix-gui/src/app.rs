@@ -594,9 +594,6 @@ pub enum Message {
     ZoomIn,
     ZoomOut,
     ZoomReset,
-    /// The zoom control's "Fit": `true` sizes the UI to the window within
-    /// `FIT_MIN..FIT_MAX` (see `fit_scale`); any manual zoom turns it off.
-    SetZoomFit(bool),
     /// The monitor's logical size, asked once at the first launch to pick
     /// a sensible starting zoom (`initial_zoom_for`).
     MonitorSize(Option<iced::Size>),
@@ -927,13 +924,6 @@ pub struct TuxMix {
     /// same (`prefs::Prefs::window_size`). Not written on every resize
     /// step: a drag would rewrite the file 20 times a second.
     pub window_size: Option<(f32, f32)>,
-    /// Fit mode, see `Message::SetZoomFit`. On by default once preferences
-    /// load (`apply_prefs`), as TotalMix 2 sizes itself to its window; off
-    /// in a bare `new()`, which tests build on.
-    pub zoom_fit: bool,
-    /// Whether the user decided it (pressed Fit or zoomed by hand), the
-    /// only case worth saving: see `prefs::Prefs::fit_choice`.
-    pub zoom_fit_chosen: bool,
     /// The first launch has no saved zoom: pick one from the monitor.
     pub initial_zoom_pending: bool,
     /// The sidebar was folded by a narrow window (not by the user), so it
@@ -1287,8 +1277,6 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         // Matches `window::Settings::size` in main.rs — updated for real
         // as soon as the first `Opened`/`Resized` event arrives.
         window_size: None,
-        zoom_fit: false,
-        zoom_fit_chosen: false,
         initial_zoom_pending: false,
         auto_folded: false,
         window_width: 1280.0,
@@ -1367,7 +1355,6 @@ pub fn prefs_of(state: &TuxMix) -> crate::prefs::Prefs {
         labels,
         show_original_names: state.show_original_names,
         window_size: state.window_size,
-        fit_choice: state.zoom_fit_chosen.then_some(state.zoom_fit),
         engine_force_rate: Some(state.engine_force_rate),
         engine_force_quantum: Some(state.engine_force_quantum),
     }
@@ -1407,10 +1394,6 @@ pub fn apply_prefs(state: &mut TuxMix, prefs: crate::prefs::Prefs) {
         // Never saved: the first launch, see `Message::MonitorSize`.
         state.initial_zoom_pending = true;
     }
-    // Fit is the default, as in TotalMix 2: a saved choice (on or off) wins,
-    // and a first launch has none.
-    state.zoom_fit = prefs.fit_choice.unwrap_or(true);
-    state.zoom_fit_chosen = prefs.fit_choice.is_some();
     state.labels = prefs
         .labels
         .into_iter()
@@ -1478,7 +1461,6 @@ fn changes_prefs(message: &Message) -> bool {
             | Message::ZoomIn
             | Message::ZoomOut
             | Message::ZoomReset
-            | Message::SetZoomFit(_)
             | Message::MonitorSize(_)
             | Message::RenameCommit
             | Message::SetShowOriginalNames(_)
@@ -1862,7 +1844,6 @@ fn is_undoable(message: &Message) -> bool {
             | Message::ZoomIn
             | Message::ZoomOut
             | Message::ZoomReset
-            | Message::SetZoomFit(_)
             | Message::MonitorSize(_)
             | Message::RangeCleared(_)
             | Message::ToggleCollapse(_)
@@ -1959,17 +1940,6 @@ fn needs_protocol_features(message: &Message) -> bool {
 }
 
 pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
-    let task = update_message(state, message);
-    // Fit follows the window, the layout choice, collapsed strips and the
-    // sidebar: refit after any message rather than listing the ones that
-    // matter (it is cheap arithmetic, no layout pass).
-    if state.zoom_fit {
-        refit(state);
-    }
-    task
-}
-
-fn update_message(state: &mut TuxMix, message: Message) -> Task<Message> {
     // The class-compliant personality drives routing, preamps and clock and
     // nothing else (see `RmeDevice::protocol_features`). The UI already
     // hides the controls; this is the other half of that, so nothing built
@@ -2157,17 +2127,9 @@ fn update_message(state: &mut TuxMix, message: Message) -> Task<Message> {
         }
         Message::ZoomIn => zoom(state, ZOOM_STEP),
         Message::ZoomOut => zoom(state, -ZOOM_STEP),
-        Message::ZoomReset => {
-            state.zoom_fit = false;
-            state.zoom_fit_chosen = true;
-            state.ui_scale = theme::SCALE_DEFAULT;
-        }
-        Message::SetZoomFit(on) => {
-            state.zoom_fit = on;
-            state.zoom_fit_chosen = true;
-        }
+        Message::ZoomReset => state.ui_scale = theme::SCALE_DEFAULT,
         Message::MonitorSize(size) => {
-            if std::mem::take(&mut state.initial_zoom_pending) && !state.zoom_fit {
+            if std::mem::take(&mut state.initial_zoom_pending) {
                 if let Some(size) = size {
                     state.ui_scale = initial_zoom_for(size.height);
                     state.prefs_dirty = true;
@@ -3978,19 +3940,6 @@ fn sidebar_does_not_fit(state: &TuxMix, w: f32) -> bool {
 /// small controls, and at the strips' 175 % it was as wide as half a
 /// small window for no gain.
 const SIDEBAR_SCALE_MAX: f32 = 1.25;
-/// Fit's range and step: the manual zoom's own range. The floor is the
-/// smallest size still readable (below it the rows scroll, as they always
-/// did); the ceiling keeps strips
-/// from growing absurd on a huge window. The step is 1 %: at 5 % the scale
-/// jumped visibly while a window was dragged, and the blur that coarse steps
-/// were meant to avoid comes from 1px canvas lines landing between pixels,
-/// which a step of any size cannot prevent.
-const FIT_MIN: f32 = theme::SCALE_MIN;
-const FIT_MAX: f32 = theme::SCALE_MAX;
-const FIT_STEP: f32 = 0.01;
-/// One mixer section's height at scale 1 (header, hint, strip), measured.
-const FIT_ROW_H: f32 = 360.0;
-
 /// A starting zoom for a monitor of `height` logical pixels (the OS scale
 /// factor is already in it): 100 % at 1080p and below, more on bigger
 /// screens, where the 10-13 px text is small. Only used at the first
@@ -4056,48 +4005,6 @@ fn unit_row_widths(state: &TuxMix) -> (f32, f32, f32) {
     )
 }
 
-/// The largest scale in `FIT_MIN..=FIT_MAX` (in `FIT_STEP`s) at which the
-/// whole mixer fits the window without scrolling, for the current row
-/// layout; `FIT_MIN` when none does (the rows scroll then, as in manual
-/// zoom). Pure arithmetic on the same numbers `mixer_view` lays out with.
-pub(crate) fn fit_scale(state: &TuxMix) -> f32 {
-    let Some((win_w, win_h)) = state.window_size else {
-        return state.ui_scale;
-    };
-    let (inputs, playbacks, outputs) = unit_row_widths(state);
-    let steps = ((FIT_MAX - FIT_MIN) / FIT_STEP).round() as i32;
-    for k in (0..=steps).rev() {
-        // Rounded to 1 %: 0.75 + 13 x 0.05 drifts to 1.4000001 in f32.
-        let s = (((FIT_MIN + k as f32 * FIT_STEP) * 100.0).round() / 100.0).min(FIT_MAX);
-        let sidebar = if state.sidebar_open {
-            state.sidebar_width * s.min(SIDEBAR_SCALE_MAX)
-        } else {
-            sidebar::COLLAPSED_WIDTH * s.min(SIDEBAR_SCALE_MAX)
-        };
-        let avail_w = win_w - sidebar - 2.0 * theme::SPACE_XL - 4.0;
-        let side_by_side = (inputs + theme::SPACE_XXL + playbacks).max(outputs) * s;
-        let stacked = inputs.max(playbacks).max(outputs) * s;
-        let two_rows = match state.row_mode {
-            RowMode::Two => true,
-            RowMode::Three => false,
-            RowMode::Auto => (inputs + theme::SPACE_XXL + playbacks) * s <= avail_w,
-        };
-        let (need_w, rows) = if two_rows { (side_by_side, 2.0) } else { (stacked, 3.0) };
-        let need_h = (rows * FIT_ROW_H + theme::TOP_BAR_H) * s + 2.0 * theme::SPACE_LG;
-        if need_w <= avail_w && need_h <= win_h {
-            return s;
-        }
-    }
-    FIT_MIN
-}
-
-fn refit(state: &mut TuxMix) {
-    let s = fit_scale(state);
-    if (s - state.ui_scale).abs() > 1e-3 {
-        state.ui_scale = s;
-    }
-}
-
 /// How much one zoom step changes `ui_scale` (a Ctrl+molette notch, or one
 /// Ctrl+= / Ctrl+- press). The scale is decoupled from window size — fixed
 /// geometry, rows and pages scroll — so this is the only thing that moves it.
@@ -4106,8 +4013,6 @@ const ZOOM_STEP: f32 = 0.1;
 /// Moves `ui_scale` by `delta`, clamped to the manual-zoom range
 /// (`SCALE_MIN`..`SCALE_MAX`). `ZoomReset` sets `SCALE_DEFAULT` directly.
 fn zoom(state: &mut TuxMix, delta: f32) {
-    state.zoom_fit = false;
-    state.zoom_fit_chosen = true;
     state.ui_scale = (state.ui_scale + delta).clamp(theme::SCALE_MIN, theme::SCALE_MAX);
 }
 
@@ -6226,14 +6131,9 @@ mod tests {
     }
 
     #[test]
-    fn a_manual_first_launch_picks_a_zoom_from_the_monitor_and_fit_ignores_it() {
-        // Fit sizes the UI itself, so the monitor-based starting zoom only
-        // matters for a user who is in manual mode.
+    fn the_first_launch_picks_a_zoom_from_the_monitor_and_later_ones_keep_the_users() {
         let mut state = new(true, None, None);
-        apply_prefs(
-            &mut state,
-            crate::prefs::Prefs { fit_choice: Some(false), ..Default::default() },
-        );
+        apply_prefs(&mut state, crate::prefs::Prefs::default());
         assert!(state.initial_zoom_pending, "nothing saved: ask the monitor");
         let _ = update(&mut state, Message::MonitorSize(Some(iced::Size::new(2560.0, 1440.0))));
         assert_eq!(state.ui_scale, 1.25);
@@ -6244,45 +6144,6 @@ mod tests {
         let mut saved = new(true, None, None);
         apply_prefs(&mut saved, crate::prefs::Prefs { ui_scale: Some(1.0), ..Default::default() });
         assert!(!saved.initial_zoom_pending, "a saved zoom is never overridden");
-
-        let mut fit = new(true, None, None);
-        apply_prefs(&mut fit, crate::prefs::Prefs::default());
-        assert!(fit.zoom_fit);
-        let _ = update(&mut fit, Message::MonitorSize(Some(iced::Size::new(2560.0, 1440.0))));
-        assert_eq!(fit.ui_scale, 1.0, "fit does not take the monitor-based zoom");
-    }
-
-    #[test]
-    fn fit_picks_the_largest_scale_that_shows_everything_and_stays_in_range() {
-        use super::{fit_scale, FIT_MAX, FIT_MIN};
-        let mut state = new(true, None, None);
-        state.zoom_fit = true;
-        state.window_size = Some((3840.0, 2160.0));
-        assert_eq!(fit_scale(&state), FIT_MAX, "a huge window stops at the ceiling");
-        state.window_size = Some(super::MIN_WINDOW);
-        assert_eq!(fit_scale(&state), FIT_MIN, "a small one stops at the floor (rows scroll)");
-        state.window_size = Some((1920.0, 1080.0));
-        let s = fit_scale(&state);
-        assert!((FIT_MIN..=FIT_MAX).contains(&s));
-        assert!(((s / 0.01).round() * 0.01 - s).abs() < 1e-4, "{s} is a 1% step");
-        // A taller window never picks a smaller scale.
-        state.window_size = Some((1920.0, 1300.0));
-        assert!(fit_scale(&state) >= s);
-    }
-
-    #[test]
-    fn fit_follows_the_window_and_a_manual_zoom_turns_it_off() {
-        let mut state = new(true, None, None);
-        let _ = update(&mut state, Message::WindowSize(1920.0, 1080.0));
-        let _ = update(&mut state, Message::SetZoomFit(true));
-        let at_1080 = state.ui_scale;
-        let _ = update(&mut state, Message::WindowSize(super::MIN_WINDOW.0, super::MIN_WINDOW.1));
-        assert!(state.ui_scale < at_1080, "a smaller window refits smaller");
-        let _ = update(&mut state, Message::ZoomIn);
-        assert!(!state.zoom_fit, "a manual step leaves fit mode");
-        let manual = state.ui_scale;
-        let _ = update(&mut state, Message::WindowSize(1920.0, 1080.0));
-        assert_eq!(state.ui_scale, manual, "and the window no longer moves it");
     }
 
     #[test]
@@ -6318,59 +6179,6 @@ mod tests {
         assert_eq!(super::sidebar_scale(&state), 1.25);
         state.ui_scale = 1.0;
         assert_eq!(super::sidebar_scale(&state), 1.0);
-    }
-
-    #[test]
-    fn fit_is_the_default_unless_the_user_chose_otherwise() {
-        let mut state = new(true, None, None);
-        apply_prefs(&mut state, crate::prefs::Prefs::default());
-        assert!(state.zoom_fit, "a first launch fits the window");
-        apply_prefs(
-            &mut state,
-            crate::prefs::Prefs { fit_choice: Some(false), ..Default::default() },
-        );
-        assert!(!state.zoom_fit, "a saved manual choice is kept");
-    }
-
-    #[test]
-    fn a_default_is_never_saved_as_a_choice() {
-        // The bug: the default "fit off" of an earlier build was written at
-        // close and then respected as the user's own choice forever.
-        let mut state = new(true, None, None);
-        apply_prefs(&mut state, crate::prefs::Prefs::default());
-        assert!(state.zoom_fit);
-        assert_eq!(prefs_of(&state).fit_choice, None, "untouched: nothing saved");
-
-        let _ = update(&mut state, Message::SetZoomFit(false));
-        assert_eq!(prefs_of(&state).fit_choice, Some(false), "pressed: saved");
-
-        let mut zoomed = new(true, None, None);
-        apply_prefs(&mut zoomed, crate::prefs::Prefs::default());
-        let _ = update(&mut zoomed, Message::ZoomIn);
-        assert_eq!(prefs_of(&zoomed).fit_choice, Some(false), "a manual zoom is a choice");
-
-        // The old key is ignored, whatever it holds.
-        let old: crate::prefs::Prefs = serde_json::from_str(r#"{ "zoom_fit": false }"#).unwrap();
-        let mut fresh = new(true, None, None);
-        apply_prefs(&mut fresh, old);
-        assert!(fresh.zoom_fit, "the pre-fix key no longer freezes fit off");
-    }
-
-    #[test]
-    fn a_wider_window_never_shrinks_the_fit() {
-        use super::fit_scale;
-        for mode in [RowMode::Auto, RowMode::Three, RowMode::Two] {
-            let mut state = new(true, None, None);
-            state.zoom_fit = true;
-            state.row_mode = mode;
-            let mut last = 0.0;
-            for w in (700..=2400).step_by(50) {
-                state.window_size = Some((w as f32, 1000.0));
-                let s = fit_scale(&state);
-                assert!(s + 1e-4 >= last, "{mode:?}: {w} px gave {s}, after {last}");
-                last = s;
-            }
-        }
     }
 
     #[test]
