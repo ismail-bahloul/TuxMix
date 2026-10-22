@@ -3983,3 +3983,17 @@ no longer a fixed 1100 px: `sidebar_does_not_fit` compares the window to
 the widest strip row at the current zoom plus the sidebar, so at 80 % it
 stays open down to ~970 px and at 130 % it folds from ~1300. Fit's steps
 are rounded to 1 % (0.75 + 13 x 0.05 drifted to 1.4000001 in f32).
+
+**Fit is now the default** (user: TotalMix 2 sizes itself to its window).
+It was the first plan, then moved to opt-in over muscle-memory and blur
+worries; the guard rails it has (floor, ceiling, 5 % steps, a manual zoom
+turns it off, saved choice wins) answer those. `apply_prefs` defaults
+`zoom_fit` to true when nothing is saved; a saved on/off is kept. Fit's
+range is the manual zoom's own, 75..175 % (the ceiling was 140 %, which
+left a huge window with small strips). The monitor-based starting zoom
+only matters in manual mode now (fit ignores it). A bare `new()` keeps fit
+off, so the tests that exercise manual zoom stay independent. Verified at
+1920x1080 (130 %, everything visible) and 1100x700 (75 %, two rows,
+sidebar on its rail). Someone whose preferences already hold
+`zoom_fit: false` (written by the pre-default build at the first close)
+keeps manual zoom; "Fit" in the zoom bar turns it on.

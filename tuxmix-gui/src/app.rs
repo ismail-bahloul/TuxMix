@@ -927,8 +927,9 @@ pub struct TuxMix {
     /// same (`prefs::Prefs::window_size`). Not written on every resize
     /// step: a drag would rewrite the file 20 times a second.
     pub window_size: Option<(f32, f32)>,
-    /// Fit mode, see `Message::SetZoomFit`. Off by default: a fixed size
-    /// is what the reference tools do, and fit is opt-in.
+    /// Fit mode, see `Message::SetZoomFit`. On by default once preferences
+    /// load (`apply_prefs`), as TotalMix 2 sizes itself to its window; off
+    /// in a bare `new()`, which tests build on.
     pub zoom_fit: bool,
     /// The first launch has no saved zoom: pick one from the monitor.
     pub initial_zoom_pending: bool,
@@ -1402,7 +1403,9 @@ pub fn apply_prefs(state: &mut TuxMix, prefs: crate::prefs::Prefs) {
         // Never saved: the first launch, see `Message::MonitorSize`.
         state.initial_zoom_pending = true;
     }
-    state.zoom_fit = prefs.zoom_fit.unwrap_or(false);
+    // Fit is the default, as in TotalMix 2: a saved choice (on or off) wins,
+    // and a first launch has none.
+    state.zoom_fit = prefs.zoom_fit.unwrap_or(true);
     state.labels = prefs
         .labels
         .into_iter()
@@ -3966,13 +3969,13 @@ fn sidebar_does_not_fit(state: &TuxMix, w: f32) -> bool {
 /// small controls, and at the strips' 175 % it was as wide as half a
 /// small window for no gain.
 const SIDEBAR_SCALE_MAX: f32 = 1.25;
-/// Fit's range and step. The floor is the manual zoom's own minimum, the
+/// Fit's range and step: the manual zoom's own range. The floor is the
 /// smallest size still readable (below it the rows scroll, as they always
 /// did); the ceiling keeps strips
 /// from growing absurd on a huge window; the step keeps the scale from
 /// sliding through fractions (blurred 1px lines) while a window is dragged.
 const FIT_MIN: f32 = theme::SCALE_MIN;
-const FIT_MAX: f32 = 1.4;
+const FIT_MAX: f32 = theme::SCALE_MAX;
 const FIT_STEP: f32 = 0.05;
 /// One mixer section's height at scale 1 (header, hint, strip), measured.
 const FIT_ROW_H: f32 = 360.0;
@@ -6211,9 +6214,14 @@ mod tests {
     }
 
     #[test]
-    fn the_first_launch_picks_a_zoom_and_later_ones_keep_the_users() {
+    fn a_manual_first_launch_picks_a_zoom_from_the_monitor_and_fit_ignores_it() {
+        // Fit sizes the UI itself, so the monitor-based starting zoom only
+        // matters for a user who is in manual mode.
         let mut state = new(true, None, None);
-        apply_prefs(&mut state, crate::prefs::Prefs::default());
+        apply_prefs(
+            &mut state,
+            crate::prefs::Prefs { zoom_fit: Some(false), ..Default::default() },
+        );
         assert!(state.initial_zoom_pending, "nothing saved: ask the monitor");
         let _ = update(&mut state, Message::MonitorSize(Some(iced::Size::new(2560.0, 1440.0))));
         assert_eq!(state.ui_scale, 1.25);
@@ -6224,6 +6232,12 @@ mod tests {
         let mut saved = new(true, None, None);
         apply_prefs(&mut saved, crate::prefs::Prefs { ui_scale: Some(1.0), ..Default::default() });
         assert!(!saved.initial_zoom_pending, "a saved zoom is never overridden");
+
+        let mut fit = new(true, None, None);
+        apply_prefs(&mut fit, crate::prefs::Prefs::default());
+        assert!(fit.zoom_fit);
+        let _ = update(&mut fit, Message::MonitorSize(Some(iced::Size::new(2560.0, 1440.0))));
+        assert_eq!(fit.ui_scale, 1.0, "fit does not take the monitor-based zoom");
     }
 
     #[test]
@@ -6292,6 +6306,18 @@ mod tests {
         assert_eq!(super::sidebar_scale(&state), 1.25);
         state.ui_scale = 1.0;
         assert_eq!(super::sidebar_scale(&state), 1.0);
+    }
+
+    #[test]
+    fn fit_is_the_default_unless_the_user_chose_otherwise() {
+        let mut state = new(true, None, None);
+        apply_prefs(&mut state, crate::prefs::Prefs::default());
+        assert!(state.zoom_fit, "a first launch fits the window");
+        apply_prefs(
+            &mut state,
+            crate::prefs::Prefs { zoom_fit: Some(false), ..Default::default() },
+        );
+        assert!(!state.zoom_fit, "a saved manual choice is kept");
     }
 
     #[test]
