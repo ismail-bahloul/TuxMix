@@ -247,7 +247,9 @@ fn edge_line(scale: f32) -> Element<'static, Message> {
 /// the whole point being asked for ("rabattable"), not just a visual
 /// nicety.
 pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
-    let scale = state.ui_scale;
+    // Capped (`app::sidebar_scale`): a column of small controls gains
+    // nothing from the strips' full zoom.
+    let scale = crate::app::sidebar_scale(state);
 
     // Collapsed, the rail is exactly the tab plus its own padding — the
     // one control that brings the column back *is* the whole rail, and
@@ -328,11 +330,67 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill);
 
-    container(row![resize_strip(scale), content])
-        .width(Length::Fixed(state.sidebar_width * scale))
-        .height(Length::Fill)
-        .style(theme::top_bar)
-        .into()
+    container(column![
+        row![resize_strip(scale), content].height(Length::Fill),
+        zoom_bar(state, scale)
+    ])
+    .width(Length::Fixed(state.sidebar_width * scale))
+    .height(Length::Fill)
+    .style(theme::top_bar)
+    .into()
+}
+
+/// The zoom control, fixed at the foot of the column: `-  100%  +  Fit`.
+/// The zoom was Ctrl+wheel / Ctrl+= only, which nothing on screen
+/// mentioned. The percentage resets to 100 %, "Fit" sizes the UI to the
+/// window (`app::fit_scale`) and any manual step turns it off again.
+fn zoom_bar(state: &TuxMix, scale: f32) -> Element<'_, Message> {
+    let pct = format!("{:.0}%", state.ui_scale * 100.0);
+    let cell = |label: &'static str| {
+        button(text(label).size(theme::TEXT_SM * scale).center())
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+            .width(Length::Fixed(26.0 * scale))
+    };
+    container(
+        row![
+            hint(
+                cell("\u{2212}")
+                    .style(theme::ghost_button)
+                    .on_press(Message::ZoomOut),
+                "Zoom out (Ctrl -)",
+                scale,
+            ),
+            hint(
+                button(text(pct).size(theme::TEXT_XS * scale).center())
+                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+                    .width(Length::Fill)
+                    .style(theme::ghost_button)
+                    .on_press(Message::ZoomReset),
+                "Reset to 100% (Ctrl 0)",
+                scale,
+            ),
+            hint(
+                cell("+")
+                    .style(theme::ghost_button)
+                    .on_press(Message::ZoomIn),
+                "Zoom in (Ctrl +)",
+                scale,
+            ),
+            hint(
+                button(text("Fit").size(theme::TEXT_XS * scale).center())
+                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+                    .style(theme::segment_button(state.zoom_fit))
+                    .on_press(Message::SetZoomFit(!state.zoom_fit)),
+                "Size the interface to the window",
+                scale,
+            ),
+        ]
+        .spacing(theme::SPACE_TIGHT * scale)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+    .width(Length::Fill)
+    .into()
 }
 
 /// The resize grip on the column's inner edge — a `splitter` that reports

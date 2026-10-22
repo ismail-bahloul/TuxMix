@@ -3941,3 +3941,34 @@ listed all keys on one overflowing line.
 
 Not done in the TUI: custom channel names and the saved window layout
 (GUI-only preferences today), and the audio-engine (PipeWire) readout.
+
+## 2026-10-22 (cont. 2): scale — a visible zoom, fit on request, a saner sidebar
+
+Looked at the scale in a live window (960x600 at 100 %, 1280x800 at
+175 %). The model stays the September one (fixed geometry, scroll, manual
+zoom: section 8) and gains what was missing around it:
+
+- **A visible zoom control** at the foot of the sidebar: `−  100%  +  Fit`
+  (percentage resets to 100 %). The zoom used to be Ctrl+wheel / Ctrl+=
+  only, which nothing on screen mentioned.
+- **Fit, opt-in** (`zoom_fit`, off by default, remembered): the largest
+  scale in 90..140 % (5 % steps: no fractional sliding, which blurs 1px
+  lines) at which the whole mixer fits the window without scrolling, for the
+  current row mode (`fit_scale`, pure arithmetic on the numbers `mixer_view`
+  lays out with, refit after every message). Outside the range the rows
+  scroll as before. Any manual zoom step turns it off. Why not the default:
+  strips changing size as a window is dragged costs muscle memory, and the
+  reference tools (Reaper, Ableton) keep a fixed size; the three September
+  attempts all lacked a floor, a ceiling or an escape. Verified: 1920x1080
+  fits at 130 % in two rows with nothing scrolling, 1500x900 at 100 %,
+  1050x650 at 90 % (rows scroll).
+- **Initial zoom from the monitor**, first launch only (no saved zoom):
+  `window::monitor_size`, 100 % up to 1080p, 110 / 125 / 150 % from 1100 /
+  1300 / 2000 logical px (the OS scale factor is already in those); the
+  user's choice is remembered afterwards and never overridden.
+- **The sidebar's scale stops at 125 %** (`sidebar_scale`): measured, it
+  never exceeded ~30 % of the window even at 175 % zoom, so capping its
+  width would have changed little; what hurt was a column of small controls
+  growing as much as the strips. It also **folds itself below 1100 px** and
+  reopens when the window widens, unless the user folded it
+  (`auto_folded`).

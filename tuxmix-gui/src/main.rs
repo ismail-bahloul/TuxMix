@@ -122,7 +122,16 @@ fn main() -> iced::Result {
                 state.view = view;
             }
             state.fullscreen = start_fullscreen;
-            state
+            // First launch only (no saved zoom): ask the monitor's size to
+            // pick a starting zoom.
+            let task = if state.initial_zoom_pending {
+                iced::window::oldest()
+                    .and_then(iced::window::monitor_size)
+                    .map(|size| app::Message::MonitorSize(size))
+            } else {
+                iced::Task::none()
+            };
+            (state, task)
         },
         app::update,
         app::view,
