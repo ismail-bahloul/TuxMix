@@ -9,7 +9,7 @@
 
 use iced::advanced::text;
 use iced::keyboard::Modifiers;
-use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path, Stroke};
+use iced::widget::canvas::{self, Canvas, Geometry, Path, Stroke};
 use iced::{alignment, mouse, window, Color, Element, Length, Radians, Rectangle, Renderer, Theme};
 use std::time::Instant;
 
@@ -89,6 +89,10 @@ pub struct Knob<Message> {
 
 #[derive(Default)]
 pub struct State {
+    /// The knob's drawing, rebuilt only when `cache_key` changes (see
+    /// `draw`).
+    cache: canvas::Cache,
+    cache_key: std::cell::Cell<u64>,
     dragging: bool,
     last_click: Option<Instant>,
     /// See `Fader::State::drag_pos` — re-read fresh every move rather than
@@ -260,105 +264,123 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
-        let center = frame.center();
-        let radius = (DIAMETER / 2.0) * self.scale;
-        let border_w = BORDER_WIDTH * self.scale;
-        let tick_len = TICK_LEN * self.scale;
-
         let display_value = if state.dragging {
             self.value
         } else {
             state.display.map(|d| d.at(Instant::now())).unwrap_or(self.value)
         };
-        let t = self.value_to_t(display_value);
-        // Dims everything but the face (which is already dark enough not
-        // to need it) when `!interactive` — a faded knob reads as "not
-        // applicable here" at a glance, without a second visual language
-        // to design for.
-        let dim = if self.interactive { 1.0 } else { 0.4 };
-
-        // Face — flat filled disc, near-black like the reference's knob
-        // plastic. Used to flip to near-white while dragging (mirroring
-        // the fader cap's own drag-lit look), but on a knob that's small
-        // enough for the label text to fill most of the face, a full
-        // light/dark flip blew the label away entirely — user report:
-        // "ça s'allume en blanc, ça fait qu'on voit plus rien." A subtle
-        // lighten instead keeps the face dark enough that the label/tick/
-        // arc below don't need their own dragging-only color flip to stay
-        // readable — one visual state to reason about, not two.
-        const DRAG_LIGHTEN: f32 = 0.18;
-        let face_color = if state.dragging {
-            theme::blend(theme::SURFACE, Color::WHITE, DRAG_LIGHTEN)
-        } else {
-            theme::SURFACE
+        // Everything below is a pure function of these: so the geometry is
+        // built once and reused until one of them changes. A mixer has
+        // dozens of knobs and nearly all of them sit still, yet each was
+        // re-tessellated on every redraw (a measurable slice of the frame).
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            display_value.to_bits().hash(&mut h);
+            self.label.hash(&mut h);
+            self.scale.to_bits().hash(&mut h);
+            (state.dragging, self.interactive, self.arc_from_center).hash(&mut h);
+            (bounds.width.to_bits(), bounds.height.to_bits()).hash(&mut h);
+            h.finish()
         };
-        frame.fill(&Path::circle(center, radius.max(1.0)), face_color);
-        frame.stroke(
-            &Path::circle(center, radius.max(1.0)),
-            Stroke::default()
-                .with_color(Color { a: dim, ..theme::BORDER })
-                .with_width(border_w),
-        );
-
-        // Orange arc from the centered (t=0.5) position round to the
-        // current value — the real TotalMix pan-knob signature (see
-        // `arc_from_center`'s doc comment). Skipped when `!interactive`
-        // even if `arc_from_center` is set — there's no real value behind
-        // it to point at (see `interactive`'s own doc comment), and an
-        // arc implies a live reading a dimmed, inert knob shouldn't.
-        if self.arc_from_center && self.interactive {
-            let center_angle = angle_of(0.5).0;
-            let value_angle = angle_of(t).0;
-            let (start_angle, end_angle) = if center_angle <= value_angle {
-                (center_angle, value_angle)
-            } else {
-                (value_angle, center_angle)
-            };
-            frame.stroke(
-                &Path::new(|b| {
-                    b.arc(canvas::path::Arc {
-                        center,
-                        radius: radius - border_w,
-                        start_angle: Radians(start_angle),
-                        end_angle: Radians(end_angle),
-                    })
-                }),
-                Stroke::default().with_color(theme::ACCENT).with_width(2.5 * self.scale),
-            );
+        if state.cache_key.replace(key) != key {
+            state.cache.clear();
         }
+        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
+            let center = frame.center();
+            let radius = (DIAMETER / 2.0) * self.scale;
+            let border_w = BORDER_WIDTH * self.scale;
+            let tick_len = TICK_LEN * self.scale;
 
-        // A single tick at the current angle, poking out past the rim —
-        // the precise readout the label text backs up, not a full needle
-        // or arc fill (see `Bus_design.png`: just a mark at 12 o'clock
-        // when centered). No dragging-only color flip needed here or on
-        // the label below (see `face_color`'s own doc comment) — both
-        // stay their normal color regardless of drag state.
-        let angle = angle_of(t).0;
-        let (pc, ps) = (angle.cos(), angle.sin());
-        frame.stroke(
-            &Path::line(
-                iced::Point::new(center.x + pc * (radius - border_w), center.y + ps * (radius - border_w)),
-                iced::Point::new(center.x + pc * (radius + tick_len), center.y + ps * (radius + tick_len)),
-            ),
-            Stroke::default()
-                .with_color(Color { a: dim, ..theme::TEXT_SEC })
-                .with_width(1.5 * self.scale),
-        );
+                let t = self.value_to_t(display_value);
+            // Dims everything but the face (which is already dark enough not
+            // to need it) when `!interactive` — a faded knob reads as "not
+            // applicable here" at a glance, without a second visual language
+            // to design for.
+            let dim = if self.interactive { 1.0 } else { 0.4 };
 
-        // Value label, centered in the face — the knob doubles as its own
-        // readout instead of a separate text element below it.
-        frame.fill_text(canvas::Text {
-            content: self.label.clone(),
-            position: center,
-            color: Color { a: dim, ..theme::TEXT_PRIMARY },
-            size: (theme::TEXT_MICRO * self.scale).into(),
-            align_x: text::Alignment::Center,
-            align_y: alignment::Vertical::Center,
-            ..canvas::Text::default()
+            // Face — flat filled disc, near-black like the reference's knob
+            // plastic. Used to flip to near-white while dragging (mirroring
+            // the fader cap's own drag-lit look), but on a knob that's small
+            // enough for the label text to fill most of the face, a full
+            // light/dark flip blew the label away entirely — user report:
+            // "ça s'allume en blanc, ça fait qu'on voit plus rien." A subtle
+            // lighten instead keeps the face dark enough that the label/tick/
+            // arc below don't need their own dragging-only color flip to stay
+            // readable — one visual state to reason about, not two.
+            const DRAG_LIGHTEN: f32 = 0.18;
+            let face_color = if state.dragging {
+                theme::blend(theme::SURFACE, Color::WHITE, DRAG_LIGHTEN)
+            } else {
+                theme::SURFACE
+            };
+            frame.fill(&Path::circle(center, radius.max(1.0)), face_color);
+            frame.stroke(
+                &Path::circle(center, radius.max(1.0)),
+                Stroke::default()
+                    .with_color(Color { a: dim, ..theme::BORDER })
+                    .with_width(border_w),
+            );
+
+            // Orange arc from the centered (t=0.5) position round to the
+            // current value — the real TotalMix pan-knob signature (see
+            // `arc_from_center`'s doc comment). Skipped when `!interactive`
+            // even if `arc_from_center` is set — there's no real value behind
+            // it to point at (see `interactive`'s own doc comment), and an
+            // arc implies a live reading a dimmed, inert knob shouldn't.
+            if self.arc_from_center && self.interactive {
+                let center_angle = angle_of(0.5).0;
+                let value_angle = angle_of(t).0;
+                let (start_angle, end_angle) = if center_angle <= value_angle {
+                    (center_angle, value_angle)
+                } else {
+                    (value_angle, center_angle)
+                };
+                frame.stroke(
+                    &Path::new(|b| {
+                        b.arc(canvas::path::Arc {
+                            center,
+                            radius: radius - border_w,
+                            start_angle: Radians(start_angle),
+                            end_angle: Radians(end_angle),
+                        })
+                    }),
+                    Stroke::default().with_color(theme::ACCENT).with_width(2.5 * self.scale),
+                );
+            }
+
+            // A single tick at the current angle, poking out past the rim —
+            // the precise readout the label text backs up, not a full needle
+            // or arc fill (see `Bus_design.png`: just a mark at 12 o'clock
+            // when centered). No dragging-only color flip needed here or on
+            // the label below (see `face_color`'s own doc comment) — both
+            // stay their normal color regardless of drag state.
+            let angle = angle_of(t).0;
+            let (pc, ps) = (angle.cos(), angle.sin());
+            frame.stroke(
+                &Path::line(
+                    iced::Point::new(center.x + pc * (radius - border_w), center.y + ps * (radius - border_w)),
+                    iced::Point::new(center.x + pc * (radius + tick_len), center.y + ps * (radius + tick_len)),
+                ),
+                Stroke::default()
+                    .with_color(Color { a: dim, ..theme::TEXT_SEC })
+                    .with_width(1.5 * self.scale),
+            );
+
+            // Value label, centered in the face — the knob doubles as its own
+            // readout instead of a separate text element below it.
+            frame.fill_text(canvas::Text {
+                content: self.label.clone(),
+                position: center,
+                color: Color { a: dim, ..theme::TEXT_PRIMARY },
+                size: (theme::TEXT_MICRO * self.scale).into(),
+                align_x: text::Alignment::Center,
+                align_y: alignment::Vertical::Center,
+                ..canvas::Text::default()
+            });
+
         });
-
-        vec![frame.into_geometry()]
+        vec![geometry]
     }
 
     fn mouse_interaction(

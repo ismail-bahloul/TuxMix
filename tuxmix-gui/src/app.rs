@@ -924,6 +924,11 @@ pub struct TuxMix {
     /// same (`prefs::Prefs::window_size`). Not written on every resize
     /// step: a drag would rewrite the file 20 times a second.
     pub window_size: Option<(f32, f32)>,
+    /// The last time anything on screen changed or the user acted: while
+    /// it is recent the UI ticks at `TICK_ACTIVE`, afterwards at
+    /// `TICK_IDLE` (see `tick_interval`). An idle mixer used to redraw 20
+    /// times a second for nothing: ~12 ms a frame, a quarter of a core.
+    pub last_activity: Instant,
     /// The first launch has no saved zoom: pick one from the monitor.
     pub initial_zoom_pending: bool,
     /// The sidebar was folded by a narrow window (not by the user), so it
@@ -1200,18 +1205,36 @@ impl MeterAnim {
         }
     }
 
+    /// One nominal tick (`METER_TICK_MS`): what the ballistics were tuned
+    /// with, and what the tests step by.
+    #[cfg(test)]
     fn step(&mut self, target: f32) {
+        self.step_for(target, METER_TICK_MS);
+    }
+
+    /// Steps by the time really elapsed since the last step. The attack
+    /// and release factors are per nominal tick; a tick that is faster or
+    /// slower (the UI ticks at 30 Hz with a signal, 2 Hz at rest) must not
+    /// make a meter rise or fall faster or slower, so the factor is raised
+    /// to the elapsed/nominal ratio.
+    fn step_elapsed(&mut self, target: f32) {
+        let dt = self.last_step_at.elapsed().as_secs_f32() * 1000.0;
+        self.step_for(target, dt.clamp(1.0, 250.0));
+    }
+
+    fn step_for(&mut self, target: f32, dt_ms: f32) {
         self.prev_value = self.value;
+        let ratio = dt_ms / METER_TICK_MS;
+        let eff = |alpha: f32| 1.0 - (1.0 - alpha).powf(ratio);
         if target >= self.value {
-            self.value += (target - self.value) * METER_ATTACK;
+            self.value += (target - self.value) * eff(METER_ATTACK);
             self.release_elapsed_ms = 0.0;
         } else {
-            self.release_elapsed_ms =
-                (self.release_elapsed_ms + METER_TICK_MS).min(METER_RELEASE_MS);
+            self.release_elapsed_ms = (self.release_elapsed_ms + dt_ms).min(METER_RELEASE_MS);
             let t = self.release_elapsed_ms / METER_RELEASE_MS;
             let alpha = METER_RELEASE_END
                 + (METER_RELEASE_START - METER_RELEASE_END) * (1.0 - t) * (1.0 - t);
-            self.value += (target - self.value) * alpha;
+            self.value += (target - self.value) * eff(alpha);
         }
         self.last_step_at = Instant::now();
     }
@@ -1277,6 +1300,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         // Matches `window::Settings::size` in main.rs — updated for real
         // as soon as the first `Opened`/`Resized` event arrives.
         window_size: None,
+        last_activity: Instant::now(),
         initial_zoom_pending: false,
         auto_folded: false,
         window_width: 1280.0,
@@ -1940,6 +1964,14 @@ fn needs_protocol_features(message: &Message) -> bool {
 }
 
 pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
+    // Anything but the background polls is the user doing something, or
+    // something the user must see: keep the tick fast for a while.
+    if !matches!(
+        message,
+        Message::Tick | Message::EnginePoll | Message::EngineRead(..)
+    ) {
+        state.last_activity = Instant::now();
+    }
     // The class-compliant personality drives routing, preamps and clock and
     // nothing else (see `RmeDevice::protocol_features`). The UI already
     // hides the controls; this is the other half of that, so nothing built
@@ -2014,7 +2046,13 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                     }
                 }
             }
+            let before = panel_fingerprint(state);
             let _ = state.device.poll_events();
+            if panel_fingerprint(state) != before {
+                // The front panel moved a level, a mute or the dim: show
+                // it at the fast rate while it keeps moving.
+                state.last_activity = Instant::now();
+            }
             // Follow the front panel's OUT selection (TotalMix
             // highlights the panel's current submix) — only when it
             // CHANGES on the panel, so a GUI click on the submix picker
@@ -2034,7 +2072,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
             let in_levels = state.device.input_meters();
             for (i, m) in state.input_meters.iter_mut().enumerate() {
-                m.step(in_levels.get(i).copied().unwrap_or(0.0));
+                m.step_elapsed(in_levels.get(i).copied().unwrap_or(0.0));
             }
             // Mock owns its playback levels; every real backend reads
             // the host mixer's sink monitor through `pw_meter`.
@@ -2046,11 +2084,22 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 tap_levels.to_vec()
             };
             for (i, m) in state.playback_meters.iter_mut().enumerate() {
-                m.step(pb_levels.get(i).copied().unwrap_or(0.0));
+                m.step_elapsed(pb_levels.get(i).copied().unwrap_or(0.0));
             }
             let out_levels = state.device.output_meters_from(&in_levels, &pb_levels);
             for (i, m) in state.output_meters.iter_mut().enumerate() {
-                m.step(out_levels.get(i).copied().unwrap_or(0.0));
+                m.step_elapsed(out_levels.get(i).copied().unwrap_or(0.0));
+            }
+            // A live signal keeps the UI on the fast tick (and the fade
+            // after it, `ACTIVE_FOR`); silence lets it go idle.
+            const LIVE: f32 = 0.002;
+            if in_levels
+                .iter()
+                .chain(pb_levels.iter())
+                .chain(out_levels.iter())
+                .any(|l| *l > LIVE)
+            {
+                state.last_activity = Instant::now();
             }
             // Persist the mixer state (debounced 3 s) — no hardware
             // readback for gains/volumes, so this is the restore source
@@ -2794,9 +2843,54 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
     Task::none()
 }
 
+/// A cheap summary of what the front panel can change behind the app's back
+/// (output levels, mutes, the dim): when it differs after a poll, the panel
+/// was touched. Not a hash of the whole mix: just enough to notice.
+fn panel_fingerprint(state: &TuxMix) -> f64 {
+    state
+        .device
+        .outputs()
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            (o.volume as f64 + if o.mute { 1000.0 } else { 0.0 }) * (1.0 + i as f64 * 0.01)
+        })
+        .sum::<f64>()
+        + if state.device.settings().dim { 7777.0 } else { 0.0 }
+}
+
+/// The tick while something is moving (meters, a drag, the front panel):
+/// 30 Hz. Meters redraw on it and no longer in between (see
+/// `widgets::fader::INTERPOLATE_METERS`), so it is also their frame rate.
+const TICK_ACTIVE: Duration = Duration::from_millis(33);
+/// The tick at rest. Every tick rebuilds and redraws the whole view, so at
+/// rest it only has to keep the slow chores alive (connection probe,
+/// auto-save, the front panel); anything that changes the screen switches
+/// back to `TICK_ACTIVE` at once.
+const TICK_IDLE: Duration = Duration::from_millis(500);
+/// How long after the last change the tick stays fast: longer than the
+/// meters' release, so a fading peak is drawn to the end.
+const ACTIVE_FOR: Duration = Duration::from_millis(1500);
+
+/// Whether the screen has anything moving, i.e. the tick should be fast.
+fn is_active(state: &TuxMix) -> bool {
+    state.last_activity.elapsed() < ACTIVE_FOR
+        || state.pending_resize_width.is_some()
+        || !state.collapse_anim.is_empty()
+        || state.drag_range.is_some()
+}
+
+pub fn tick_interval(state: &TuxMix) -> Duration {
+    if is_active(state) {
+        TICK_ACTIVE
+    } else {
+        TICK_IDLE
+    }
+}
+
 pub fn subscription(state: &TuxMix) -> Subscription<Message> {
     let mut subs = vec![
-        iced::time::every(Duration::from_millis(50)).map(|_| Message::Tick),
+        iced::time::every(tick_interval(state)).map(|_| Message::Tick),
         iced::event::listen_with(handle_global_event),
     ];
     // Another app (or `pw-metadata` by hand) can change the graph clock;
@@ -5153,6 +5247,7 @@ mod tests {
     use crate::theme;
     use crate::widgets::strip;
     use std::collections::HashSet;
+    use std::time::{Duration, Instant};
     use tuxmix_core::RmeDevice;
 
     #[test]
@@ -6179,6 +6274,68 @@ mod tests {
         assert_eq!(super::sidebar_scale(&state), 1.25);
         state.ui_scale = 1.0;
         assert_eq!(super::sidebar_scale(&state), 1.0);
+    }
+
+    #[test]
+    fn the_tick_slows_down_at_rest_and_speeds_up_on_any_activity() {
+        use super::{tick_interval, TICK_ACTIVE, TICK_IDLE};
+        let mut state = new(true, None, None);
+        state.last_activity = Instant::now() - Duration::from_secs(10);
+        assert_eq!(tick_interval(&state), TICK_IDLE, "nothing happened for a while");
+
+        // The user doing anything wakes it, even a message that changes
+        // nothing visible (it costs one fast second).
+        let _ = update(&mut state, Message::ToggleSidebarPanel(sidebar::Panel::Groups));
+        assert_eq!(tick_interval(&state), TICK_ACTIVE);
+
+        // Background polls do not count as activity.
+        state.last_activity = Instant::now() - Duration::from_secs(10);
+        let _ = update(&mut state, Message::EnginePoll);
+        let _ = update(&mut state, Message::EngineRead(None, None));
+        assert_eq!(tick_interval(&state), TICK_IDLE);
+
+        // A pending window resize and a running collapse animation keep it fast.
+        state.pending_resize_width = Some(1200.0);
+        assert_eq!(tick_interval(&state), TICK_ACTIVE);
+    }
+
+    #[test]
+    fn a_live_signal_keeps_the_tick_fast_and_silence_releases_it() {
+        // The mock generates levels, so a Tick sees a live signal.
+        let mut state = new(true, None, None);
+        state.last_activity = Instant::now() - Duration::from_secs(10);
+        let _ = update(&mut state, Message::Tick);
+        assert!(
+            state.last_activity.elapsed() < Duration::from_secs(1),
+            "meters moving count as activity"
+        );
+    }
+
+    #[test]
+    fn meter_ballistics_do_not_depend_on_the_tick_rate() {
+        // One second of a held signal then a second of silence, stepped at
+        // three different tick rates: the meter ends in the same place.
+        let run = |dt_ms: f32| {
+            let mut m = MeterAnim::new();
+            let n = (1000.0 / dt_ms) as usize;
+            for _ in 0..n {
+                m.step_for(1.0, dt_ms);
+            }
+            let held = m.value;
+            for _ in 0..n {
+                m.step_for(0.0, dt_ms);
+            }
+            (held, m.value)
+        };
+        let (h50, r50) = run(50.0);
+        // The rates that exist: 30 Hz with a signal, 20 Hz as it was, and 10 Hz
+        // for a slow machine; not 4 Hz, where the changing release curve is
+        // sampled too coarsely to compare (and meters are not decaying then).
+        for dt in [33.0, 100.0] {
+            let (h, r) = run(dt);
+            assert!((h - h50).abs() < 0.02, "attack at {dt} ms: {h} vs {h50}");
+            assert!((r - r50).abs() < 0.03, "release at {dt} ms: {r} vs {r50}");
+        }
     }
 
     #[test]

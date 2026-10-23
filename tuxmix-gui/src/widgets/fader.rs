@@ -6,9 +6,27 @@ use iced::advanced::text as advanced_text;
 use iced::keyboard::Modifiers;
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path, Stroke};
 use iced::{mouse, window, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
+use std::hash::Hash;
 use std::time::{Duration, Instant};
 
 use crate::theme;
+
+fn hash_of(f: impl FnOnce(&mut std::collections::hash_map::DefaultHasher)) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    f(&mut h);
+    h.finish()
+}
+
+/// Whether meters are interpolated and redrawn *between* ticks, at the
+/// display's refresh rate. Measured 2026-10-22 (release build, mixer view,
+/// signal on every meter): 19 % of a core with it, 5.5 % without. Every
+/// one of those in-between redraws walks the whole window, and with a
+/// signal playing they ran continuously. Off: a meter moves once per tick,
+/// and the tick is fast enough (30 Hz, `app::TICK_ACTIVE`) that it still
+/// reads as motion; the cap's easing after an outside change keeps its own
+/// short animation.
+const INTERPOLATE_METERS: bool = false;
 
 /// How long a meter keyframe transition takes to visually settle — matches
 /// `app.rs`'s `Tick` interval, since that's how often a new keyframe
@@ -39,6 +57,16 @@ impl MeterFrame {
             prev: value,
             value,
             since: Instant::now(),
+        }
+    }
+
+    /// What a meter shows at `now`: the interpolated value, or (not
+    /// interpolating, `INTERPOLATE_METERS`) simply the newest one.
+    pub(crate) fn shown(&self, now: Instant) -> f32 {
+        if INTERPOLATE_METERS {
+            self.at(now)
+        } else {
+            self.value
         }
     }
 
@@ -277,6 +305,15 @@ impl<Message> Fader<Message> {
 
 #[derive(Default)]
 pub struct State {
+    /// The parts of the drawing that do not move with the signal, each
+    /// rebuilt only when its key changes: the dB ruler (size and scale
+    /// only) and the rail with its cap (value, default, range, drag). A
+    /// mixer has ~70 faders and nearly all of them sit still, yet each
+    /// re-tessellated its ruler text and rail on every redraw.
+    ruler_cache: canvas::Cache,
+    ruler_key: std::cell::Cell<u64>,
+    track_cache: canvas::Cache,
+    track_key: std::cell::Cell<u64>,
     dragging: bool,
     last_click: Option<Instant>,
     /// Last cursor Y seen during an active drag. Each move applies the
@@ -450,7 +487,8 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
             // to the normal Tick-driven rate on its own once caught up
             // (see `MeterFrame`).
             canvas::Event::Window(window::Event::RedrawRequested(now)) => {
-                let mut still_animating = self.show_meter && self.meter.is_settling(*now);
+                let mut still_animating =
+                    INTERPOLATE_METERS && self.show_meter && self.meter.is_settling(*now);
 
                 if !state.dragging {
                     let display = state
@@ -484,41 +522,22 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
         bounds: Rectangle,
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let mut frame = Frame::new(renderer, bounds.size());
         let (track_x, meter_x) = self.layout_x(bounds.width);
+        let mut layers: Vec<Geometry> = Vec::with_capacity(3);
+
+        // Dynamic layer: the level (and the label, on the cells that have
+        // one). Redrawn every time.
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
         if self.show_meter {
-            let (meter_rect, ruler_rect) = meter_column(meter_x, bounds.height, self.scale);
+            let (meter_rect, _) = meter_column(meter_x, bounds.height, self.scale);
             draw_meter(
                 &mut frame,
                 meter_rect,
-                self.meter.at(Instant::now()),
+                self.meter.shown(Instant::now()),
                 self.scale,
                 self.meter_available,
                 self.meter2
-                    .map(|m| (m.at(Instant::now()), self.meter2_available)),
-            );
-            draw_ruler(&mut frame, ruler_rect, self.scale);
-        }
-        let display_value = if state.dragging {
-            self.value
-        } else {
-            state
-                .display
-                .map(|d| d.at(Instant::now()))
-                .unwrap_or(self.value)
-        };
-        if self.show_track {
-            draw_track(
-                &mut frame,
-                Rectangle::new(
-                    Point::new(track_x, 0.0),
-                    Size::new(TRACK_W * self.scale, bounds.height),
-                ),
-                display_value,
-                self.default_value,
-                self.range,
-                state.dragging,
-                self.scale,
+                    .map(|m| (m.shown(Instant::now()), self.meter2_available)),
             );
         }
         if let Some(label) = &self.label {
@@ -532,7 +551,69 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
                 ..canvas::Text::default()
             });
         }
-        vec![frame.into_geometry()]
+        layers.push(frame.into_geometry());
+
+        // Static layer 1: the ruler's ticks and numbers.
+        if self.show_meter {
+            let key = hash_of(|h| {
+                (
+                    bounds.width.to_bits(),
+                    bounds.height.to_bits(),
+                    self.scale.to_bits(),
+                )
+                    .hash(h);
+                meter_x.to_bits().hash(h);
+            });
+            if state.ruler_key.replace(key) != key {
+                state.ruler_cache.clear();
+            }
+            layers.push(state.ruler_cache.draw(renderer, bounds.size(), |frame| {
+                let (_, ruler_rect) = meter_column(meter_x, bounds.height, self.scale);
+                draw_ruler(frame, ruler_rect, self.scale);
+            }));
+        }
+
+        // Static layer 2: the rail and its cap, which only move with the
+        // value.
+        if self.show_track {
+            let display_value = if state.dragging {
+                self.value
+            } else {
+                state
+                    .display
+                    .map(|d| d.at(Instant::now()))
+                    .unwrap_or(self.value)
+            };
+            let key = hash_of(|h| {
+                (
+                    bounds.width.to_bits(),
+                    bounds.height.to_bits(),
+                    self.scale.to_bits(),
+                )
+                    .hash(h);
+                (display_value.to_bits(), self.default_value.to_bits()).hash(h);
+                (self.range.0.to_bits(), self.range.1.to_bits()).hash(h);
+                (state.dragging, track_x.to_bits()).hash(h);
+            });
+            if state.track_key.replace(key) != key {
+                state.track_cache.clear();
+            }
+            layers.push(state.track_cache.draw(renderer, bounds.size(), |frame| {
+                draw_track(
+                    frame,
+                    Rectangle::new(
+                        Point::new(track_x, 0.0),
+                        Size::new(TRACK_W * self.scale, bounds.height),
+                    ),
+                    display_value,
+                    self.default_value,
+                    self.range,
+                    state.dragging,
+                    self.scale,
+                );
+            }));
+        }
+        layers
     }
 
     fn mouse_interaction(
@@ -969,7 +1050,7 @@ impl<Message> canvas::Program<Message> for VuMeter {
         // See `Fader`'s identical arm.
         match event {
             canvas::Event::Window(window::Event::RedrawRequested(now))
-                if self.level.is_settling(*now) =>
+                if INTERPOLATE_METERS && self.level.is_settling(*now) =>
             {
                 Some(canvas::Action::request_redraw())
             }
@@ -990,7 +1071,7 @@ impl<Message> canvas::Program<Message> for VuMeter {
         draw_meter(
             &mut frame,
             meter_rect,
-            self.level.at(Instant::now()),
+            self.level.shown(Instant::now()),
             self.scale,
             self.available,
             // Collapsed strips are a glance-only view with no room for a

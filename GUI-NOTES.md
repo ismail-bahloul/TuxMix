@@ -4042,3 +4042,44 @@ monitor, the sidebar's scale cap (125 %), its auto-fold sized to the real
 need, and the 640x420 minimum window. One leftover: the zoom fit left in a
 saved file (`ui_scale`, e.g. 76 %) is now just a manual zoom; the
 percentage resets it to 100 %.
+
+## 2026-10-23: CPU
+
+User asked whether to cut CPU and RAM. Measured first (release build, real
+GPU, one core = 100 %), on the real card with nothing playing: **25 % of a
+core for a still mixer**, 235 MB RSS (112 MB PSS: 37 MB anonymous, the rest
+the GPU driver's shared libraries; nothing worth chasing on the RAM side).
+Timing inside the process showed our own code is negligible (building the
+view 0.17 ms, handling a message 8 us) and the canvases were 4.4 ms of a
+12.8 ms frame (~173 canvas draws a frame, every one re-tessellated), the
+rest being iced's layout and drawing. Three causes, three fixes:
+
+- **The 50 ms tick ran forever.** Every tick rebuilds and redraws the
+  whole view, even with nothing moving. The tick is now adaptive
+  (`tick_interval`): 33 ms while something is active (any user message, a
+  live signal on a meter, a front-panel change noticed by
+  `panel_fingerprint`, a pending resize or collapse animation), for
+  `ACTIVE_FOR` (1.5 s) after the last activity, then 500 ms. The chores
+  that ride on it (connection probe, auto-save, prefs flush) do not need
+  more.
+- **Meters redrew between ticks, at the display's refresh rate**, for as
+  long as a signal moved them: 19 % of a core, 5.5 % without
+  (`INTERPOLATE_METERS = false`). A meter now moves once per tick, which
+  is 30 Hz while there is a signal. Meter ballistics (attack, release)
+  were per tick, so a faster or slower tick would have changed how a meter
+  rises and falls; `MeterAnim::step_elapsed` raises the factors to the
+  elapsed/nominal ratio (test `meter_ballistics_do_not_depend_on_the_tick_rate`).
+- **Static canvas drawing is cached.** A knob's whole drawing and a fader's
+  ruler and rail+cap are built once per change (`canvas::Cache`, keyed on
+  what they depend on), the level stays dynamic: canvas time per frame
+  4.4 ms -> 2.2 ms.
+
+Tried and dropped: capping the in-between redraws with
+`canvas::Action::request_redraw_at` (33 ms): it doubled the CPU (41 %, twice)
+against `request_redraw()`.
+
+Result: still mixer 25 % -> 1.7 % (quick 1.5 %, matrix 2.9 %), meters live
+(mock) 25 % -> 7.7 %. `perf`, `gdb` and `eu-stack` are all blocked here
+(perf_event_paranoid 2, ptrace_scope 1), hence the in-process timers
+(removed again). Not done, and the next lever if the live figure matters:
+meters read from a shared store drawn without a view rebuild at all.
