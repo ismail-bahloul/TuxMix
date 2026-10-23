@@ -583,9 +583,24 @@ fn pan_text(pan: i8) -> String {
     }
 }
 
+const USAGE: &str = "\
+TuxMix TUI - terminal mixer for RME interfaces
+
+Usage: tuxmix-tui [options]
+
+Options:
+  --mock                 run the simulation instead of the hardware
+  --backend alsa|usb     force a backend (default: auto)
+  -h, --help             show this help
+";
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return Ok(());
+    }
     let mock = args.iter().any(|a| a == "--mock");
 
     // `None` = auto-detect (ALSA/kernel-driver first, USB fallback — see
@@ -607,14 +622,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         DeviceHandle::open_mock()
     } else {
         DeviceHandle::open_real(backend).unwrap_or_else(|| {
-            eprintln!("No device found. Use --mock.");
+            eprintln!("No device found; starting in simulation (pass --mock to make that explicit).");
             DeviceHandle::open_mock()
         })
     };
+    let real_device = !device.is_mock();
     // Restore the shared auto-saved state (the same `auto.json` the GUI
     // uses) so the two UIs stay in sync — the device has no gain/volume
     // readback. Skip in mock mode (no hardware to write to).
-    if !mock {
+    if real_device {
         if let Some(scene) = tuxmix_core::scene::load_auto_scene() {
             if let Err(e) = device.apply_scene(&scene) {
                 eprintln!("auto scene load failed: {e:?}");

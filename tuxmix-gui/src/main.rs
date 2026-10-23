@@ -72,9 +72,33 @@ fn parse_view(args: &[String]) -> Option<app::View> {
     }
 }
 
+const USAGE: &str = "\
+TuxMix - TotalMix-style mixer for RME interfaces
+
+Usage: tuxmix [options]
+
+Options:
+  --mock                 run the simulation instead of the hardware
+  --backend alsa|usb     force a backend (default: auto)
+  --view quick|mixer|matrix
+  --osc                  enable the OSC control surface (UDP, loopback)
+  --osc-port PORT        OSC listen port (default 9000)
+  --osc-send-port PORT   OSC send port (default 9001)
+  --osc-host HOST        OSC send host (default 127.0.0.1)
+  --fullscreen           start fullscreen
+  --minimized            start hidden in the tray
+  -h, --help             show this help
+
+The terminal UI is a separate binary: tuxmix-tui.
+";
+
 fn main() -> iced::Result {
     env_logger::init();
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return Ok(());
+    }
     let mock = args.iter().any(|a| a == "--mock");
 
     // `None` = auto-detect (ALSA/kernel-driver first, USB fallback — see

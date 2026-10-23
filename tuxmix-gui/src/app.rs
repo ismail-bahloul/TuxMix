@@ -1273,16 +1273,17 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         DeviceHandle::open_mock()
     } else {
         DeviceHandle::open_real(backend.as_deref()).unwrap_or_else(|| {
-            eprintln!("No device found. Use --mock for simulation.");
+            eprintln!("No device found; starting in simulation (pass --mock to make that explicit).");
             DeviceHandle::open_mock()
         })
     };
+    let real_device = !device.is_mock();
     // Restore the last mixer state so the UI starts in sync with the
     // hardware — the USB backend has NO gain/volume readback (only the
     // 48V/PAD byte is readable), so like TotalMix we re-apply our own
     // saved state (auto-saved in `Message::Tick`). The file is SHARED
     // with the TUI, so whichever UI ran last wins.
-    if !mock {
+    if real_device {
         if let Some(scene) = tuxmix_core::scene::load_auto_scene() {
             if let Err(e) = device.apply_scene(&scene) {
                 eprintln!("auto scene load failed: {e:?}");
