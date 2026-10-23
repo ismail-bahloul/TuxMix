@@ -947,6 +947,9 @@ pub struct TuxMix {
     pub keep_in_tray: bool,
     /// The window is hidden in the tray right now.
     pub window_hidden: bool,
+    /// The last failure worth telling the user about (a device write that
+    /// was refused), shown for `NOTICE_FOR`.
+    pub notice: Option<(String, Instant)>,
     /// The open window, if any: none while hidden in the tray.
     pub window_id: Option<window::Id>,
     /// An autostart entry exists (`tray::autostart_enabled`).
@@ -1327,6 +1330,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         tray_active: false,
         keep_in_tray: true,
         window_hidden: false,
+        notice: None,
         window_id: None,
         autostart: crate::tray::autostart_enabled(),
         initial_zoom_pending: false,
@@ -1763,18 +1767,24 @@ fn apply_grouped_volume(state: &mut TuxMix, cid: ChannelId, out: usize, v: f32) 
 fn apply_grouped_pan(state: &mut TuxMix, cid: ChannelId, out: usize, pan: i8) {
     let others = propagation_set(state, cid, sidebar::GroupLink::Fader);
     if others.is_empty() {
-        let _ = state.device.set_pan(cid, out, pan);
+        if let Err(e) = state.device.set_pan(cid, out, pan) {
+            fail(state, "set_pan", &e);
+        }
         notify_osc(state, OscOutbound::Pan(cid, out, pan));
         return;
     }
     let old = i16::from(state.device.pan(cid, out).unwrap_or(pan));
     let delta = i16::from(pan) - old;
-    let _ = state.device.set_pan(cid, out, pan);
+    if let Err(e) = state.device.set_pan(cid, out, pan) {
+        fail(state, "set_pan", &e);
+    }
     notify_osc(state, OscOutbound::Pan(cid, out, pan));
     for sel in others {
         let cur = i16::from(state.device.pan(sel, out).unwrap_or(0));
         let new = (cur + delta).clamp(-100, 100) as i8;
-        let _ = state.device.set_pan(sel, out, new);
+        if let Err(e) = state.device.set_pan(sel, out, new) {
+            fail(state, "set_pan", &e);
+        }
         notify_osc(state, OscOutbound::Pan(sel, out, new));
     }
 }
@@ -2053,6 +2063,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             return iced::window::set_mode(id, mode);
         }
         Message::Tick => {
+            if state.notice.as_ref().is_some_and(|(_, at)| at.elapsed() > NOTICE_FOR) {
+                state.notice = None;
+            }
             if state.tray_active {
                 crate::tray::set_status(crate::tray::Status {
                     window_visible: !state.window_hidden,
@@ -2085,7 +2098,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                         state.device = fresh;
                         state.connected = true;
                         if let Some(scene) = tuxmix_core::scene::load_auto_scene() {
-                            let _ = state.device.apply_scene(&scene);
+                            if let Err(e) = state.device.apply_scene(&scene) {
+                                fail(state, "apply_scene", &e);
+                            }
                         }
                     }
                 }
@@ -2163,7 +2178,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 if let Some(their) = tuxmix_core::scene::auto_scene_written_by_other(
                     state.last_saved_json.as_deref(),
                 ) {
-                    let _ = state.device.apply_scene(&their);
+                    if let Err(e) = state.device.apply_scene(&their) {
+                        fail(state, "apply_scene", &e);
+                    }
                 }
                 let scene = state.device.capture_scene();
                 if let Ok(json) = scene.to_json() {
@@ -2224,7 +2241,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 if let Some(their) = tuxmix_core::scene::auto_scene_written_by_other(
                     state.last_saved_json.as_deref(),
                 ) {
-                    let _ = state.device.apply_scene(&their);
+                    if let Err(e) = state.device.apply_scene(&their) {
+                        fail(state, "apply_scene", &e);
+                    }
                 }
                 let scene = state.device.capture_scene();
                 if let Ok(json) = scene.to_json() {
@@ -2368,13 +2387,19 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::Phantom(idx, p) => {
-            let _ = state.device.set_input_phantom(idx, p);
+            if let Err(e) = state.device.set_input_phantom(idx, p) {
+                fail(state, "set_input_phantom", &e);
+            }
         }
         Message::Pad(idx, p) => {
-            let _ = state.device.set_input_pad(idx, p);
+            if let Err(e) = state.device.set_input_pad(idx, p) {
+                fail(state, "set_input_pad", &e);
+            }
         }
         Message::Gain(idx, g) => {
-            let _ = state.device.set_input_gain(idx, g);
+            if let Err(e) = state.device.set_input_gain(idx, g) {
+                fail(state, "set_input_gain", &e);
+            }
         }
         Message::Sensitivity(idx, plus4) => {
             let s = if plus4 {
@@ -2382,43 +2407,73 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             } else {
                 tuxmix_core::Sensitivity::Minus10dBV
             };
-            let _ = state.device.set_sensitivity(idx, s);
+            if let Err(e) = state.device.set_sensitivity(idx, s) {
+                fail(state, "set_sensitivity", &e);
+            }
         }
         Message::TrimChanged(idx, db) => {
-            let _ = state.device.set_trim(idx, db);
+            if let Err(e) = state.device.set_trim(idx, db) {
+                fail(state, "set_trim", &e);
+            }
         }
         Message::TrimReset(idx) => {
-            let _ = state.device.set_trim(idx, 0.0);
+            if let Err(e) = state.device.set_trim(idx, 0.0) {
+                fail(state, "set_trim", &e);
+            }
         }
         Message::EqEnabled(idx, on) => {
-            let _ = state.device.set_eq_enabled(idx, on);
+            if let Err(e) = state.device.set_eq_enabled(idx, on) {
+                fail(state, "set_eq_enabled", &e);
+            }
         }
         Message::EqBandType(idx, band, t) => {
-            let _ = state.device.set_eq_band_type(idx, band, t);
+            if let Err(e) = state.device.set_eq_band_type(idx, band, t) {
+                fail(state, "set_eq_band_type", &e);
+            }
         }
         Message::EqBandFreq(idx, band, freq) => {
-            let _ = state.device.set_eq_band_freq(idx, band, freq);
+            if let Err(e) = state.device.set_eq_band_freq(idx, band, freq) {
+                fail(state, "set_eq_band_freq", &e);
+            }
         }
         Message::EqBandQ(idx, band, q) => {
-            let _ = state.device.set_eq_band_q(idx, band, q);
+            if let Err(e) = state.device.set_eq_band_q(idx, band, q) {
+                fail(state, "set_eq_band_q", &e);
+            }
         }
         Message::EqBandGain(idx, band, gain) => {
-            let _ = state.device.set_eq_band_gain(idx, band, gain);
+            if let Err(e) = state.device.set_eq_band_gain(idx, band, gain) {
+                fail(state, "set_eq_band_gain", &e);
+            }
         }
         Message::EqBandPoint(idx, band, freq, gain) => {
-            let _ = state.device.set_eq_band_freq(idx, band, freq);
-            let _ = state.device.set_eq_band_gain(idx, band, gain);
+            if let Err(e) = state.device.set_eq_band_freq(idx, band, freq) {
+                fail(state, "set_eq_band_freq", &e);
+            }
+            if let Err(e) = state.device.set_eq_band_gain(idx, band, gain) {
+                fail(state, "set_eq_band_gain", &e);
+            }
         }
         Message::EqBandReset(idx, band) => {
-            let _ = state.device.set_eq_band_freq(idx, band, 1000);
-            let _ = state.device.set_eq_band_q(idx, band, 0.7);
-            let _ = state.device.set_eq_band_gain(idx, band, 0.0);
+            if let Err(e) = state.device.set_eq_band_freq(idx, band, 1000) {
+                fail(state, "set_eq_band_freq", &e);
+            }
+            if let Err(e) = state.device.set_eq_band_q(idx, band, 0.7) {
+                fail(state, "set_eq_band_q", &e);
+            }
+            if let Err(e) = state.device.set_eq_band_gain(idx, band, 0.0) {
+                fail(state, "set_eq_band_gain", &e);
+            }
         }
         Message::EqLowCutFreq(idx, freq) => {
-            let _ = state.device.set_eq_low_cut_freq(idx, freq);
+            if let Err(e) = state.device.set_eq_low_cut_freq(idx, freq) {
+                fail(state, "set_eq_low_cut_freq", &e);
+            }
         }
         Message::EqLowCutSlope(idx, slope) => {
-            let _ = state.device.set_eq_low_cut_slope(idx, slope);
+            if let Err(e) = state.device.set_eq_low_cut_slope(idx, slope) {
+                fail(state, "set_eq_low_cut_slope", &e);
+            }
         }
         Message::LoopbackChanged(i, on) => {
             let pair = if state.device.outputs_one_per_pair() {
@@ -2426,7 +2481,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             } else {
                 i / 2
             };
-            let _ = state.device.set_loopback(pair, on);
+            if let Err(e) = state.device.set_loopback(pair, on) {
+                fail(state, "set_loopback", &e);
+            }
         }
         Message::StereoLinkChanged(cid, linked) => {
             let _ = match cid {
@@ -2436,34 +2493,52 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             };
         }
         Message::PitchChanged(v) => {
-            let _ = state.device.set_pitch(v);
+            if let Err(e) = state.device.set_pitch(v) {
+                fail(state, "set_pitch", &e);
+            }
         }
         Message::WidthChanged(v) => {
-            let _ = state.device.set_width(v);
+            if let Err(e) = state.device.set_width(v) {
+                fail(state, "set_width", &e);
+            }
         }
         Message::MsProcChanged(on) => {
-            let _ = state.device.set_ms_proc(on);
+            if let Err(e) = state.device.set_ms_proc(on) {
+                fail(state, "set_ms_proc", &e);
+            }
         }
         Message::An12Changed(on) => {
-            let _ = state.device.set_an12(on);
+            if let Err(e) = state.device.set_an12(on) {
+                fail(state, "set_an12", &e);
+            }
         }
         Message::InputLinkChanged(on) => {
-            let _ = state.device.set_input_link(on);
+            if let Err(e) = state.device.set_input_link(on) {
+                fail(state, "set_input_link", &e);
+            }
         }
         Message::EqForRecordChanged(on) => {
-            let _ = state.device.set_eq_for_record(on);
+            if let Err(e) = state.device.set_eq_for_record(on) {
+                fail(state, "set_eq_for_record", &e);
+            }
         }
         Message::OpticalOutFormatChanged(spdif) => {
-            let _ = state.device.set_optical_out_format(spdif);
+            if let Err(e) = state.device.set_optical_out_format(spdif) {
+                fail(state, "set_optical_out_format", &e);
+            }
         }
         Message::CueChanged(cid, on) => {
             if let ChannelId::Output(idx) = cid {
-                let _ = state.device.set_cue(idx / 2, on);
+                if let Err(e) = state.device.set_cue(idx / 2, on) {
+                    fail(state, "set_cue", &e);
+                }
             }
         }
         Message::PhaseChanged(cid, invert) => {
             if let ChannelId::Input(idx) = cid {
-                let _ = state.device.set_phase(idx, invert);
+                if let Err(e) = state.device.set_phase(idx, invert) {
+                    fail(state, "set_phase", &e);
+                }
             }
         }
         Message::VolumeChanged(cid, out, v) => {
@@ -2505,11 +2580,15 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::PanReset(cid, out) => {
             if state.selected.len() > 1 && state.selected.contains(&cid) {
                 for sel in state.selected.clone() {
-                    let _ = state.device.set_pan(sel, out, 0);
+                    if let Err(e) = state.device.set_pan(sel, out, 0) {
+                        fail(state, "set_pan", &e);
+                    }
                     notify_osc(state, OscOutbound::Pan(sel, out, 0));
                 }
             } else {
-                let _ = state.device.set_pan(cid, out, 0);
+                if let Err(e) = state.device.set_pan(cid, out, 0) {
+                    fail(state, "set_pan", &e);
+                }
                 notify_osc(state, OscOutbound::Pan(cid, out, 0));
             }
         }
@@ -2692,10 +2771,14 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::ClockSourceSelected(source) => {
-            let _ = state.device.set_clock_source(&source);
+            if let Err(e) = state.device.set_clock_source(&source) {
+                fail(state, "set_clock_source", &e);
+            }
         }
         Message::SampleRateSelected(rate) => {
-            let _ = state.device.set_sample_rate(rate);
+            if let Err(e) = state.device.set_sample_rate(rate) {
+                fail(state, "set_sample_rate", &e);
+            }
         }
 
         // ── Right sidebar ────────────────────────────────────────────
@@ -2704,7 +2787,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             if let Some(scene) = state.undo_stack.pop() {
                 state.redo_stack.push(state.device.capture_scene());
                 if let Err(e) = state.device.apply_scene(&scene) {
-                    log::warn!("Undo failed to apply scene: {e}");
+                    fail(state, "undo", &e);
                 }
             }
         }
@@ -2713,7 +2796,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             if let Some(scene) = state.redo_stack.pop() {
                 state.undo_stack.push(state.device.capture_scene());
                 if let Err(e) = state.device.apply_scene(&scene) {
-                    log::warn!("Redo failed to apply scene: {e}");
+                    fail(state, "redo", &e);
                 }
             }
         }
@@ -2844,7 +2927,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::DimToggle => {
             let on = !state.device.settings().dim;
             if let Err(e) = state.device.set_dim(on) {
-                log::warn!("Dim failed: {e}");
+                fail(state, "dim", &e);
             }
         }
         Message::SnapshotClicked(n) => {
@@ -2857,7 +2940,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             };
             if let Some(scene) = scene {
                 if let Err(e) = state.device.apply_scene(&scene) {
-                    log::warn!("Failed to apply snapshot 'Mix {n}': {e}");
+                    fail(state, "snapshot", &e);
                 }
             }
         }
@@ -2933,6 +3016,19 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
     Task::none()
 }
 
+/// How long a failure stays on screen.
+const NOTICE_FOR: Duration = Duration::from_secs(5);
+
+/// Reports a refused device write: logged, and shown briefly so a fader that
+/// moves without effect is not silent. A drag repeats the same failure many
+/// times a second; the same text only refreshes the timer.
+fn fail(state: &mut TuxMix, what: &str, error: &dyn std::fmt::Display) {
+    let what = what.trim_start_matches("set_").replace('_', " ");
+    let text = format!("Could not apply {what}: {error}");
+    log::warn!("{text}");
+    state.notice = Some((text, Instant::now()));
+}
+
 /// Hides the window in the tray by closing it: the process, and with it the
 /// ticks, the front panel's DIM and the reconnect logic, keeps running.
 fn hide_window(state: &mut TuxMix) -> Task<Message> {
@@ -2994,6 +3090,7 @@ fn is_active(state: &TuxMix) -> bool {
         || state.pending_resize_width.is_some()
         || !state.collapse_anim.is_empty()
         || state.drag_range.is_some()
+        || state.notice.is_some()
 }
 
 pub fn tick_interval(state: &TuxMix) -> Duration {
@@ -3138,6 +3235,12 @@ pub fn view(state: &TuxMix, _window: window::Id) -> Element<'_, Message> {
         .into();
     if state.show_device_panel {
         base = stack(vec![base, device_panel(state)])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    }
+    if let Some((text, _)) = &state.notice {
+        base = stack(vec![base, notice_toast(text, state.ui_scale)])
             .width(Length::Fill)
             .height(Length::Fill)
             .into();
@@ -3513,6 +3616,27 @@ fn popover<'a>(state: &'a TuxMix, body: Element<'a, Message>, close: Message) ->
         )
         .on_press(close),
     )
+}
+
+/// A refused device write, as a small card at the foot of the window. It
+/// takes no clicks (a `Space`-sized layer would levitate the cursor for the
+/// mixer below): the card alone is as big as its text.
+fn notice_toast(message: &str, scale: f32) -> Element<'_, Message> {
+    container(
+        container(
+            text(message.to_string())
+                .size(theme::TEXT_SM * scale)
+                .color(theme::TEXT_PRIMARY),
+        )
+        .padding([theme::SPACE_SM * scale, theme::SPACE_LG * scale])
+        .style(theme::dialog),
+    )
+    .padding(theme::SPACE_XL * scale)
+    .center_x(Length::Fill)
+    .align_bottom(Length::Fill)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 /// The app's own settings (as opposed to the device's): how TuxMix behaves
@@ -5505,6 +5629,20 @@ mod tests {
         for level in &out[2..] {
             assert_eq!(*level, 0.0);
         }
+    }
+
+    #[test]
+    fn a_refused_write_is_shown_and_expires() {
+        let mut state = new(true, None, None);
+        super::fail(&mut state, "set_input_phantom", &"busy");
+        let (text, _) = state.notice.clone().expect("a notice");
+        assert_eq!(text, "Could not apply input phantom: busy");
+        // The same failure repeated (a drag) just refreshes it.
+        super::fail(&mut state, "set_input_phantom", &"busy");
+        assert!(state.notice.is_some());
+        state.notice = Some((text, Instant::now() - Duration::from_secs(6)));
+        let _ = update(&mut state, Message::Tick);
+        assert!(state.notice.is_none());
     }
 
     #[test]

@@ -4193,3 +4193,15 @@ optimization, which makes every click rebuild and lay out the view slowly
 optimizes dependencies (`opt-level = 3`) and our crates lightly (`1`); release
 adds thin LTO. Not measurable under Xvfb (software GPU emulation dominates
 the CPU time, identical for every build): judge on the real desktop.
+
+## Failures are shown (2026-10-23)
+
+A refused device write (`let _ = device.set_*` used to swallow it) now goes
+through `fail()`: logged, and shown for 5 s as a small card at the foot of the
+window ("Could not apply input phantom: ..."). Repeats of the same text only
+refresh the timer; the card takes no clicks.
+
+Measured in a release build (mock, 15 clicks in the Mixer): building the view
+takes about 0.2 ms and `update` a few microseconds, so the app's own code is
+not what makes a click feel slow; unoptimized dependencies were (see Build
+profiles).
