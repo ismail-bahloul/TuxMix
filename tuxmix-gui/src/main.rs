@@ -19,6 +19,7 @@ mod prefs;
 mod scenes;
 mod sidebar;
 mod theme;
+mod tray;
 mod widgets;
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -108,6 +109,18 @@ fn main() -> iced::Result {
         .unwrap_or(Size::new(1280.0, 800.0));
     let start_fullscreen = args.iter().any(|a| a == "--fullscreen");
 
+    // One TuxMix per session: a second launch asks the first to show its
+    // window (it may be hidden in the tray) and leaves.
+    if matches!(tray::claim(mock), tray::Instance::Secondary) {
+        eprintln!("TuxMix is already running: asked it to show its window.");
+        return Ok(());
+    }
+    // The tray icon (not for the simulation, which would put a second icon
+    // beside the real one). `--minimized` starts hidden in it, and only when
+    // there is one: a hidden window with no icon has no way back.
+    let tray_active = !mock && tray::start();
+    let start_hidden = tray_active && args.iter().any(|a| a == "--minimized");
+
     iced::application(
         move || {
             let mut state = app::new(mock, osc_config.clone(), backend.clone());
@@ -122,6 +135,8 @@ fn main() -> iced::Result {
                 state.view = view;
             }
             state.fullscreen = start_fullscreen;
+            state.tray_active = tray_active;
+            state.window_hidden = start_hidden;
             // First launch only (no saved zoom): ask the monitor's size to
             // pick a starting zoom.
             let task = if state.initial_zoom_pending {
@@ -142,11 +157,15 @@ fn main() -> iced::Result {
     .font(INTER_REGULAR)
     .default_font(Font::with_name("Inter"))
     .window(window::Settings {
+        // The close button is handled by the app (`Message::CloseRequested`):
+        // hide in the tray, or save and quit.
+        exit_on_close_request: false,
         // The size it had at the last close, floored at `min_size`.
         size: saved_size,
         // See `app::MIN_WINDOW`.
         min_size: Some(Size::new(app::MIN_WINDOW.0, app::MIN_WINDOW.1)),
         fullscreen: start_fullscreen,
+        visible: !start_hidden,
         icon: window_icon(),
         platform_specific: window::settings::PlatformSpecific {
             application_id: APP_ID.to_owned(),

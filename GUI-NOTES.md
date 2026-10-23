@@ -4106,3 +4106,23 @@ plays (test `the_card_line_shows_the_period_only_while_the_card_plays`).
 
 Not measured: startup time (no reliable way here), GPU load (the desktop
 dominates it: 28 % without TuxMix, 11 % with, i.e. noise), the TUI.
+
+## Background mode: tray icon, single instance, autostart (2026-10-23)
+
+Why: the front-panel DIM button action and the restore of the saved mix after
+a replug are TuxMix's job while it runs (the kernel driver only reports DIM
+presses). Closing the window used to stop all of it silently.
+
+- `tray.rs`: StatusNotifierItem icon (`ksni`), click toggles the window, menu
+  has Show / Quit. When no tray service answers, `tray_active` stays false and
+  closing quits as before, so a hidden window never has no way back.
+- Closing with a tray hides the window (`keep_in_tray`, default on, saved
+  only when the user opts out). Quit from the tray menu saves and exits.
+- Single instance per session through `$XDG_RUNTIME_DIR/tuxmix.sock`
+  (`tuxmix-mock.sock` for `--mock`); a second launch asks the first to show
+  its window. `TUXMIX_MULTIPLE_INSTANCES=1` bypasses it.
+- `--minimized` starts hidden (only with a tray). The device popover's TUXMIX
+  section toggles keep-in-tray and the XDG autostart entry
+  (`~/.config/autostart/tuxmix.desktop`, `Exec=... --minimized`).
+- Not verified on a live tray: Xvfb has no StatusNotifierWatcher; GNOME needs
+  an AppIndicator extension.

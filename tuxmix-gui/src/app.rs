@@ -597,6 +597,15 @@ pub enum Message {
     /// The monitor's logical size, asked once at the first launch to pick
     /// a sensible starting zoom (`initial_zoom_for`).
     MonitorSize(Option<iced::Size>),
+    /// The window's close button (or a close request from the system):
+    /// hides the window when the app runs in the tray, quits otherwise.
+    CloseRequested,
+    /// The notification-area icon, or a second launch (`tray`).
+    Tray(crate::tray::TrayEvent),
+    /// "Keep running in the tray when I close the window".
+    SetKeepInTray(bool),
+    /// "Start with the session" (an autostart entry, hidden in the tray).
+    SetAutostart(bool),
 
     Mute(ChannelId, bool),
     Solo(ChannelId, bool),
@@ -929,6 +938,15 @@ pub struct TuxMix {
     /// `TICK_IDLE` (see `tick_interval`). An idle mixer used to redraw 20
     /// times a second for nothing: ~12 ms a frame, a quarter of a core.
     pub last_activity: Instant,
+    /// The notification-area icon is up (`tray::start` found a service):
+    /// only then may the window be hidden, there is a way back.
+    pub tray_active: bool,
+    /// Closing the window hides it instead of quitting (needs `tray_active`).
+    pub keep_in_tray: bool,
+    /// The window is hidden in the tray right now.
+    pub window_hidden: bool,
+    /// An autostart entry exists (`tray::autostart_enabled`).
+    pub autostart: bool,
     /// The first launch has no saved zoom: pick one from the monitor.
     pub initial_zoom_pending: bool,
     /// The sidebar was folded by a narrow window (not by the user), so it
@@ -1301,6 +1319,10 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         // as soon as the first `Opened`/`Resized` event arrives.
         window_size: None,
         last_activity: Instant::now(),
+        tray_active: false,
+        keep_in_tray: true,
+        window_hidden: false,
+        autostart: crate::tray::autostart_enabled(),
         initial_zoom_pending: false,
         auto_folded: false,
         window_width: 1280.0,
@@ -1379,6 +1401,8 @@ pub fn prefs_of(state: &TuxMix) -> crate::prefs::Prefs {
         labels,
         show_original_names: state.show_original_names,
         window_size: state.window_size,
+        // Only a choice to leave the default is worth writing down.
+        keep_in_tray: (!state.keep_in_tray).then_some(false),
         engine_force_rate: Some(state.engine_force_rate),
         engine_force_quantum: Some(state.engine_force_quantum),
     }
@@ -1425,6 +1449,7 @@ pub fn apply_prefs(state: &mut TuxMix, prefs: crate::prefs::Prefs) {
         .collect();
     state.show_original_names = prefs.show_original_names;
     state.window_size = prefs.window_size;
+    state.keep_in_tray = prefs.keep_in_tray.unwrap_or(true);
     state.engine_force_rate = prefs.engine_force_rate.unwrap_or(0);
     state.engine_force_quantum = prefs.engine_force_quantum.unwrap_or(0);
 }
@@ -1485,6 +1510,7 @@ fn changes_prefs(message: &Message) -> bool {
             | Message::ZoomIn
             | Message::ZoomOut
             | Message::ZoomReset
+            | Message::SetKeepInTray(_)
             | Message::MonitorSize(_)
             | Message::RenameCommit
             | Message::SetShowOriginalNames(_)
@@ -1869,6 +1895,10 @@ fn is_undoable(message: &Message) -> bool {
             | Message::ZoomOut
             | Message::ZoomReset
             | Message::MonitorSize(_)
+            | Message::CloseRequested
+            | Message::Tray(_)
+            | Message::SetKeepInTray(_)
+            | Message::SetAutostart(_)
             | Message::RangeCleared(_)
             | Message::ToggleCollapse(_)
             | Message::ToggleFlyout(..)
@@ -2131,6 +2161,34 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 }
             }
         }
+        Message::CloseRequested => {
+            let saved = update(state, Message::SaveNow);
+            if state.tray_active && state.keep_in_tray {
+                // Keep running: the DIM button and the saved mix's restore
+                // after a replug are this app's job (see `tray`).
+                return Task::batch([saved, hide_window(state)]);
+            }
+            return Task::batch([saved, iced::exit()]);
+        }
+        Message::Tray(event) => match event {
+            crate::tray::TrayEvent::Show => return show_window(state),
+            crate::tray::TrayEvent::Toggle => {
+                return if state.window_hidden {
+                    show_window(state)
+                } else {
+                    hide_window(state)
+                };
+            }
+            crate::tray::TrayEvent::Quit => {
+                let saved = update(state, Message::SaveNow);
+                return Task::batch([saved, iced::exit()]);
+            }
+        },
+        Message::SetKeepInTray(on) => state.keep_in_tray = on,
+        Message::SetAutostart(on) => match crate::tray::set_autostart(on) {
+            Ok(()) => state.autostart = crate::tray::autostart_enabled(),
+            Err(e) => log::warn!("Could not change the autostart entry: {e}"),
+        },
         // Immediate save (window close) — the debounce above would lose
         // the last few seconds of changes. Sync with the other UI first
         // (see the 3 s auto-save in `Message::Tick`). The mock never
@@ -2843,6 +2901,26 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
     Task::none()
 }
 
+/// Hides the window in the tray. A hidden window keeps ticking (slowly, see
+/// `tick_interval`), so the front panel and the reconnect logic keep working.
+fn hide_window(state: &mut TuxMix) -> Task<Message> {
+    state.window_hidden = true;
+    window::oldest().and_then(|id| window::set_mode(id, window::Mode::Hidden))
+}
+
+/// Brings the window back: out of hiding, out of minimized, in front.
+fn show_window(state: &mut TuxMix) -> Task<Message> {
+    state.window_hidden = false;
+    state.last_activity = Instant::now();
+    window::oldest().and_then(|id| {
+        Task::batch([
+            window::set_mode(id, window::Mode::Windowed),
+            window::minimize(id, false),
+            window::gain_focus(id),
+        ])
+    })
+}
+
 /// A cheap summary of what the front panel can change behind the app's back
 /// (output levels, mutes, the dim): when it differs after a poll, the panel
 /// was touched. Not a hash of the whole mix: just enough to notice.
@@ -2906,6 +2984,8 @@ pub fn subscription(state: &TuxMix) -> Subscription<Message> {
     if !state.collapse_anim.is_empty() {
         subs.push(iced::time::every(Duration::from_millis(8)).map(|_| Message::CollapseTick));
     }
+    // The notification-area icon and second launches, see `tray`.
+    subs.push(crate::tray::subscription().map(Message::Tray));
     // Only running when `--osc` was passed — see `osc.rs`.
     if let Some(config) = &state.osc_config {
         subs.push(Subscription::run_with(*config, osc::worker));
@@ -2975,7 +3055,7 @@ fn handle_global_event(
         iced::Event::Window(window::Event::Resized(size)) => {
             Some(Message::WindowSize(size.width, size.height))
         }
-        iced::Event::Window(window::Event::CloseRequested) => Some(Message::SaveNow),
+        iced::Event::Window(window::Event::CloseRequested) => Some(Message::CloseRequested),
         iced::Event::Window(window::Event::Opened { size, .. }) => {
             Some(Message::WindowSize(size.width, size.height))
         }
@@ -3347,6 +3427,31 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
             .color(theme::TEXT_SEC)
             .size(theme::TEXT_XS * scale),
         );
+    }
+
+    // Background behaviour: the window's close button and the session start.
+    if !state.device.is_mock() {
+        let toggle = |label: &'static str, active: bool, message: Message| {
+            iced::widget::button(text(label).size(theme::TEXT_XS * scale).center())
+                .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+                .width(Length::Fill)
+                .style(theme::toggle_button(active, theme::ACCENT))
+                .on_press(message)
+        };
+        let mut app_section = column![section("TUXMIX")].spacing(theme::SPACE_SM * scale);
+        if state.tray_active {
+            app_section = app_section.push(toggle(
+                "Keep running in the tray when closed",
+                state.keep_in_tray,
+                Message::SetKeepInTray(!state.keep_in_tray),
+            ));
+        }
+        app_section = app_section.push(toggle(
+            "Start with the session, hidden in the tray",
+            state.autostart,
+            Message::SetAutostart(!state.autostart),
+        ));
+        body = body.push(app_section);
     }
 
     const CARD_W: f32 = 320.0;
@@ -5286,6 +5391,28 @@ mod tests {
         for level in &out[2..] {
             assert_eq!(*level, 0.0);
         }
+    }
+
+    #[test]
+    fn closing_hides_in_the_tray_only_when_there_is_one() {
+        // Without a tray (the mock never has one) there would be no way back
+        // to a hidden window: closing must quit, not hide.
+        let mut state = new(true, None, None);
+        assert!(!state.tray_active && state.keep_in_tray);
+        let _ = update(&mut state, Message::CloseRequested);
+        assert!(!state.window_hidden);
+    }
+
+    #[test]
+    fn keep_in_tray_defaults_on_and_only_an_opt_out_is_saved() {
+        let mut state = new(true, None, None);
+        assert_eq!(prefs_of(&state).keep_in_tray, None);
+        let _ = update(&mut state, Message::SetKeepInTray(false));
+        let prefs = prefs_of(&state);
+        assert_eq!(prefs.keep_in_tray, Some(false));
+        apply_prefs(&mut state, prefs);
+        assert!(!state.keep_in_tray);
+        assert!(!is_undoable(&Message::SetKeepInTray(true)));
     }
 
     #[test]

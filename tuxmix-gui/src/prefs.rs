@@ -44,6 +44,8 @@ pub struct Prefs {
     pub engine_force_rate: Option<u32>,
     /// Logical size of the window at the last close.
     pub window_size: Option<(f32, f32)>,
+    /// Closing the window hides it in the tray instead of quitting.
+    pub keep_in_tray: Option<bool>,
     pub engine_force_quantum: Option<u32>,
 }
 
@@ -104,6 +106,7 @@ mod tests {
             show_original_names: true,
             engine_force_rate: Some(96_000),
             window_size: Some((1600.0, 900.0)),
+            keep_in_tray: Some(false),
             engine_force_quantum: Some(128),
         };
         save(&file, &prefs).unwrap();
