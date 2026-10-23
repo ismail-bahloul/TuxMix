@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (heading to 1.0)
+## 0.3.0 (2026-10-23)
 
 ### Added
 - Background mode: tray icon (StatusNotifierItem) with Hide/Show, Dim,
