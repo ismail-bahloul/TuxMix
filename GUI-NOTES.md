@@ -4176,3 +4176,10 @@ scale as a parameter) and fills the strip's height: a stack whose base layer,
 the strip, sets the size (a `Fill` panel in a row would take all the room the
 page offers). The picker sits over the strip only. `flyout_card` is now
 full-height, so Mixer panels match their strip too.
+
+Quick panels could not be closed again (2026-10-23): the canvas widgets
+(knob, fader, crosspoint, splitter, EQ plot) answered `Interaction::Idle`
+when not hovered. A `stack` treats any answer other than `None` as "this layer
+is interactive here" and hides the cursor from the layers below, so the
+panel's layer (over the whole block) made the strip's gear unclickable. They
+now answer `None`; the pointer looks the same.

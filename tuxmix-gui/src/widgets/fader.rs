@@ -629,7 +629,7 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
             Some(pos) if self.is_over_track(pos.x, bounds.x, bounds.width) => {
                 mouse::Interaction::Grab
             }
-            _ => mouse::Interaction::Idle,
+            _ => mouse::Interaction::None,
         }
     }
 }

@@ -248,12 +248,12 @@ impl<Message: Clone> canvas::Program<Message> for Crosspoint<Message> {
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         if !self.interactive {
-            return mouse::Interaction::Idle;
+            return mouse::Interaction::None;
         }
         if state.pressed || cursor.is_over(bounds) {
             mouse::Interaction::ResizingVertically
         } else {
-            mouse::Interaction::Idle
+            mouse::Interaction::None
         }
     }
 }

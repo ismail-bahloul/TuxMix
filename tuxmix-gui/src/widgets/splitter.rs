@@ -146,7 +146,7 @@ impl<Message> canvas::Program<Message> for Splitter<Message> {
         if cursor.is_over(bounds) {
             mouse::Interaction::ResizingHorizontally
         } else {
-            mouse::Interaction::Idle
+            mouse::Interaction::None
         }
     }
 }

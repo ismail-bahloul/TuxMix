@@ -490,9 +490,9 @@ impl<Message> canvas::Program<Message> for EqPlot<Message> {
             Some(pos) => match self.hit(self.plot_rect(bounds.size()), local_point(bounds, pos)) {
                 Some(Drag::LowCut) => mouse::Interaction::ResizingHorizontally,
                 Some(Drag::Band(_)) => mouse::Interaction::Grab,
-                None => mouse::Interaction::Idle,
+                None => mouse::Interaction::None,
             },
-            None => mouse::Interaction::Idle,
+            None => mouse::Interaction::None,
         }
     }
 }

@@ -390,13 +390,13 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
         if !self.interactive {
-            mouse::Interaction::Idle
+            mouse::Interaction::None
         } else if state.dragging {
             mouse::Interaction::Grabbing
         } else if cursor.is_over(bounds) {
             mouse::Interaction::Grab
         } else {
-            mouse::Interaction::Idle
+            mouse::Interaction::None
         }
     }
 }
