@@ -19,6 +19,22 @@ const PNG: &[u8] = include_bytes!("../assets/tuxmix-256.png");
 /// `rsvg-convert -w 256`.
 const MARK_PNG: &[u8] = include_bytes!("../assets/tuxmix-mark-256.png");
 
+/// The tray icon at the sizes panels ask for: the mark as a thick white
+/// line with a soft dark edge (`assets/tuxmix-tray.svg`), because the tile
+/// reduced to 22 px is a grey smear on a dark panel.
+const TRAY_PNGS: [&[u8]; 4] = [
+    include_bytes!("../assets/tuxmix-tray-16.png"),
+    include_bytes!("../assets/tuxmix-tray-22.png"),
+    include_bytes!("../assets/tuxmix-tray-32.png"),
+    include_bytes!("../assets/tuxmix-tray-48.png"),
+];
+
+/// Every tray size as RGBA8 plus dimensions; a size that cannot be decoded
+/// is skipped.
+pub fn tray_rgba() -> Vec<(u32, u32, Vec<u8>)> {
+    TRAY_PNGS.iter().filter_map(|p| decode(p)).collect()
+}
+
 /// The icon as RGBA8 plus its dimensions, or `None` when the PNG cannot be
 /// decoded. A missing icon is cosmetic, so callers draw nothing instead of
 /// failing the launch.
@@ -65,6 +81,12 @@ mod tests {
         let (width, height, pixels) = rgba().expect("the packaged PNG must decode");
         assert_eq!((width, height), (256, 256));
         assert_eq!(pixels.len(), (width * height * 4) as usize);
+    }
+
+    #[test]
+    fn the_tray_icon_has_all_four_sizes() {
+        let sizes: Vec<u32> = super::tray_rgba().iter().map(|(w, _, _)| *w).collect();
+        assert_eq!(sizes, vec![16, 22, 32, 48]);
     }
 
     /// The mark feeds the top bar and the About dialog: it must decode,

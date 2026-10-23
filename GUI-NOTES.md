@@ -4154,3 +4154,14 @@ the card's (clock, rate, pitch...). The app's own behaviour now has its own
 popover, opened by the gear beside the zoom control at the foot of the
 sidebar ("TuxMix settings"); the two popovers exclude each other and share
 `popover()`. Esc closes it.
+
+## Tray icon artwork (2026-10-23)
+
+The tile (`tuxmix.svg`) reduced to 22 px is a grey smear on a dark panel.
+`assets/tuxmix-tray.svg` is the mark as a thick white line with a soft dark
+edge (stroked copy of `tuxmix-logo.svg`, square viewBox), rasterized to
+16/22/32/48 px with `rsvg-convert -w N -h N` and sent as the StatusNotifierItem
+pixmaps. Reads well on dark panels; on light ones the white fill is faint at
+16-22 px (pixmaps are not recolored by the panel). If that matters, a
+`tuxmix-symbolic` icon-theme file would let Plasma recolor it. Both copies of
+`assets/` (repo root and `tuxmix-gui/`) carry the files.

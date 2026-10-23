@@ -94,14 +94,14 @@ impl ksni::Tray for Icon {
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        let Some((width, height, rgba)) = crate::icon::rgba() else {
-            return Vec::new();
-        };
-        vec![ksni::Icon {
-            width: width as i32,
-            height: height as i32,
-            data: argb_network_order(&rgba),
-        }]
+        crate::icon::tray_rgba()
+            .into_iter()
+            .map(|(width, height, rgba)| ksni::Icon {
+                width: width as i32,
+                height: height as i32,
+                data: argb_network_order(&rgba),
+            })
+            .collect()
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
