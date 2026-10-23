@@ -254,7 +254,8 @@ project is capable of and who it serves — things no competitor
 
 Already implemented in `tuxmix-tui` (ratatui + crossterm). This is
 the single biggest differentiator vs TotalMix and every other RME
-controller — **none of them have a terminal interface.**
+controller we know: oscmix v2.x runs headless and over SSH, but it has
+no terminal mixer.
 
 **Killer use cases:**
 - Broadcast server in machine room → adjust levels via SSH from the
@@ -304,7 +305,11 @@ would allow **tablet control from anywhere in the studio** — no
 proprietary app, no OS restrictions.
 
 **Why it's a killer:**
-- TotalMix has NO web UI. oscmix has one but UCX II only.
+- TotalMix has NO web UI. oscmix v2.x has both an HTTP/SSE server UI
+  and a static browser-only build, covering the 802, UCX, UCX II, UFX,
+  UFX II, UFX III and UFX+ (oscmix issue #31). TuxMix's angle is a web
+  client for its own bridge and the Babyface's mixer, not a browser
+  MIDI client.
 - Put a tablet on the piano → musician adjusts own headphone mix
 - Give a limited view to a guest artist ("here, tweak your monitor")
 - Works on iPad, Android, any laptop
@@ -452,7 +457,8 @@ See [README.md](README.md) for the feature comparison. On UI specifically:
 - Smoother VU meters with proper ballistics
 - Dedicated Matrix view (oscmix does routing but no grid-style matrix)
 - Scene save/restore (oscmix has no preset system)
-- TUI mode (oscmix has no terminal interface)
+- TUI mode (oscmix is headless/SSH-capable and has a web UI, but no
+  terminal mixer)
 - Collapsible strips for dense layouts
 
 **Bottom line:** oscmix has *deeper hardware control* (EQ, FX, DURec, Control
@@ -4226,3 +4232,22 @@ touche qu'un endroit. Les strips d'entrée étaient déjà dans cet ordre, seuls
 les meters changent de colonne. Un driver antérieur au 2026-10-23 expose
 encore AS1/2 en 10/11 et ADAT3-8 en 4-9 : TuxMix suppose désormais l'ordre
 courant.
+
+## 2026-10-23 : correction côté oscmix, et interop OSC
+
+Martin (huddx01), qui maintient le fork courant d'oscmix v2.x, a corrigé la
+comparaison du §6 : oscmix v2.x a l'opération headless/SSH, une UI web
+(serveur HTTP/SSE + build statique dans le navigateur) pour 802, UCX, UCX II,
+UFX, UFX II, UFX III et UFX+, du debug/inspection et un enregistreur/relecteur
+OSC. Les §6.1, §6.2 et §4 sont corrigés ci-dessus : le différenciateur de
+TuxMix est le mixer en terminal et le backend natif Babyface, pas « personne
+d'autre n'a de web UI ».
+
+Il propose aussi d'aligner le bridge OSC de TuxMix sur le `oscApi.h` partagé
+par les backends oscmix (dialecte TotalMix + extensions), pour que les UIs et
+outils oscmix existants puissent piloter TuxMix, et inversement. Le bridge
+actuel est volontairement minimal (v1, `/input|playback|output/...`, utilisé
+par la GUI) ; la piste est un adaptateur de dialecte devant les mêmes actions,
+en commençant par volumes, mute/solo, pan et routing. En attente du header,
+des sémantiques de valeur et du sous-ensemble dont l'UI oscmix a réellement
+besoin.
