@@ -3835,7 +3835,7 @@ dependencies = [
 
 [[package]]
 name = "tuxmix-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "alsa",
  "log",
@@ -3849,7 +3849,7 @@ dependencies = [
 
 [[package]]
 name = "tuxmix-gui"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "env_logger",
  "iced",
@@ -3865,14 +3865,14 @@ dependencies = [
 
 [[package]]
 name = "tuxmix-sys"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "tuxmix-usb",
 ]
 
 [[package]]
 name = "tuxmix-tui"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "crossterm",
  "env_logger",
@@ -3883,7 +3883,7 @@ dependencies = [
 
 [[package]]
 name = "tuxmix-usb"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "libc",
  "libusb1-sys",
