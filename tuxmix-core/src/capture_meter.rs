@@ -74,9 +74,15 @@ pub(crate) const INPUT_FOR_CAPTURE: [Option<usize>; CAPTURE_CHANNELS] = [
     Some(4),
     Some(5),
 ];
-/// Small period so a blocked `readi()` call returns quickly enough for
-/// `Drop` to stop the thread without a noticeable shutdown delay.
-const PERIOD_FRAMES: alsa::pcm::Frames = 256;
+/// The capture period. Not small: this thread wakes once per period, forever,
+/// to feed a meter the UI draws at 30 Hz, and at 256 frames (188 wakeups a
+/// second at 48 kHz, measured) it was the biggest source of idle wakeups in
+/// the whole app. 1024 frames is 47 a second and 21 ms of audio per read,
+/// well inside a UI frame. A blocked `readi()` still returns within a period,
+/// so `Drop` stops the thread in at most ~21 ms. A larger period is also the
+/// safer one against the kernel driver, which refuses an application period
+/// below the one another client (PipeWire) already holds the clock with.
+const PERIOD_FRAMES: alsa::pcm::Frames = 1024;
 
 /// Opens and starts the capture PCM with the channel count and format
 /// the driver exposes. Every step is tolerant: a missing card, or a

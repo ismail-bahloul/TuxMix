@@ -4083,3 +4083,26 @@ Result: still mixer 25 % -> 1.7 % (quick 1.5 %, matrix 2.9 %), meters live
 (perf_event_paranoid 2, ptrace_scope 1), hence the in-process timers
 (removed again). Not done, and the next lever if the live figure matters:
 meters read from a shared store drawn without a view rebuild at all.
+
+**CPU, second pass: wakeups and a wrong readout.** Idle wakeups per second
+(all threads, real card) were 658. The biggest sources were the input
+meter's capture thread, which read 256-frame periods (188 a second): now
+1024 frames (47 a second; 21 ms per read, inside a 30 Hz UI frame, and a
+larger period is also the safer one against the driver, which refuses an
+application period below the one another client holds the clock with).
+Now ~400, mostly the GPU driver's own presentation thread (`[vkps]`, 144 a
+second, the display's refresh) and `pw-record`'s pipe; CPU 1.7 % in both
+native Wayland and XWayland (the earlier measurements ran under XWayland;
+the user's session is Wayland).
+
+**Bug found while measuring: the device card's period was TuxMix's own.**
+`pw_clock::card_stream` fell back to the card's capture stream when no
+playback was open, and that capture stream is the input meter's: the card
+showed the meter's period as the card's ("256 smp" before, which matched
+by coincidence, "1024 smp" after the meter change). It now reads playback
+only; with nothing playing the card line is the rate and the clock source
+("48 kHz · Internal") and shows the period ("256 smp") while the card
+plays (test `the_card_line_shows_the_period_only_while_the_card_plays`).
+
+Not measured: startup time (no reliable way here), GPU load (the desktop
+dominates it: 28 % without TuxMix, 11 % with, i.e. noise), the TUI.

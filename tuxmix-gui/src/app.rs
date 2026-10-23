@@ -6339,6 +6339,21 @@ mod tests {
     }
 
     #[test]
+    fn the_card_line_shows_the_period_only_while_the_card_plays() {
+        use tuxmix_core::pw_clock::CardStream;
+        let mut state = new(true, None, None);
+        // Idle: the rate and the clock, never a period (the graph's quantum
+        // is not what the card runs, and the capture stream may be our own
+        // meter's).
+        assert_eq!(crate::sidebar::clock_line(&state, "Internal"), "48 kHz \u{00b7} Internal");
+        state.card_stream = Some(CardStream { rate: 48_000, period: 256, buffer: 768 });
+        assert_eq!(
+            crate::sidebar::clock_line(&state, "Internal"),
+            "48 kHz \u{00b7} 256 smp \u{00b7} Internal"
+        );
+    }
+
+    #[test]
     fn dim_toggle_flips_the_device_dim() {
         let mut state = new(true, None, None);
         assert!(!state.device.settings().dim);

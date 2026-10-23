@@ -162,8 +162,11 @@ pub fn parse_hw_params(text: &str) -> Option<CardStream> {
     })
 }
 
-/// The open stream of the ALSA card whose `id` is `card_id`, playback
-/// first. `None` when no such card exists or it is idle.
+/// The open *playback* stream of the ALSA card whose `id` is `card_id`.
+/// `None` when no such card exists or nothing is playing. Playback only: the
+/// capture side is held open by TuxMix's own input meter
+/// (`capture_meter`), so reading it would report the app's own stream
+/// (it once showed the meter's period as the card's).
 pub fn card_stream(card_id: &str) -> Option<CardStream> {
     let cards = std::fs::read_dir("/proc/asound").ok()?;
     for entry in cards.flatten() {
@@ -176,10 +179,8 @@ pub fn card_stream(card_id: &str) -> Option<CardStream> {
         if !is_card || id.trim() != card_id {
             continue;
         }
-        return ["pcm0p", "pcm0c"].iter().find_map(|pcm| {
-            let text = std::fs::read_to_string(dir.join(pcm).join("sub0/hw_params")).ok()?;
-            parse_hw_params(&text)
-        });
+        let text = std::fs::read_to_string(dir.join("pcm0p/sub0/hw_params")).ok()?;
+        return parse_hw_params(&text);
     }
     None
 }

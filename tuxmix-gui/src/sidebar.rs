@@ -511,31 +511,30 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     )
 }
 
-/// The device card's third line: what the card is running at. With the
-/// sound server in charge, that is PipeWire's rate and buffer ("48 kHz ·
-/// 64 smp · Internal"); the USB backend sets the rate itself. With the
-/// kernel driver and no PipeWire there is no rate to report truthfully
-/// (the model's own field is a constant), so only the clock source shows.
-fn clock_line(state: &TuxMix, clock_source: &str) -> String {
-    // The card's own stream wins while it plays: its period is the card's
-    // real buffer, which the sound server may pin away from the quantum.
+/// The device card's third line: what the card is running at. While the card
+/// plays, its real rate and period ("48 kHz · 256 smp · Internal"); idle, the
+/// sound server's rate; the USB backend sets the rate itself. With the kernel
+/// driver and no PipeWire there is no rate to report truthfully (the model's
+/// own field is a constant), so only the clock source shows.
+pub(crate) fn clock_line(state: &TuxMix, clock_source: &str) -> String {
+    use crate::app::rate_label;
+    // The card's own playback stream wins while it plays: its period is the
+    // card's real buffer. With nothing playing there is no real period to
+    // show (the graph's quantum is not it: the card opens at what its
+    // clients ask, 256 by default), so the line gives the rate only.
     if let Some(card) = state.card_stream {
         return format!(
             "{} \u{00b7} {} smp \u{00b7} {clock_source}",
-            crate::app::rate_label(card.rate),
+            rate_label(card.rate),
             card.period
         );
     }
     match state.engine {
-        Some(e) => format!(
-            "{} \u{00b7} {} smp \u{00b7} {clock_source}",
-            crate::app::rate_label(e.effective_rate()),
-            e.effective_quantum()
-        ),
+        Some(e) => format!("{} \u{00b7} {clock_source}", rate_label(e.effective_rate())),
         None if state.device.rate_follows_sound_server() => clock_source.to_string(),
         None => format!(
             "{} \u{00b7} {clock_source}",
-            crate::app::rate_label(state.device.settings().sample_rate)
+            rate_label(state.device.settings().sample_rate)
         ),
     }
 }
