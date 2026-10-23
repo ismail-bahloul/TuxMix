@@ -4205,3 +4205,12 @@ Measured in a release build (mock, 15 clicks in the Mixer): building the view
 takes about 0.2 ms and `update` a few microseconds, so the app's own code is
 not what makes a click feel slow; unoptimized dependencies were (see Build
 profiles).
+
+## Tray flow verified against a fake watcher (2026-10-23)
+
+Under Xvfb with a private D-Bus session and a tiny StatusNotifierWatcher
+(python-dbus) the real backend registers its item, a WM_DELETE_WINDOW close
+leaves the process alive with no window, and a second launch brings the
+window back. A close the app did not ask for (`window::Event::Closed`) is now
+handled too: hidden with a tray, quit without one. Still not tried on a real
+Plasma/GNOME panel.

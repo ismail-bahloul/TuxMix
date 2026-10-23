@@ -600,6 +600,8 @@ pub enum Message {
     /// The window's close button (or a close request from the system):
     /// hides the window when the app runs in the tray, quits otherwise.
     CloseRequested,
+    /// A window went away without our asking (the compositor closed it).
+    WindowClosed(window::Id),
     /// The notification-area icon, or a second launch (`tray`).
     Tray(crate::tray::TrayEvent),
     /// "Keep running in the tray when I close the window".
@@ -1913,6 +1915,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::ZoomReset
             | Message::MonitorSize(_)
             | Message::CloseRequested
+            | Message::WindowClosed(_)
             | Message::Tray(_)
             | Message::SetKeepInTray(_)
             | Message::SetAutostart(_)
@@ -2189,6 +2192,19 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                             state.last_saved_json = Some(json);
                         }
                     }
+                }
+            }
+        }
+        Message::WindowClosed(id) => {
+            // Our own hide already forgot the id; this is a close we did not
+            // ask for. With a tray the app lives on hidden, without one a
+            // daemon with no window would run unseen: quit.
+            if state.window_id == Some(id) {
+                state.window_id = None;
+                if state.tray_active && state.keep_in_tray {
+                    state.window_hidden = true;
+                } else {
+                    return Task::batch([update(state, Message::SaveNow), iced::exit()]);
                 }
             }
         }
@@ -3192,6 +3208,7 @@ fn handle_global_event(
             Some(Message::WindowSize(size.width, size.height))
         }
         iced::Event::Window(window::Event::CloseRequested) => Some(Message::CloseRequested),
+        iced::Event::Window(window::Event::Closed) => Some(Message::WindowClosed(id)),
         iced::Event::Window(window::Event::Opened { size, .. }) => {
             Some(Message::WindowSize(size.width, size.height))
         }
@@ -5643,6 +5660,21 @@ mod tests {
         state.notice = Some((text, Instant::now() - Duration::from_secs(6)));
         let _ = update(&mut state, Message::Tick);
         assert!(state.notice.is_none());
+    }
+
+    #[test]
+    fn a_window_closed_behind_our_back_is_forgotten_or_ends_the_app() {
+        let mut state = new(true, None, None);
+        let id = iced::window::Id::unique();
+        state.window_id = Some(id);
+        state.tray_active = true;
+        let _ = update(&mut state, Message::WindowClosed(id));
+        assert_eq!(state.window_id, None);
+        assert!(state.window_hidden, "with a tray the app lives on, hidden");
+        // Another window's close is none of our business.
+        state.window_id = Some(id);
+        let _ = update(&mut state, Message::WindowClosed(iced::window::Id::unique()));
+        assert_eq!(state.window_id, Some(id));
     }
 
     #[test]
