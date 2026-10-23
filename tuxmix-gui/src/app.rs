@@ -741,6 +741,8 @@ pub enum Message {
     ToggleDevicePanel,
     /// Toggles the About modal (version, icon, links; see `about`).
     ToggleAbout,
+    /// The TuxMix settings popover (the app's own, not the device's).
+    ToggleSettings,
     /// Opens the repository in the desktop's browser, from the About
     /// drawer's own link.
     OpenRepoUrl,
@@ -1001,6 +1003,7 @@ pub struct TuxMix {
     /// Whether the About modal is open: the version, the icon and the
     /// links, layered above the whole window (see `about::about_modal`).
     pub show_about: bool,
+    pub show_settings: bool,
     /// Whether the device this handle was opened on is still there, as of
     /// the last `Message::Tick` probe (`RmeDevice::is_connected`): the
     /// handle keeps answering for a card that is long gone, so the chip
@@ -1340,6 +1343,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         show_osc_log: false,
         show_device_panel: false,
         show_about: false,
+        show_settings: false,
         backend,
         explicit_mock: mock,
         last_conn_check: None,
@@ -1920,6 +1924,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::ClearOscLog
             | Message::ToggleDevicePanel
             | Message::ToggleAbout
+            | Message::ToggleSettings
             | Message::OpenRepoUrl
             | Message::Undo
             | Message::Redo
@@ -2298,6 +2303,8 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 state.show_about = false;
             } else if state.show_device_panel {
                 state.show_device_panel = false;
+            } else if state.show_settings {
+                state.show_settings = false;
             } else if state.renaming.is_some() {
                 state.renaming = None;
                 state.rename_buf.clear();
@@ -2657,7 +2664,14 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         }
         Message::ToggleOscLog => state.show_osc_log = !state.show_osc_log,
         Message::ClearOscLog => state.osc_log.clear(),
-        Message::ToggleDevicePanel => state.show_device_panel = !state.show_device_panel,
+        Message::ToggleDevicePanel => {
+            state.show_device_panel = !state.show_device_panel;
+            state.show_settings = false;
+        }
+        Message::ToggleSettings => {
+            state.show_settings = !state.show_settings;
+            state.show_device_panel = false;
+        }
         Message::ToggleAbout => state.show_about = !state.show_about,
         Message::OpenRepoUrl => {
             // Fire and forget: the browser is not our child process, and a
@@ -3122,6 +3136,12 @@ pub fn view(state: &TuxMix, _window: window::Id) -> Element<'_, Message> {
             .height(Length::Fill)
             .into();
     }
+    if state.show_settings {
+        base = stack(vec![base, settings_panel(state)])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    }
     if state.show_about {
         // The About dialog rides above the whole window, drawers included:
         // it is a modal now, not one more docked panel (see
@@ -3448,31 +3468,13 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
         );
     }
 
-    // Background behaviour: the window's close button and the session start.
-    if !state.device.is_mock() {
-        let toggle = |label: &'static str, active: bool, message: Message| {
-            iced::widget::button(text(label).size(theme::TEXT_XS * scale).center())
-                .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
-                .width(Length::Fill)
-                .style(theme::toggle_button(active, theme::ACCENT))
-                .on_press(message)
-        };
-        let mut app_section = column![section("TUXMIX")].spacing(theme::SPACE_SM * scale);
-        if state.tray_active {
-            app_section = app_section.push(toggle(
-                "Keep running in the tray when closed",
-                state.keep_in_tray,
-                Message::SetKeepInTray(!state.keep_in_tray),
-            ));
-        }
-        app_section = app_section.push(toggle(
-            "Start with the session, hidden in the tray",
-            state.autostart,
-            Message::SetAutostart(!state.autostart),
-        ));
-        body = body.push(app_section);
-    }
+    popover(state, body.into(), Message::ToggleDevicePanel)
+}
 
+/// The card of a popover docked beside the sidebar, closing on `close` when
+/// a click lands outside it.
+fn popover<'a>(state: &'a TuxMix, body: Element<'a, Message>, close: Message) -> Element<'a, Message> {
+    let scale = state.ui_scale;
     const CARD_W: f32 = 320.0;
     let card = opaque(
         container(body)
@@ -3503,8 +3505,63 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .height(Length::Fill),
         )
-        .on_press(Message::ToggleDevicePanel),
+        .on_press(close),
     )
+}
+
+/// The app's own settings (as opposed to the device's): how TuxMix behaves
+/// around its window, not what the card does.
+fn settings_panel(state: &TuxMix) -> Element<'_, Message> {
+    let scale = state.ui_scale;
+    let header = row![
+        text("TuxMix settings")
+            .color(theme::TEXT_PRIMARY)
+            .size(theme::TEXT_MD * scale),
+        iced::widget::Space::new().width(Length::Fill),
+        iced::widget::button(text("Close").size(theme::TEXT_XS * scale))
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+            .style(theme::ghost_button)
+            .on_press(Message::ToggleSettings),
+    ]
+    .align_y(iced::Alignment::Center);
+    let section = row![
+        text("BACKGROUND")
+            .color(theme::TEXT_SEC)
+            .size(theme::TEXT_MICRO * scale),
+        iced::widget::rule::horizontal(1),
+    ]
+    .spacing(theme::SPACE_MD * scale)
+    .align_y(iced::Alignment::Center);
+    let toggle = |label: &'static str, active: bool, message: Message| {
+        iced::widget::button(text(label).size(theme::TEXT_XS * scale).center())
+            .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+            .width(Length::Fill)
+            .style(theme::toggle_button(active, theme::ACCENT))
+            .on_press(message)
+    };
+    let mut background = column![section].spacing(theme::SPACE_SM * scale);
+    if state.tray_active {
+        background = background.push(toggle(
+            "Keep running in the tray when closed",
+            state.keep_in_tray,
+            Message::SetKeepInTray(!state.keep_in_tray),
+        ));
+    } else {
+        background = background.push(
+            text("No system tray found: closing the window quits.")
+                .color(theme::TEXT_SEC)
+                .size(theme::TEXT_XS * scale),
+        );
+    }
+    background = background.push(toggle(
+        "Start with the session, hidden in the tray",
+        state.autostart,
+        Message::SetAutostart(!state.autostart),
+    ));
+    let body = column![header, background]
+        .spacing(theme::SPACE_XL * scale)
+        .width(Length::Fill);
+    popover(state, body.into(), Message::ToggleSettings)
 }
 
 /// A sample rate as people say it: "48 kHz", "44.1 kHz", "176.4 kHz".

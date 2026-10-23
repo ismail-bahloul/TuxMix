@@ -358,6 +358,15 @@ fn zoom_bar(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     container(
         row![
             hint(
+                button(text("\u{2699}").size(theme::TEXT_SM * scale).center())
+                    .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
+                    .width(Length::Fixed(26.0 * scale))
+                    .style(theme::chip_button(state.show_settings))
+                    .on_press(Message::ToggleSettings),
+                "TuxMix settings: tray, start with the session",
+                scale,
+            ),
+            hint(
                 cell("\u{2212}")
                     .style(theme::ghost_button)
                     .on_press(Message::ZoomOut),

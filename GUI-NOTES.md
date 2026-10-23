@@ -4146,3 +4146,11 @@ runs as an `iced::daemon`: the process outlives its windows, hiding closes the
 window (`state.window_id = None`) and showing opens a new one at the last
 size. `--minimized` simply does not open one at launch. Without a tray the
 close button still saves and quits.
+
+## TuxMix settings, separate from the device's (2026-10-23)
+
+The tray / autostart toggles lived at the foot of the device popover, which is
+the card's (clock, rate, pitch...). The app's own behaviour now has its own
+popover, opened by the gear beside the zoom control at the foot of the
+sidebar ("TuxMix settings"); the two popovers exclude each other and share
+`popover()`. Esc closes it.
