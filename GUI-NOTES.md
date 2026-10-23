@@ -4214,3 +4214,15 @@ leaves the process alive with no window, and a second launch brings the
 window back. A close the app did not ask for (`window::Event::Closed`) is now
 handled too: hidden with a tray, quit without one. Still not tried on a real
 Plasma/GNOME panel.
+
+## Ordre de capture natif du device (2026-10-23)
+
+Le driver v7 (issue babyface-pro-linux#26) expose la capture dans l'ordre du
+device, une map identité : ch0-3 = AN1-4, ch4/5 = AS1/2, ch6-11 = ADAT3-8.
+AS1/2 est la première paire optique (ADAT 1/2 en réception ADAT, S/PDIF en
+réception S/PDIF), d'où le nom des suivantes. `INPUT_FOR_CAPTURE` devient donc
+l'identité ; il reste explicite pour qu'un futur réordonnancement du driver ne
+touche qu'un endroit. Les strips d'entrée étaient déjà dans cet ordre, seuls
+les meters changent de colonne. Un driver antérieur au 2026-10-23 expose
+encore AS1/2 en 10/11 et ADAT3-8 en 4-9 : TuxMix suppose désormais l'ordre
+courant.

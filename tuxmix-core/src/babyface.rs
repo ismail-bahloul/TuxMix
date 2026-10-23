@@ -1257,13 +1257,12 @@ impl RmeDevice for BabyfacePro {
         };
         info!("ALSA control grammar: {grammar:?}");
 
-        // Request all 12 capture channels. The kernel driver's own
-        // channel map (`babyfacepro.c`'s `babyface_capture_copy`) walks
-        // `map[i]` for `i in 0..channels_requested`; with the 2026-10-17
-        // map the channels are AN1/2, IN3/4, ADAT3/4, ADAT5/6, ADAT7/8
-        // and AS1/2 at 10/11, and `capture_meter::INPUT_FOR_CAPTURE`
-        // maps them onto the input strips. See `capture_meter`'s module
-        // doc comment for the live mapping.
+        // Request all 12 capture channels. The kernel driver's capture
+        // map is the identity in v7 (2026-10-23): capture channel i is the
+        // i-th word, in the device's own order AN1-4, AS1/2, ADAT3-8.
+        // `capture_meter::INPUT_FOR_CAPTURE` therefore maps them straight
+        // onto the input strips. See `capture_meter`'s module doc comment
+        // for the live mapping.
         let capture_meter =
             crate::capture_meter::CaptureMeter::start(mixer.card_name(), 48_000);
         if capture_meter.is_none() {
