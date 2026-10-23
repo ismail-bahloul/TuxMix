@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2 (2026-10-23)
+
+### Fixed
+- `tuxmix` and `tuxmix-tui` print their usage for `-h`/`--help` instead
+  of trying to open a device.
+- With no device, the simulation fallback no longer applies the real auto
+  scene (which failed with `SceneModelMismatch`), and the message now says
+  that the simulation is starting.
+
 ## 0.3.1 (2026-10-23)
 
 ### Fixed

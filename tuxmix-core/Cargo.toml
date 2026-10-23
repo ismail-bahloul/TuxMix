@@ -1,6 +1,6 @@
 [package]
 name = "tuxmix-core"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "Core library for controlling RME audio interfaces (ALSA and proprietary USB backends)"
 license = "MIT"
