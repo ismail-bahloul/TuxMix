@@ -7,6 +7,14 @@ starting with the **Babyface Pro FS**.  It brings the TotalMix
 experience to Linux, without the RME Windows software: routing, gains,
 monitoring, EQ, FX sends, scene management.
 
+<p align="center">
+  <img src="docs/screenshots/mixer.png" alt="The Mixer view (simulated device)">
+</p>
+
+Views: **Quick** (one source into one destination, the fastest way to a
+mix), **Mixer** (every strip, TotalMix-style) and **Matrix** (the full
+routing grid). More in [`docs/screenshots`](docs/screenshots).
+
 ## What's inside
 
 - **`tuxmix-usb`** is the low-level USB backend: the full vendor
@@ -26,6 +34,17 @@ monitoring, EQ, FX sends, scene management.
   prioritized list.
 - **`tuxmix-sys`** provides FFI bindings.
 
+## Running in the background
+
+With a system tray (KDE Plasma, or GNOME with the AppIndicator extension),
+closing the window keeps TuxMix running, as TotalMix does on Windows: the
+front-panel DIM button and the restore of your mix after a replug are
+TuxMix's job while it runs. The tray icon toggles the window; its menu has
+Dim, Recall mix 1-8, Settings and Quit. `tuxmix --minimized` starts hidden,
+and Settings (Ctrl+,) can start TuxMix with your session. Without a tray,
+closing the window quits. One TuxMix runs per session: a second launch shows
+the first.
+
 ## The Linux audio stack
 
 Two ways to get sound from the Babyface Pro FS:
@@ -44,8 +63,8 @@ Two ways to get sound from the Babyface Pro FS:
 
 - The protocol layer (`tuxmix-usb` + `tuxmix-core`) is complete and
   hardware-validated (the laws are calibrated, not guessed).
-- The GUI/TUI are functionally complete; remaining work is visual
-  polish (see `GUI-NOTES.md`).
+- The GUI/TUI are functionally complete; the road to 1.0 is validation on
+  real hardware and desktops (tray on KDE/GNOME), see `CHANGELOG.md`.
 - The ALSA backend (`tuxmix-core`'s `alsa` feature, driving the kernel
   driver's controls) is hardware-validated as of 2026-08-28. Input/
   Playback Mute and Solo on this backend didn't actually reach the
