@@ -27,8 +27,8 @@ interface other than the Babyface Pro FS. It only covers **ALSA
 simple-mixer-element (selem) devices** — USB class-compliant interfaces
 like the Babyface family. RME's newer MIDI-SysEx-based models (Fireface
 UCX II, UFX+/III) need a different I/O backend entirely and aren't in
-scope for this recipe — see [What's inside](README.md#whats-inside) in the
-README if you want to help with that instead.
+scope for this recipe — see [Workspace](docs/guide.md#workspace) in the
+guide if you want to help with that instead.
 
 1. **Get real `amixer scontents` output from your device.** Plug it in
    and run `amixer -c <card name> scontents > scontents.txt`. You'll need
@@ -77,7 +77,7 @@ README if you want to help with that instead.
 ## Other ways to help
 
 - **UI / UX**: improve the iced GUI or the ratatui TUI — see
-  [Status](README.md#status) and `GUI-NOTES.md` for what's open.
+  [Status](docs/guide.md#status) and `GUI-NOTES.md` for what's open.
 - **Babyface Pro FS ALSA verification**: `babyface.rs`'s mapping
   (crosspoints, master volume/mute, phantom/pad/gain, loopback,
   AN 1>2/link/MS/dim/width/FX send/pitch, EQ) is hardware-validated as
