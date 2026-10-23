@@ -195,30 +195,24 @@ fn panel_toggle(open: bool, scale: f32) -> Element<'static, Message> {
 /// right — what makes the column read as one panel with a header instead
 /// of a stack of rows that happens to sit at the window's edge.
 ///
-/// Double-clicking the row folds the panel too, like double-clicking a
-/// title bar: the row holds nothing else to click, so the gesture cannot
-/// collide with a control (the panel body could not take it, its buttons
-/// are clicked in quick runs). The toggle button captures its own presses,
-/// so pressing it never counts toward the row's double-click.
+/// Double-clicking anywhere empty on the panel folds it (see `sidebar`);
+/// the toggle button captures its own presses.
 fn title_row(scale: f32) -> Element<'static, Message> {
     // As tall as the top bar minus the column's padding above and the
     // spacing below it, so it sits on the bar's line and the device chip
     // starts exactly where the views do.
-    mouse_area(
-        row![
-            text("CONTROLS")
-                .size(theme::TEXT_XS * scale)
-                .color(theme::TEXT_SEC),
-            iced::widget::Space::new().width(Length::Fill),
-            panel_toggle(true, scale),
-        ]
-        .align_y(iced::Alignment::Center)
-        .width(Length::Fill)
-        .height(Length::Fixed(
-            (theme::TOP_BAR_H - 2.0 * theme::SPACE_MD) * scale,
-        )),
-    )
-    .on_double_click(Message::ToggleSidebar)
+    row![
+        text("CONTROLS")
+            .size(theme::TEXT_XS * scale)
+            .color(theme::TEXT_SEC),
+        iced::widget::Space::new().width(Length::Fill),
+        panel_toggle(true, scale),
+    ]
+    .align_y(iced::Alignment::Center)
+    .width(Length::Fill)
+    .height(Length::Fixed(
+        (theme::TOP_BAR_H - 2.0 * theme::SPACE_MD) * scale,
+    ))
     .into()
 }
 
@@ -292,8 +286,9 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
                 .height(Length::Fill)
                 .style(theme::top_bar),
         )
-        .on_press(Message::ToggleSidebar)
-        .interaction(iced::mouse::Interaction::Pointer)
+        // Double-click, like the open panel: one gesture both ways. The
+        // button at the top still opens it with a single click.
+        .on_double_click(Message::ToggleSidebar)
         .into();
     }
 
@@ -330,13 +325,19 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill);
 
-    container(column![
-        row![resize_strip(scale), content].height(Length::Fill),
-        zoom_bar(state, scale)
-    ])
-    .width(Length::Fixed(state.sidebar_width * scale))
-    .height(Length::Fill)
-    .style(theme::top_bar)
+    // Double-click on any empty part of the column folds it. Controls
+    // capture their own presses, so only the gaps, captions and the
+    // title row reach this.
+    mouse_area(
+        container(column![
+            row![resize_strip(scale), content].height(Length::Fill),
+            zoom_bar(state, scale)
+        ])
+        .width(Length::Fixed(state.sidebar_width * scale))
+        .height(Length::Fill)
+        .style(theme::top_bar),
+    )
+    .on_double_click(Message::ToggleSidebar)
     .into()
 }
 

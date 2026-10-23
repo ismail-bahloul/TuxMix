@@ -4130,3 +4130,10 @@ presses). Closing the window used to stop all of it silently.
   (`~/.config/autostart/tuxmix.desktop`, `Exec=... --minimized`).
 - Not verified on a live tray: Xvfb has no StatusNotifierWatcher; GNOME needs
   an AppIndicator extension.
+
+## Sidebar: double-click toggles it both ways (2026-10-23)
+
+A double-click on any empty part of the open panel folds it (controls capture
+their own presses); a double-click anywhere on the folded rail opens it. The
+tab button still toggles with a single click. Before, folding needed the title
+row and unfolding was a single click, which read as two different gestures.
