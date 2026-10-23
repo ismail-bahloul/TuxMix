@@ -414,12 +414,12 @@ impl DeviceHandle {
     /// Per-channel availability for the input strips. Mock is real
     /// everywhere; the USB backend's ISO IN stream meters AN1-4 only
     /// (`tuxmix-usb`'s `input_peaks()` returns four channels); the
-    /// ALSA/kernel-driver backend meters all twelve inputs (AN1-AN4,
-    /// ADAT3-8 and AS1/2 at capture channels 10/11 in the 2026-10-17
-    /// driver map, see `capture_meter`'s module doc comment), provided
-    /// the PCM opened (`BabyfacePro::meters_available`). An older
-    /// driver exposes the playback echo tap on 10/11 instead, so AS1/2
-    /// needs the updated driver. Each capture pair is also the matching
+    /// ALSA/kernel-driver backend meters all twelve inputs in the
+    /// device's own order (AN1-4, AS1/2, ADAT3-8) with the v7 driver,
+    /// see `capture_meter`'s module doc comment), provided the PCM
+    /// opened (`BabyfacePro::meters_available`). An older driver puts
+    /// AS1/2 at 10/11 instead, so TuxMix expects the updated driver.
+    /// Each capture pair is also the matching
     /// output pair's record bus, so enabling that output's loopback
     /// makes the input meter read the output bus too.
     pub fn has_input_meter(&self, idx: usize) -> bool {

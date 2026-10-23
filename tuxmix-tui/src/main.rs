@@ -325,9 +325,10 @@ impl DeviceHandle {
         }
     }
     /// Per-channel availability for the input strips: the ALSA backend
-    /// has real levels for all twelve inputs with the updated driver
-    /// (AS1/2 is at capture 10/11). See `tuxmix-gui`'s identical method
-    /// and `tuxmix-core`'s `capture_meter` module for the live mapping.
+    /// has real levels for all twelve inputs in the device's own order
+    /// with the v7 driver (AS1/2 is at capture 4/5). See `tuxmix-gui`'s
+    /// identical method and `tuxmix-core`'s `capture_meter` module for
+    /// the live mapping.
     fn has_input_meter(&self, idx: usize) -> bool {
         match self {
             DeviceHandle::Mock(_) => true,
