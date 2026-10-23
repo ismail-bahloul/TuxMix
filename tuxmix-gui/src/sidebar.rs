@@ -329,10 +329,13 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
     // capture their own presses, so only the gaps, captions and the
     // title row reach this.
     mouse_area(
-        container(column![
-            row![resize_strip(scale), content].height(Length::Fill),
-            zoom_bar(state, scale)
-        ])
+        container(
+            row![
+                resize_strip(scale),
+                column![content, zoom_bar(state, scale)].width(Length::Fill)
+            ]
+            .height(Length::Fill),
+        )
         .width(Length::Fixed(state.sidebar_width * scale))
         .height(Length::Fill)
         .style(theme::top_bar),
