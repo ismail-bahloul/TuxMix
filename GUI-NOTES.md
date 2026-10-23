@@ -4171,5 +4171,8 @@ pixmaps. Reads well on dark panels; on light ones the white fill is faint at
 The Quick strips draw the same gear / EQ / T / route buttons as the Mixer's,
 but only the Mixer rendered what they open: pressing one toggled state that
 nothing displayed. `quick_with_panel` now puts the open panel beside its
-block. Known rough edge: the panel keeps the UI zoom's text size while the
-Quick strips can be drawn larger, and it is only as tall as its content.
+block. The panel is drawn at the Quick strips' own scale (the popovers take the
+scale as a parameter) and fills the strip's height: a stack whose base layer,
+the strip, sets the size (a `Fill` panel in a row would take all the room the
+page offers). The picker sits over the strip only. `flyout_card` is now
+full-height, so Mixer panels match their strip too.

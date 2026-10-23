@@ -4306,8 +4306,7 @@ fn responsive_row<'a>(
 /// The route flyout's content — one button per output bus, current
 /// selection highlighted. `width` is the caller's animated tween value;
 /// `.clip(true)` keeps the list from spilling out past it mid-animation.
-fn route_popover(state: &TuxMix, width: f32) -> Element<'_, Message> {
-    let scale = state.ui_scale;
+fn route_popover(state: &TuxMix, width: f32, scale: f32) -> Element<'_, Message> {
     let mut list = column![].spacing(theme::SPACE_TIGHT);
     for (idx, label) in OUT_LABELS.iter().enumerate() {
         list = list.push(
@@ -4342,6 +4341,8 @@ fn flyout_card<'a>(
     container(content)
         .padding(theme::SPACE_MD * scale)
         .width(Length::Fixed(width))
+        // As tall as the strip beside it, like the EQ panel.
+        .height(Length::Fill)
         .style(theme::panel)
         .clip(true)
         .into()
@@ -4359,8 +4360,7 @@ fn flyout_card<'a>(
 /// pushes the row instead of overlaying it (no more `Stack`/`opaque`, see
 /// `with_flyout`), that failure mode's precondition is gone, so Gain
 /// moved in with the rest.
-fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message> {
-    let scale = state.ui_scale;
+fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element<'_, Message> {
     let p = strip_params(state, cid, state.sel_out);
 
     let mut col = column![].spacing(theme::SPACE_SM * scale);
@@ -4495,8 +4495,7 @@ fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, M
 /// Gain, which is Mic/Instrument-only), so unlike `eq_popover` there's
 /// no `Option`-shaped hardware gate to check here, just the channel kind.
 /// Same "pushes the row" shape as `settings_popover`/`eq_popover`.
-fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message> {
-    let scale = state.ui_scale;
+fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element<'_, Message> {
     let ChannelId::Input(idx) = cid else {
         return container(iced::widget::Space::new()).into();
     };
@@ -4535,8 +4534,7 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Messa
 /// stretch the row; its controls scroll when the window is too short to
 /// show them all. The frequency knobs are log-scaled, matching the plot's
 /// axis.
-fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32) -> Element<'_, Message> {
-    let scale = state.ui_scale;
+fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element<'_, Message> {
     let ChannelId::Input(idx) = cid else {
         return container(iced::widget::Space::new()).into();
     };
@@ -4827,7 +4825,7 @@ fn with_flyout<'a>(
     {
         return row_element;
     }
-    let content = route_popover(state, strip::FLYOUT_W);
+    let content = route_popover(state, strip::FLYOUT_W, state.ui_scale);
     // `opaque` captures clicks across its *own* widget's bounds — those
     // have to be just the small popover itself (its natural, tightly-fit
     // size), not the Length::Fill positioning container around it. Get
@@ -4927,7 +4925,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // just their own strip's.
                 let panel_w = item_width;
                 input_strips = input_strips.push(
-                    row![strip_widget, settings_popover(state, cid, panel_w)]
+                    row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
                         .spacing(theme::SPACE_MD),
                 );
                 item_width += panel_w + theme::SPACE_MD;
@@ -4938,7 +4936,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // manual zoom scales the panel with its contents.
                 let panel_w = strip::EQ_FLYOUT_W * state.ui_scale;
                 input_strips = input_strips.push(
-                    row![strip_widget, eq_popover(state, cid, panel_w)].spacing(theme::SPACE_MD),
+                    row![strip_widget, eq_popover(state, cid, panel_w, state.ui_scale)].spacing(theme::SPACE_MD),
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else if state.flyout_open.contains(&(cid, strip::FlyoutKind::Trim)) {
@@ -4948,7 +4946,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // no strip-width-scaling content (no button rows) to fit.
                 let panel_w = strip::FLYOUT_W;
                 input_strips = input_strips.push(
-                    row![strip_widget, trim_popover(state, cid, panel_w)]
+                    row![strip_widget, trim_popover(state, cid, panel_w, state.ui_scale)]
                         .spacing(theme::SPACE_MD),
                 );
                 item_width += panel_w + theme::SPACE_MD;
@@ -4997,7 +4995,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
                 let panel_w = item_width;
                 pb_strips = pb_strips.push(
-                    row![strip_widget, settings_popover(state, cid, panel_w)]
+                    row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
                         .spacing(theme::SPACE_MD),
                 );
                 item_width += panel_w + theme::SPACE_MD;
@@ -5046,7 +5044,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
                 let panel_w = item_width;
                 out_strips = out_strips.push(
-                    row![strip_widget, settings_popover(state, cid, panel_w)]
+                    row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
                         .spacing(theme::SPACE_MD),
                 );
                 item_width += panel_w + theme::SPACE_MD;
@@ -5232,34 +5230,52 @@ fn quick_fit(height: f32) -> f32 {
 const QUICK_CHROME: f32 = 110.0;
 const QUICK_STRIP_UNIT: f32 = 330.0;
 
-/// A Quick block with the panel its strip has open (Settings, EQ, Trim or
-/// the route list) to its right, or the block itself when none is.
-fn quick_with_panel<'a>(
+/// A Quick block: the picker over the strip, with the panel the strip has
+/// open (Settings, EQ, Trim or the route list) to the strip's right. The
+/// panel is drawn at the strips' own scale and fills the strip's height, so
+/// it stays proportional to them; the picker keeps the strip's width.
+fn quick_block<'a>(
     state: &'a TuxMix,
     cid: ChannelId,
-    block: iced::widget::Column<'a, Message>,
+    heading: Element<'a, Message>,
+    picker: Element<'a, Message>,
+    strip_widget: Element<'a, Message>,
     strip_w: f32,
     big_scale: f32,
 ) -> Element<'a, Message> {
     use strip::FlyoutKind::{Eq, Route, Settings, Trim};
     let open = |k| state.flyout_open.contains(&(cid, k));
     let panel = if open(Settings) {
-        Some(settings_popover(state, cid, strip_w))
+        Some((settings_popover(state, cid, strip_w, big_scale), strip_w))
     } else if open(Eq) {
-        Some(eq_popover(state, cid, strip::EQ_FLYOUT_W * big_scale))
+        let w = strip::EQ_FLYOUT_W * big_scale;
+        Some((eq_popover(state, cid, w, big_scale), w))
     } else if open(Trim) {
-        Some(trim_popover(state, cid, strip::FLYOUT_W * big_scale))
+        let w = strip::FLYOUT_W * big_scale;
+        Some((trim_popover(state, cid, w, big_scale), w))
     } else if open(Route) {
-        Some(route_popover(state, strip::FLYOUT_W * big_scale))
+        let w = strip::FLYOUT_W * big_scale;
+        Some((route_popover(state, w, big_scale), w))
     } else {
         None
     };
-    match panel {
-        Some(panel) => row![block, panel]
-            .spacing(theme::SPACE_MD * state.ui_scale)
-            .into(),
-        None => block.into(),
-    }
+    let gap = theme::SPACE_MD * state.ui_scale;
+    let head = container(column![heading, picker].spacing(gap).align_x(iced::Alignment::Center))
+        .width(Length::Fixed(strip_w))
+        .center_x(Length::Fixed(strip_w));
+    let body: Element<'a, Message> = match panel {
+        // A stack, not a row: the strip alone sets the height, and the
+        // panel's layer fills it (a `Fill` panel in a row would take all
+        // the room the page offers).
+        Some((panel, panel_w)) => iced::widget::stack![
+            row![strip_widget, iced::widget::Space::new().width(panel_w + gap)],
+            row![iced::widget::Space::new().width(strip_w + gap), panel]
+                .height(Length::Fill),
+        ]
+        .into(),
+        None => strip_widget,
+    };
+    column![head, body].spacing(gap).into()
 }
 
 fn quick_view(state: &TuxMix) -> Element<'_, Message> {
@@ -5356,24 +5372,24 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
                 .color(theme::TEXT_SEC)
                 .size(theme::TEXT_XS * scale)
         };
-        let source_block = column![
-            caption("SOURCE"),
-            source_picker,
+        let source_block = quick_block(
+            state,
+            quick_channel,
+            caption("SOURCE").into(),
+            source_picker.into(),
             strip::strip(finish_params(state, source_params)),
-        ]
-        .spacing(theme::SPACE_MD * scale)
-        .align_x(iced::Alignment::Center);
-        let dest_block = column![
-            caption("DESTINATION"),
-            dest_picker,
+            strip_w,
+            big_scale,
+        );
+        let dest_block = quick_block(
+            state,
+            dest_cid,
+            caption("DESTINATION").into(),
+            dest_picker.into(),
             strip::strip(finish_params(state, dest_params)),
-        ]
-        .spacing(theme::SPACE_MD * scale)
-        .align_x(iced::Alignment::Center);
-        // The strip's gear / EQ / T / route buttons open their panel beside
-        // it here, as the Mixer does (the panel takes the block's height).
-        let source_block = quick_with_panel(state, quick_channel, source_block, strip_w, big_scale);
-        let dest_block = quick_with_panel(state, dest_cid, dest_block, strip_w, big_scale);
+            strip_w,
+            big_scale,
+        );
 
         let connector = text("\u{2192}")
             .color(theme::TEXT_SEC)
