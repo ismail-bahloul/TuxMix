@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `--osc-dialect oscmix` makes the OSC bridge speak oscmix's address space
+  (1-based indices, dB, `/mix/<out>/<input|playback>/<in>` with volume and
+  pan together, `/refresh`, `/device/*`) so oscmix UIs can drive a Babyface.
+  Output pairs map to oscmix outputs `2p+1`/`2p+2`; solo has no oscmix
+  address. The default dialect is unchanged.
+
 ## 0.3.2 (2026-10-23)
 
 ### Fixed
