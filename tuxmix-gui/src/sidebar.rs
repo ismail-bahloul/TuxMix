@@ -481,9 +481,9 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let settings = state.device.settings();
     // The device card is the one way into the device's settings: it says
     // what the card is, what state it is in and how it is clocked, and a
-    // click on it opens Device settings beside it. The gear says
-    // "settings"; a caret said "dropdown", and the top bar's clock field
-    // opening the same popover made two doors for one room.
+    // click on it opens Device settings beside it. The arrow
+    // points at the popover; a caret said "dropdown", and the top bar's
+    // clock field opening the same popover made two doors for one room.
     hint(
         button(
             column![
@@ -496,8 +496,11 @@ fn device_chip(state: &TuxMix, scale: f32) -> Element<'_, Message> {
                         .color(theme::TEXT_PRIMARY)
                         .wrapping(iced::advanced::text::Wrapping::None),
                     iced::widget::Space::new().width(Length::Fill),
-                    text("\u{2699}")
-                        .size(theme::TEXT_SM * scale)
+                    // The popover opens to the card's left: the arrow points
+                    // at it. The gear is the app's settings (foot of the
+                    // column), so the card must not wear one too.
+                    text("\u{2039}")
+                        .size(theme::TEXT_MD * scale)
                         .color(theme::TEXT_SEC),
                 ]
                 .spacing(theme::SPACE_SM * scale)
