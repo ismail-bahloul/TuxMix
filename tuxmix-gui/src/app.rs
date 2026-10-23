@@ -2193,6 +2193,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                     hide_window(state)
                 };
             }
+            crate::tray::TrayEvent::Settings => {
+                state.show_settings = true;
+                state.show_device_panel = false;
+                return show_window(state);
+            }
             crate::tray::TrayEvent::Dim => return update(state, Message::DimToggle),
             crate::tray::TrayEvent::Snapshot(n) => {
                 return update(state, Message::SnapshotClicked(n))
@@ -3053,6 +3058,7 @@ fn handle_global_event(
                         "=" | "+" => Some(Message::ZoomIn),
                         "-" | "_" => Some(Message::ZoomOut),
                         "0" => Some(Message::ZoomReset),
+                        "," => Some(Message::ToggleSettings),
                         _ => None,
                     };
                     if zoom.is_some() {

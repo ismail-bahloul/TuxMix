@@ -4151,8 +4151,9 @@ close button still saves and quits.
 
 The tray / autostart toggles lived at the foot of the device popover, which is
 the card's (clock, rate, pitch...). The app's own behaviour now has its own
-popover, opened by the gear beside the zoom control at the foot of the
-sidebar ("TuxMix settings"); the two popovers exclude each other and share
+popover ("TuxMix settings"), opened with Ctrl+, or the tray menu's Settings
+(a gear at the foot of the sidebar was tried and removed: two gears next to
+each other read as one setting); the two popovers exclude each other and share
 `popover()`. Esc closes it.
 
 ## Tray icon artwork (2026-10-23)

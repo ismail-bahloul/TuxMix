@@ -35,6 +35,8 @@ pub enum TrayEvent {
     Show,
     /// The icon was clicked: show a hidden window, hide a shown one.
     Toggle,
+    /// Show the window with the TuxMix settings open.
+    Settings,
     /// Flip the card's Dim.
     Dim,
     /// Recall "Mix n" (1-8).
@@ -142,6 +144,12 @@ impl ksni::Tray for Icon {
             SubMenu {
                 label: "Recall mix".into(),
                 submenu: snapshots,
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Settings".into(),
+                activate: Box::new(|_| send(TrayEvent::Settings)),
                 ..Default::default()
             }
             .into(),

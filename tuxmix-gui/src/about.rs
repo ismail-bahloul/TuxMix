@@ -43,10 +43,11 @@ fn header(scale: f32) -> Element<'static, Message> {
 /// Every gesture and key the app answers to, in one place: most of them
 /// (double-clicks, Ctrl/Shift-clicks, the Matrix drags) are otherwise only
 /// discoverable by accident or by a tooltip you have to hover first.
-const SHORTCUTS: [(&str, &str); 11] = [
+const SHORTCUTS: [(&str, &str); 12] = [
     ("Tab", "Next view (Quick, Mixer, Matrix)"),
     ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
     ("Ctrl + / Ctrl - / Ctrl 0", "Zoom in / out / reset (also Ctrl+wheel)"),
+    ("Ctrl ,", "TuxMix settings (tray, autostart)"),
     ("F11", "Full screen"),
     ("Esc", "Close a dialog, cancel an edit"),
     ("Ctrl / Shift + click", "Select strips; their faders move together"),
