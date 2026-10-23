@@ -35,6 +35,10 @@ pub enum TrayEvent {
     Show,
     /// The icon was clicked: show a hidden window, hide a shown one.
     Toggle,
+    /// Flip the card's Dim.
+    Dim,
+    /// Recall "Mix n" (1-8).
+    Snapshot(u8),
     Quit,
 }
 
@@ -69,7 +73,16 @@ pub fn subscription() -> Subscription<TrayEvent> {
 
 // ── The icon ─────────────────────────────────────────────────────
 
-struct Icon;
+/// What the menu shows: kept here, refreshed by `set_status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Status {
+    pub window_visible: bool,
+    pub dim: bool,
+}
+
+struct Icon {
+    status: Status,
+}
 
 impl ksni::Tray for Icon {
     fn id(&self) -> String {
@@ -96,11 +109,39 @@ impl ksni::Tray for Icon {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::StandardItem;
+        use ksni::menu::{CheckmarkItem, StandardItem, SubMenu};
+        let snapshots = (1..=8u8)
+            .map(|n| {
+                StandardItem {
+                    label: format!("Mix {n}"),
+                    activate: Box::new(move |_| send(TrayEvent::Snapshot(n))),
+                    ..Default::default()
+                }
+                .into()
+            })
+            .collect();
         vec![
             StandardItem {
-                label: "Show TuxMix".into(),
-                activate: Box::new(|_| send(TrayEvent::Show)),
+                label: if self.status.window_visible {
+                    "Hide window".into()
+                } else {
+                    "Show TuxMix".into()
+                },
+                activate: Box::new(|_| send(TrayEvent::Toggle)),
+                ..Default::default()
+            }
+            .into(),
+            ksni::MenuItem::Separator,
+            CheckmarkItem {
+                label: "Dim".into(),
+                checked: self.status.dim,
+                activate: Box::new(|_| send(TrayEvent::Dim)),
+                ..Default::default()
+            }
+            .into(),
+            SubMenu {
+                label: "Recall mix".into(),
+                submenu: snapshots,
                 ..Default::default()
             }
             .into(),
@@ -123,17 +164,35 @@ fn argb_network_order(rgba: &[u8]) -> Vec<u8> {
         .collect()
 }
 
+fn handle_cell() -> &'static OnceLock<ksni::blocking::Handle<Icon>> {
+    static HANDLE: OnceLock<ksni::blocking::Handle<Icon>> = OnceLock::new();
+    &HANDLE
+}
+
+/// Refreshes the menu's "Hide / Show" label and the Dim check mark. Cheap
+/// when nothing changed: the caller may call it every tick.
+pub fn set_status(status: Status) {
+    static LAST: Mutex<Option<Status>> = Mutex::new(None);
+    let Some(handle) = handle_cell().get() else {
+        return;
+    };
+    let Ok(mut last) = LAST.lock() else { return };
+    if *last != Some(status) {
+        *last = Some(status);
+        handle.update(|icon| icon.status = status);
+    }
+}
+
 /// Puts the icon in the notification area. `false` when no service is
 /// listening (no tray, or none that speaks StatusNotifierItem): then the
 /// app must not hide its window, there would be no way back.
-pub fn start() -> bool {
+pub fn start(status: Status) -> bool {
     use ksni::blocking::TrayMethods;
-    static HANDLE: OnceLock<ksni::blocking::Handle<Icon>> = OnceLock::new();
-    match Icon.spawn() {
+    match (Icon { status }).spawn() {
         Ok(handle) => {
             // The service runs while the handle lives: keep it for the whole
             // process.
-            let _ = HANDLE.set(handle);
+            let _ = handle_cell().set(handle);
             true
         }
         Err(e) => {

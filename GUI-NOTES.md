@@ -4116,6 +4116,10 @@ presses). Closing the window used to stop all of it silently.
 - `tray.rs`: StatusNotifierItem icon (`ksni`), click toggles the window, menu
   has Show / Quit. When no tray service answers, `tray_active` stays false and
   closing quits as before, so a hidden window never has no way back.
+- Tray menu (right click): Show/Hide window (label follows the window),
+  Dim (check mark follows the card, front panel included), Recall mix 1-8,
+  Quit. Left click toggles the window. The state is pushed from `Tick`
+  through `tray::set_status`, which only touches D-Bus on a change.
 - Closing with a tray hides the window (`keep_in_tray`, default on, saved
   only when the user opts out). Quit from the tray menu saves and exits.
 - Single instance per session through `$XDG_RUNTIME_DIR/tuxmix.sock`

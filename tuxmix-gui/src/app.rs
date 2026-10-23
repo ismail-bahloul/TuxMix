@@ -2045,6 +2045,12 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             return iced::window::set_mode(id, mode);
         }
         Message::Tick => {
+            if state.tray_active {
+                crate::tray::set_status(crate::tray::Status {
+                    window_visible: !state.window_hidden,
+                    dim: state.device.settings().dim,
+                });
+            }
             flush_prefs(state);
             // Resize coalescing: if the last `Resized` of a drag landed
             // inside the throttle window, flush it here so the width always
@@ -2178,6 +2184,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 } else {
                     hide_window(state)
                 };
+            }
+            crate::tray::TrayEvent::Dim => return update(state, Message::DimToggle),
+            crate::tray::TrayEvent::Snapshot(n) => {
+                return update(state, Message::SnapshotClicked(n))
             }
             crate::tray::TrayEvent::Quit => {
                 let saved = update(state, Message::SaveNow);

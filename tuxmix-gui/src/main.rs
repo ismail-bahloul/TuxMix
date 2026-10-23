@@ -118,7 +118,7 @@ fn main() -> iced::Result {
     // The tray icon (not for the simulation, which would put a second icon
     // beside the real one). `--minimized` starts hidden in it, and only when
     // there is one: a hidden window with no icon has no way back.
-    let tray_active = !mock && tray::start();
+    let tray_active = !mock && tray::start(tray::Status { window_visible: true, dim: false });
     let start_hidden = tray_active && args.iter().any(|a| a == "--minimized");
 
     iced::application(
