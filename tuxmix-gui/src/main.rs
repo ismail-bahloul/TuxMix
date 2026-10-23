@@ -85,6 +85,7 @@ Options:
   --osc-port PORT        OSC listen port (default 9000)
   --osc-send-port PORT   OSC send port (default 9001)
   --osc-host HOST        OSC send host (default 127.0.0.1)
+  --osc-dialect NAME     OSC address space: native (default) or oscmix
   --fullscreen           start fullscreen
   --minimized            start hidden in the tray
   -h, --help             show this help
@@ -124,6 +125,14 @@ fn main() -> iced::Result {
         send_host: arg_value(&args, "--osc-host")
             .and_then(|v| v.parse::<IpAddr>().ok())
             .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        dialect: arg_value(&args, "--osc-dialect")
+            .and_then(|v| {
+                osc::Dialect::from_arg(&v).or_else(|| {
+                    eprintln!("Unknown --osc-dialect {v:?} (use native|oscmix), using native");
+                    None
+                })
+            })
+            .unwrap_or_default(),
     });
 
     let start_view = parse_view(&args);
@@ -142,7 +151,11 @@ fn main() -> iced::Result {
     // The tray icon (not for the simulation, which would put a second icon
     // beside the real one). `--minimized` starts hidden in it, and only when
     // there is one: a hidden window with no icon has no way back.
-    let tray_active = !mock && tray::start(tray::Status { window_visible: true, dim: false });
+    let tray_active = !mock
+        && tray::start(tray::Status {
+            window_visible: true,
+            dim: false,
+        });
     let start_hidden = tray_active && args.iter().any(|a| a == "--minimized");
 
     // A daemon, not a plain application: the window is opened and closed by

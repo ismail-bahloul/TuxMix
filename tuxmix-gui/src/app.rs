@@ -1792,6 +1792,45 @@ fn apply_grouped_pan(state: &mut TuxMix, cid: ChannelId, out: usize, pan: i8) {
     }
 }
 
+/// Pushes the whole mixer state out over OSC — on connect, and on an oscmix
+/// `/refresh`.
+fn osc_snapshot(state: &mut TuxMix) {
+    notify_osc(
+        state,
+        OscOutbound::DeviceInfo {
+            name: state.device.model_name().to_string(),
+            inputs: state.device.inputs().len(),
+            outputs: state.device.output_pair_count() * 2,
+        },
+    );
+    // A controller connecting after startup shouldn't stay blind
+    // until the next manual change — snapshot everything once.
+    let n_out = state.device.output_pair_count();
+    for ch in state.device.inputs().to_vec() {
+        let cid = ChannelId::Input(ch.id);
+        for out in 0..n_out {
+            notify_osc(state, OscOutbound::Volume(cid, out, ch.volumes[out]));
+            notify_osc(state, OscOutbound::Pan(cid, out, ch.pans[out]));
+        }
+        notify_osc(state, OscOutbound::Mute(cid, ch.mute));
+        notify_osc(state, OscOutbound::Solo(cid, ch.solo));
+    }
+    for ch in state.device.playbacks().to_vec() {
+        let cid = ChannelId::Playback(ch.id);
+        for out in 0..n_out {
+            notify_osc(state, OscOutbound::Volume(cid, out, ch.volumes[out]));
+            notify_osc(state, OscOutbound::Pan(cid, out, ch.pans[out]));
+        }
+        notify_osc(state, OscOutbound::Mute(cid, ch.mute));
+        notify_osc(state, OscOutbound::Solo(cid, ch.solo));
+    }
+    for ch in state.device.outputs().to_vec() {
+        notify_osc(state, OscOutbound::OutputVolume(ch.id, ch.volume));
+        notify_osc(state, OscOutbound::Mute(ChannelId::Output(ch.id), ch.mute));
+        notify_osc(state, OscOutbound::Solo(ChannelId::Output(ch.id), ch.solo));
+    }
+}
+
 /// Pushes a state change out to any connected OSC client — a no-op if
 /// `--osc` wasn't passed (`osc_tx` is `None`), and silently dropped rather
 /// than blocking the update loop if the outgoing channel is momentarily
@@ -2712,34 +2751,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         }
         Message::OscReady(tx) => {
             state.osc_tx = Some(tx);
-            // A controller connecting after startup shouldn't stay blind
-            // until the next manual change — snapshot everything once.
-            let n_out = state.device.output_pair_count();
-            for ch in state.device.inputs().to_vec() {
-                let cid = ChannelId::Input(ch.id);
-                for out in 0..n_out {
-                    notify_osc(state, OscOutbound::Volume(cid, out, ch.volumes[out]));
-                    notify_osc(state, OscOutbound::Pan(cid, out, ch.pans[out]));
-                }
-                notify_osc(state, OscOutbound::Mute(cid, ch.mute));
-                notify_osc(state, OscOutbound::Solo(cid, ch.solo));
-            }
-            for ch in state.device.playbacks().to_vec() {
-                let cid = ChannelId::Playback(ch.id);
-                for out in 0..n_out {
-                    notify_osc(state, OscOutbound::Volume(cid, out, ch.volumes[out]));
-                    notify_osc(state, OscOutbound::Pan(cid, out, ch.pans[out]));
-                }
-                notify_osc(state, OscOutbound::Mute(cid, ch.mute));
-                notify_osc(state, OscOutbound::Solo(cid, ch.solo));
-            }
-            for ch in state.device.outputs().to_vec() {
-                notify_osc(state, OscOutbound::OutputVolume(ch.id, ch.volume));
-                notify_osc(state, OscOutbound::Mute(ChannelId::Output(ch.id), ch.mute));
-                notify_osc(state, OscOutbound::Solo(ChannelId::Output(ch.id), ch.solo));
-            }
+            osc_snapshot(state);
         }
         Message::OscCommand(cmd) => match cmd {
+            OscCommand::Refresh => osc_snapshot(state),
             OscCommand::Volume(cid, out, v) => apply_grouped_volume(state, cid, out, v),
             OscCommand::Pan(cid, out, p) => apply_grouped_pan(state, cid, out, p),
             OscCommand::Mute(cid, m) => {
