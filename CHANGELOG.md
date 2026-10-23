@@ -18,8 +18,6 @@
   names.
 
 ### Changed
-- Input meters follow the kernel driver's v7 identity capture order
-  (AN1-4, AS1/2, ADAT3-8; AS1/2 is now on capture 4/5).
 - The GUI runs as an iced daemon so that hiding in the tray closes the window
   (hiding is a no-op on Wayland).
 - Dev builds optimize dependencies, release builds use thin LTO: clicks were

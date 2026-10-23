@@ -7,28 +7,26 @@
 //! `input_peaks()` (`tuxmix-usb`), just a different audio source (ALSA
 //! capture instead of the raw isochronous stream it already owns).
 //!
-//! **Mapping**: the driver exposes the device's own order, one capture
-//! channel per input word. It was confirmed live on 2026-10-17 by
-//! playing a 1 kHz tone on PB1 and enabling the device's own loopback
-//! on one output pair at a time (no external source needed), then
-//! reordered to that order in the driver's v7 (2026-10-23). The capture
-//! channels are the output pairs' record buses:
+//! **Mapping, confirmed live on 2026-10-17** by playing a 1 kHz tone on
+//! PB1 and enabling the device's own loopback on one output pair at a
+//! time (no external source needed). The capture channels are the
+//! output pairs' record buses:
 //!
 //! | capture | input strip |
 //! |---------|-------------|
 //! | 0/1     | AN1/2       |
 //! | 2/3     | IN3/4 (PH3/4 record bus) |
-//! | 4/5     | AS1/2       |
-//! | 6/7     | ADAT3/4     |
-//! | 8/9     | ADAT5/6     |
-//! | 10/11   | ADAT7/8     |
+//! | 4/5     | ADAT3/4     |
+//! | 6/7     | ADAT5/6     |
+//! | 8/9     | ADAT7/8     |
+//! | 10/11   | AS1/2       |
 //!
-//! AS1/2 is the first optical pair (ADAT 1/2 when the input receives
-//! ADAT, S/PDIF when it receives S/PDIF), hence AS1/2 at 4/5 and the
-//! rest named ADAT3-8. The driver is now an identity map: capture
-//! channel i is input strip i. A driver built before 2026-10-23 puts
-//! AS1/2 at 10/11 and ADAT3-8 at 4-9 instead; TuxMix expects the current
-//! order.
+//! AS1/2 is capture 10/11 in the driver's 2026-10-17 map (device words
+//! 4/5, confirmed with the same loopback test). That map keeps channels
+//! 0-9 untouched and replaces the old playback echo tap (words 12/13)
+//! with AS1/2, so existing 12-channel recordings keep their order. A
+//! driver built before that date still exposes the playback tap there;
+//! this table assumes the updated driver.
 //!
 //! Each pair is a record bus, and the device's loopback taps an output
 //! bus into the same words, so enabling loopback on an output makes the
@@ -54,28 +52,27 @@ use std::time::{Duration, Instant};
 use alsa::pcm::{Access, Format, HwParams, State, PCM};
 use alsa::{Direction, ValueOr};
 
-/// Every channel the kernel driver exposes, in the device's own order:
-/// AN1-4, AS1/2, ADAT3-8. All of them are drained and mapped to the
-/// matching input strip.
+/// Every channel the kernel driver exposes: 0-3 = AN1-AN4, 4-9 = the
+/// digital inputs, 10/11 = AS1/2. All of them are drained;
+/// `INPUT_FOR_CAPTURE` maps them to input strips.
 pub(crate) const CAPTURE_CHANNELS: usize = 12;
 
-/// Capture channel to input-strip index. The driver's capture map is the
-/// identity (AN1/2, IN3/4, AS1/2, ADAT3/4, ADAT5/6, ADAT7/8), so the
-/// table is too; it stays explicit so a future driver reorder touches
-/// one place.
+/// Capture channel to input-strip index. Confirmed live on 2026-10-17
+/// (see the module doc comment): AN1/2, IN3/4, ADAT3/4, ADAT5/6,
+/// ADAT7/8, then AS1/2 at 10/11.
 pub(crate) const INPUT_FOR_CAPTURE: [Option<usize>; CAPTURE_CHANNELS] = [
     Some(0),
     Some(1),
     Some(2),
     Some(3),
-    Some(4),
-    Some(5),
     Some(6),
     Some(7),
     Some(8),
     Some(9),
     Some(10),
     Some(11),
+    Some(4),
+    Some(5),
 ];
 /// The capture period. Not small: this thread wakes once per period, forever,
 /// to feed a meter the UI draws at 30 Hz, and at 256 frames (188 wakeups a
@@ -302,8 +299,8 @@ impl CaptureMeter {
     /// `TUXMIX_METER_DEBUG` is set, in dBFS (`-120.0` for silence).
     /// Exists for hardware checks like the 2026-10-17 loopback mapping:
     /// play a known signal into one bus at a time and watch which index
-    /// moves. Index map: 0/1 = AN1/2, 2/3 = IN3/4, 4/5 = AS1/2,
-    /// 6/7 = ADAT3/4, 8/9 = ADAT5/6, 10/11 = ADAT7/8.
+    /// moves. Index map: 0/1 = AN1/2, 2/3 = IN3/4, 4/5 = ADAT3/4,
+    /// 6/7 = ADAT5/6, 8/9 = ADAT7/8, 10/11 = AS1/2.
     pub fn debug_log(peaks: &[f32; CAPTURE_CHANNELS]) {
         use std::sync::OnceLock;
 
