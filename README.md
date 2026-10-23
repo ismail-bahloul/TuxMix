@@ -1,111 +1,48 @@
-# TuxMix: a TotalMix-class mixer for RME interfaces
+<div align="center">
 
-<img src="assets/tuxmix.svg" width="140" alt="TuxMix: the mark on a dark tile">
+<img src="assets/tuxmix.svg" width="112" alt="TuxMix icon">
 
-TuxMix is an open-source control application for RME audio interfaces,
-starting with the **Babyface Pro FS**.  It brings the TotalMix
-experience to Linux, without the RME Windows software: routing, gains,
-monitoring, EQ, FX sends, scene management.
+# TuxMix
 
-<p align="center">
-  <img src="docs/screenshots/mixer.png" alt="The Mixer view (simulated device)">
-</p>
+**The TotalMix experience for RME interfaces, native on Linux.**
 
-Views: **Quick** (one source into one destination, the fastest way to a
-mix), **Mixer** (every strip, TotalMix-style) and **Matrix** (the full
-routing grid). More in [`docs/screenshots`](docs/screenshots).
+[![AUR](https://img.shields.io/aur/version/tuxmix?style=flat-square&logo=archlinux&logoColor=white&label=AUR&color=1793d1)](https://aur.archlinux.org/packages/tuxmix) ![Rust](https://img.shields.io/badge/Rust-iced-b7410e?style=flat-square&logo=rust&logoColor=white) ![Platform](https://img.shields.io/badge/Linux-ALSA%20%C2%B7%20PipeWire-333?style=flat-square&logo=linux&logoColor=white) [![License](https://img.shields.io/badge/license-MIT%20%2F%20GPL--3.0-555?style=flat-square)](docs/guide.md#license)
 
-## What's inside
+<br>
 
-- **`tuxmix-usb`** is the low-level USB backend: the full vendor
-  protocol of the Babyface Pro FS proprietary mode (crosspoints,
-  masters, gains, preamp, EQ, pitch, loopback, width, FX, the
-  front-panel emulation), reverse-engineered from Windows captures
-  and validated on hardware.  It refuses to open the device while the
-  kernel driver (`snd-usb-babyface-pro`) owns it.
-- **`tuxmix-core`** is the device model + control API (`RmeDevice`
-  trait) with three backends: USB (libusb), ALSA (the kernel driver's
-  controls), and mock (tests/scenes).
-- **`tuxmix-gui`** (iced) and **`tuxmix-tui`** (ratatui) are the
-  interfaces, both built on the final protocol knowledge.
-  **Functionally complete** — custom canvas faders, VU meters with
-  real ballistics, multi-select, live routing matrix. What's left is
-  visual polish, not re-architecture; see `GUI-NOTES.md` for the
-  prioritized list.
-- **`tuxmix-sys`** provides FFI bindings.
+<img src="docs/screenshots/mixer.png" width="760" alt="TuxMix Mixer view: hardware inputs, software playback and hardware outputs">
 
-## Running in the background
+</div>
 
-With a system tray (KDE Plasma, or GNOME with the AppIndicator extension),
-closing the window keeps TuxMix running, as TotalMix does on Windows: the
-front-panel DIM button and the restore of your mix after a replug are
-TuxMix's job while it runs. The tray icon toggles the window; its menu has
-Dim, Recall mix 1-8, Settings and Quit. `tuxmix --minimized` starts hidden,
-and Settings (Ctrl+,) can start TuxMix with your session. Without a tray,
-closing the window quits. One TuxMix runs per session: a second launch shows
-the first.
+<br>
 
-## The Linux audio stack
+Routing, gains, monitoring, EQ, FX sends and scenes for RME interfaces,
+without the Windows software. Reverse-engineered from the vendor protocol and
+validated on real hardware.
 
-Two ways to get sound from the Babyface Pro FS:
+> **Supported today:** the Babyface Pro FS. More RME models are the goal,
+> see [Contributing](CONTRIBUTING.md) to help bring yours.
 
-1. **Kernel driver** (sibling repo
-   [`babyface-pro-linux`](https://github.com/ismail-bahloul/babyface-pro-linux)):
-   the production path.  It exposes a real ALSA card (PipeWire
-   sink/source, low latency) whose mixer is the ALSA control set, and
-   TuxMix can drive it through the ALSA backend.
-2. **This stack's USB backend** (libusb): the reference/development
-   path for full control + streaming without the kernel driver.
-
-`tools/alsa/` has the ALSA plugin and PipeWire configuration glue.
-
-## Status
-
-- The protocol layer (`tuxmix-usb` + `tuxmix-core`) is complete and
-  hardware-validated (the laws are calibrated, not guessed).
-- The GUI/TUI are functionally complete; the road to 1.0 is validation on
-  real hardware and desktops (tray on KDE/GNOME), see `CHANGELOG.md`.
-- The ALSA backend (`tuxmix-core`'s `alsa` feature, driving the kernel
-  driver's controls) is hardware-validated as of 2026-08-28. Input/
-  Playback Mute and Solo on this backend didn't actually reach the
-  hardware until 2026-09-06 (they were in-memory only, a silent gap
-  the USB backend never had) — now ported from the USB backend's own
-  hardware-validated crosspoint-zeroing behavior and hardware-validated
-  in turn.
-- The ALSA backend follows the card (2026-09-29): changes made by the
-  front panel, `alsamixer`, `alsactl restore` or any other client show
-  up in the GUI within a tick (before that, the backend kept the values
-  it read at startup).  It also plays TotalMix's part for the DIM
-  button: the kernel driver only counts DIM presses (`DIM Button Press
-  Count`), and TuxMix toggles `Dim` on each one - so with the kernel
-  driver, the hardware DIM button works while TuxMix is running.
-  `cargo run --example panel-watch` prints what the backend sees.
-- See the sibling driver repo for the kernel-side status.
+- **Three views**: Quick, Mixer and Matrix
+- **The whole DSP mixer**: preamp, trim, EQ, width, loopback, mute/solo groups
+- **Snapshots and layouts**, undo/redo, custom channel names
+- **Lives in the tray**: the front-panel DIM button and your mix survive a replug
+- **GUI and TUI**, over the [kernel driver](https://github.com/ismail-bahloul/babyface-pro-linux) or plain libusb
 
 ## Install
 
-Arch and CachyOS users can install the released package from the AUR:
-
 ```sh
-paru -S tuxmix
+paru -S tuxmix        # Arch, CachyOS
 ```
 
-On other distributions, build from source (see [Build](#build)).
+Other distributions: `cargo build --release`, see the
+[guide](docs/guide.md#building-from-source).
+Try it without hardware: `tuxmix --mock`.
 
-## Build
+## Learn more
 
-```sh
-cargo build -p tuxmix-core --no-default-features --features usb
-# or the whole workspace:
-cargo build
-cargo test          # unit tests (protocol laws, panel state machine, …)
-```
+<div align="center">
 
-## License
+[Guide](docs/guide.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Kernel driver](https://github.com/ismail-bahloul/babyface-pro-linux)
 
-MIT for the application: `tuxmix-core`, `tuxmix-gui`, `tuxmix-tui` and the
-rest of the tree, see `LICENSE`.
-
-Two crates are copyleft: `tuxmix-usb` is GPL-3.0-or-later and `tuxmix-sys` is
-GPL-3.0. The built binaries link both, so as a whole they are GPL-3.0, which
-is the license the AUR package declares.
+</div>
