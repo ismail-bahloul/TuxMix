@@ -945,6 +945,8 @@ pub struct TuxMix {
     pub keep_in_tray: bool,
     /// The window is hidden in the tray right now.
     pub window_hidden: bool,
+    /// The open window, if any: none while hidden in the tray.
+    pub window_id: Option<window::Id>,
     /// An autostart entry exists (`tray::autostart_enabled`).
     pub autostart: bool,
     /// The first launch has no saved zoom: pick one from the monitor.
@@ -1322,6 +1324,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         tray_active: false,
         keep_in_tray: true,
         window_hidden: false,
+        window_id: None,
         autostart: crate::tray::autostart_enabled(),
         initial_zoom_pending: false,
         auto_folded: false,
@@ -1548,7 +1551,7 @@ fn finish_params<'a>(state: &'a TuxMix, mut p: strip::StripParams<'a>) -> strip:
 /// The window title: which device this window drives, and whether it is
 /// there. That is what the taskbar and the window switcher show, where
 /// "TuxMix - RME Mixer" said the same thing for every state.
-pub fn title(state: &TuxMix) -> String {
+pub fn title(state: &TuxMix, _window: window::Id) -> String {
     let model = state
         .device
         .model_name()
@@ -2911,24 +2914,30 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
     Task::none()
 }
 
-/// Hides the window in the tray. A hidden window keeps ticking (slowly, see
-/// `tick_interval`), so the front panel and the reconnect logic keep working.
+/// Hides the window in the tray by closing it: the process, and with it the
+/// ticks, the front panel's DIM and the reconnect logic, keeps running.
 fn hide_window(state: &mut TuxMix) -> Task<Message> {
     state.window_hidden = true;
-    window::oldest().and_then(|id| window::set_mode(id, window::Mode::Hidden))
+    match state.window_id.take() {
+        Some(id) => window::close(id),
+        None => Task::none(),
+    }
 }
 
-/// Brings the window back: out of hiding, out of minimized, in front.
+/// Brings the window back: opens it again if it was hidden, else raises it.
 fn show_window(state: &mut TuxMix) -> Task<Message> {
     state.window_hidden = false;
     state.last_activity = Instant::now();
-    window::oldest().and_then(|id| {
-        Task::batch([
-            window::set_mode(id, window::Mode::Windowed),
-            window::minimize(id, false),
-            window::gain_focus(id),
-        ])
-    })
+    if let Some(id) = state.window_id {
+        return Task::batch([window::minimize(id, false), window::gain_focus(id)]);
+    }
+    let size = state
+        .window_size
+        .map(|(w, h)| iced::Size::new(w.max(MIN_WINDOW.0), h.max(MIN_WINDOW.1)))
+        .unwrap_or(iced::Size::new(1280.0, 800.0));
+    let (id, open) = window::open(crate::window_settings(size, state.fullscreen));
+    state.window_id = Some(id);
+    Task::batch([open.discard(), window::gain_focus(id)])
 }
 
 /// A cheap summary of what the front panel can change behind the app's back
@@ -3075,7 +3084,7 @@ fn handle_global_event(
 
 // ── View ─────────────────────────────────────────────────────────
 
-pub fn view(state: &TuxMix) -> Element<'_, Message> {
+pub fn view(state: &TuxMix, _window: window::Id) -> Element<'_, Message> {
     let top = top_bar(state);
     let content = match state.view {
         View::Quick => quick_view(state),

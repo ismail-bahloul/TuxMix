@@ -121,7 +121,11 @@ fn main() -> iced::Result {
     let tray_active = !mock && tray::start(tray::Status { window_visible: true, dim: false });
     let start_hidden = tray_active && args.iter().any(|a| a == "--minimized");
 
-    iced::application(
+    // A daemon, not a plain application: the window is opened and closed by
+    // the app. Hiding it in the tray means closing it while the process
+    // lives on (winit cannot hide a window on Wayland, and an application
+    // exits with its last window).
+    iced::daemon(
         move || {
             let mut state = app::new(mock, osc_config.clone(), backend.clone());
             // Restore the window's own layout (view, sidebar, rows, zoom,
@@ -137,14 +141,18 @@ fn main() -> iced::Result {
             state.fullscreen = start_fullscreen;
             state.tray_active = tray_active;
             state.window_hidden = start_hidden;
+            if start_hidden {
+                return (state, iced::Task::none());
+            }
+            let (id, open) = window::open(window_settings(saved_size, start_fullscreen));
+            state.window_id = Some(id);
             // First launch only (no saved zoom): ask the monitor's size to
             // pick a starting zoom.
             let task = if state.initial_zoom_pending {
-                iced::window::oldest()
-                    .and_then(iced::window::monitor_size)
+                open.then(move |_| window::monitor_size(id))
                     .map(|size| app::Message::MonitorSize(size))
             } else {
-                iced::Task::none()
+                open.discard()
             };
             (state, task)
         },
@@ -153,19 +161,22 @@ fn main() -> iced::Result {
     )
     .title(app::title)
     .subscription(app::subscription)
-    .theme(|_state: &app::TuxMix| iced::Theme::Dark)
+    .theme(|_state: &app::TuxMix, _id: window::Id| iced::Theme::Dark)
     .font(INTER_REGULAR)
     .default_font(Font::with_name("Inter"))
-    .window(window::Settings {
+    .run()
+}
+
+/// The main window: `size` floored at the minimum, the app's icon and id.
+pub fn window_settings(size: Size, fullscreen: bool) -> window::Settings {
+    window::Settings {
         // The close button is handled by the app (`Message::CloseRequested`):
         // hide in the tray, or save and quit.
         exit_on_close_request: false,
-        // The size it had at the last close, floored at `min_size`.
-        size: saved_size,
+        size,
         // See `app::MIN_WINDOW`.
         min_size: Some(Size::new(app::MIN_WINDOW.0, app::MIN_WINDOW.1)),
-        fullscreen: start_fullscreen,
-        visible: !start_hidden,
+        fullscreen,
         icon: window_icon(),
         platform_specific: window::settings::PlatformSpecific {
             application_id: APP_ID.to_owned(),
@@ -176,8 +187,7 @@ fn main() -> iced::Result {
         // handle small windows fine now, so a fixed 960×600 floor is just
         // an outdated restriction on shrinking.
         ..window::Settings::default()
-    })
-    .run()
+    }
 }
 
 #[cfg(test)]

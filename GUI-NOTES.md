@@ -4137,3 +4137,12 @@ A double-click on any empty part of the open panel folds it (controls capture
 their own presses); a double-click anywhere on the folded rail opens it. The
 tab button still toggles with a single click. Before, folding needed the title
 row and unfolding was a single click, which read as two different gestures.
+
+## Hiding in the tray = closing the window (2026-10-23)
+
+`window::set_mode(Hidden)` does nothing on Wayland (winit cannot hide a
+window there), so the close button left the window on screen. The app now
+runs as an `iced::daemon`: the process outlives its windows, hiding closes the
+window (`state.window_id = None`) and showing opens a new one at the last
+size. `--minimized` simply does not open one at launch. Without a tray the
+close button still saves and quits.
