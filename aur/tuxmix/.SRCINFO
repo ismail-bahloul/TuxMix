@@ -11,6 +11,6 @@ pkgbase = tuxmix
 	depends = systemd-libs
 	options = !lto
 	source = https://github.com/ismail-bahloul/TuxMix/archive/v0.3.0/TuxMix-0.3.0.tar.gz
-	sha256sums = 66ab122a3a4e564c29cf3775ea080723167a751004e039948ff2c56b3376b4c4
+	sha256sums = aaee36c327df90d73fd2185f44de9f797578eb661b2b65f50a566c31cf089cf5
 
 pkgname = tuxmix
