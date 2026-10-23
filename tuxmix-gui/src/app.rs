@@ -3629,17 +3629,6 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
         row![caption("Latency"), latency_readout(state, clock)]
             .spacing(theme::SPACE_MD * scale)
             .align_y(iced::Alignment::Center),
-        text(if floor > 16 {
-            "System-wide, until PipeWire restarts. 16 and 24 samples need \
-             the driver option urb_frames_min=8."
-        } else {
-            "System-wide, until PipeWire restarts."
-        })
-        .color(Color {
-            a: 0.7,
-            ..theme::TEXT_SEC
-        })
-        .size(theme::TEXT_XS * scale),
     ]
     .spacing(theme::SPACE_MD * scale)
     .width(Length::Fill)
