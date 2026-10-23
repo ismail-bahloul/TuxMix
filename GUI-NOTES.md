@@ -4165,3 +4165,11 @@ pixmaps. Reads well on dark panels; on light ones the white fill is faint at
 16-22 px (pixmaps are not recolored by the panel). If that matters, a
 `tuxmix-symbolic` icon-theme file would let Plasma recolor it. Both copies of
 `assets/` (repo root and `tuxmix-gui/`) carry the files.
+
+## Quick view opens the strips' panels (2026-10-23)
+
+The Quick strips draw the same gear / EQ / T / route buttons as the Mixer's,
+but only the Mixer rendered what they open: pressing one toggled state that
+nothing displayed. `quick_with_panel` now puts the open panel beside its
+block. Known rough edge: the panel keeps the UI zoom's text size while the
+Quick strips can be drawn larger, and it is only as tall as its content.

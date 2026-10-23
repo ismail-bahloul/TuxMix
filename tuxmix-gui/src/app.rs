@@ -5232,6 +5232,36 @@ fn quick_fit(height: f32) -> f32 {
 const QUICK_CHROME: f32 = 110.0;
 const QUICK_STRIP_UNIT: f32 = 330.0;
 
+/// A Quick block with the panel its strip has open (Settings, EQ, Trim or
+/// the route list) to its right, or the block itself when none is.
+fn quick_with_panel<'a>(
+    state: &'a TuxMix,
+    cid: ChannelId,
+    block: iced::widget::Column<'a, Message>,
+    strip_w: f32,
+    big_scale: f32,
+) -> Element<'a, Message> {
+    use strip::FlyoutKind::{Eq, Route, Settings, Trim};
+    let open = |k| state.flyout_open.contains(&(cid, k));
+    let panel = if open(Settings) {
+        Some(settings_popover(state, cid, strip_w))
+    } else if open(Eq) {
+        Some(eq_popover(state, cid, strip::EQ_FLYOUT_W * big_scale))
+    } else if open(Trim) {
+        Some(trim_popover(state, cid, strip::FLYOUT_W * big_scale))
+    } else if open(Route) {
+        Some(route_popover(state, strip::FLYOUT_W * big_scale))
+    } else {
+        None
+    };
+    match panel {
+        Some(panel) => row![block, panel]
+            .spacing(theme::SPACE_MD * state.ui_scale)
+            .into(),
+        None => block.into(),
+    }
+}
+
 fn quick_view(state: &TuxMix) -> Element<'_, Message> {
     let scale = state.ui_scale;
     let options = quick_channel_options(state);
@@ -5340,6 +5370,10 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
         ]
         .spacing(theme::SPACE_MD * scale)
         .align_x(iced::Alignment::Center);
+        // The strip's gear / EQ / T / route buttons open their panel beside
+        // it here, as the Mixer does (the panel takes the block's height).
+        let source_block = quick_with_panel(state, quick_channel, source_block, strip_w, big_scale);
+        let dest_block = quick_with_panel(state, dest_cid, dest_block, strip_w, big_scale);
 
         let connector = text("\u{2192}")
             .color(theme::TEXT_SEC)
