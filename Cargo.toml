@@ -7,3 +7,17 @@ members = [
     "tuxmix-usb",
     "tuxmix-sys",
 ]
+
+# The GUI is a retained-mode view rebuilt on every interaction: unoptimized
+# iced/wgpu/text-layout code made each click visibly laggy in `cargo run`.
+# Dependencies are optimized even in dev builds; our own crates stay at 1 so
+# rebuilds stay quick and debugging works.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

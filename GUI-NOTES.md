@@ -4184,3 +4184,12 @@ when not hovered. A `stack` treats any answer other than `None` as "this layer
 is interactive here" and hides the cursor from the layers below, so the
 panel's layer (over the whole block) made the strip's gear unclickable. They
 now answer `None`; the pointer looks the same.
+
+## Build profiles (2026-10-23)
+
+`cargo run` (dev profile) compiled iced, wgpu and the text layout without
+optimization, which makes every click rebuild and lay out the view slowly
+(the interface is retained-mode and rebuilt per interaction). Dev now
+optimizes dependencies (`opt-level = 3`) and our crates lightly (`1`); release
+adds thin LTO. Not measurable under Xvfb (software GPU emulation dominates
+the CPU time, identical for every build): judge on the real desktop.
