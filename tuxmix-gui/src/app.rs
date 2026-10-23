@@ -3630,13 +3630,10 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
             .spacing(theme::SPACE_MD * scale)
             .align_y(iced::Alignment::Center),
         text(if floor > 16 {
-            "System-wide: every app using PipeWire follows these until \
-             PipeWire restarts. TuxMix applies them again when it starts. \
-             16 and 24 samples need the driver loaded with \
-             urb_frames_min=8 nurbs=16 (the setting they were tested with)."
+            "System-wide, until PipeWire restarts. 16 and 24 samples need \
+             the driver option urb_frames_min=8."
         } else {
-            "System-wide: every app using PipeWire follows these until \
-             PipeWire restarts. TuxMix applies them again when it starts."
+            "System-wide, until PipeWire restarts."
         })
         .color(Color {
             a: 0.7,
@@ -3663,7 +3660,7 @@ fn latency_readout(state: &TuxMix, clock: PwClock) -> Element<'_, Message> {
         Some(card) => {
             let mut col = column![line(
                 format!(
-                    "{:.1} ms per period ({} samples at {})",
+                    "{:.1} ms \u{00b7} {} samples at {}",
                     card.period_ms(),
                     card.period,
                     rate_label(card.rate)
@@ -3671,14 +3668,11 @@ fn latency_readout(state: &TuxMix, clock: PwClock) -> Element<'_, Message> {
                 theme::TEXT_PRIMARY,
             )]
             .spacing(theme::SPACE_TIGHT * scale);
-            if card.period != clock.effective_quantum() {
+            // Only when the user asked for a size and the card ignores it
+            // (a fixed period in a WirePlumber rule); "Auto" follows clients.
+            if clock.force_quantum != 0 && card.period != clock.effective_quantum() {
                 col = col.push(line(
-                    format!(
-                        "The card runs fixed {}-sample periods set by the sound server \
-                         (WirePlumber's api.alsa.period-size), so the buffer size above \
-                         does not change its latency.",
-                        card.period
-                    ),
+                    "The card keeps its own fixed period.".into(),
                     theme::YSIM,
                 ));
             }
@@ -3695,8 +3689,7 @@ fn latency_readout(state: &TuxMix, clock: PwClock) -> Element<'_, Message> {
         .into(),
         None => line(
             format!(
-                "{:.1} ms per buffer at {} (the card is idle; its own period shows \
-                 while audio plays)",
+                "{:.1} ms per buffer at {}",
                 clock.latency_ms(),
                 rate_label(clock.effective_rate())
             ),
