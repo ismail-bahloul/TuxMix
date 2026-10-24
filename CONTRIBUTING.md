@@ -8,7 +8,7 @@ where something fits, open an issue first rather than guessing.
 ## Development setup
 
 ```bash
-git clone https://github.com/iswad-lab/TuxMix
+git clone https://github.com/ismail-bahloul/TuxMix
 cd TuxMix
 cargo build --release --workspace
 cargo test --workspace
@@ -90,5 +90,5 @@ guide if you want to help with that instead.
 - **Testing**: run `cargo test --workspace` and report anything that
   breaks, especially on hardware.
 
-See the [open issues](https://github.com/iswad-lab/tuxmix/issues) for
+See the [open issues](https://github.com/ismail-bahloul/TuxMix/issues) for
 starter tasks.
