@@ -38,6 +38,16 @@ pub(crate) const STRIP_W: f32 = 96.0;
 /// original number was (pixel-measuring a collapsed and an adjacent full
 /// strip side by side in a live screenshot), not derived on paper.
 const COLLAPSED_METER_H: f32 = FADER_H + 30.0;
+/// What a full strip stacks above its fader: the name line, the pan knob
+/// and the M/S row (`full_strip`, at scale 1, hairline spacings aside).
+/// A collapsed strip gives its name and M/S the same band, so its meter
+/// starts where its neighbours' faders do.
+const TOP_BAND_H: f32 = theme::TEXT_MD * 1.3 + crate::widgets::knob::BOX_SIZE + 18.0;
+/// The collapsed strip's band under its meter, sized so the card keeps
+/// the total height it was tuned to (name, M, S, `COLLAPSED_METER_H` and
+/// the expand button, stacked), which matches a full strip's.
+const COLLAPSED_BOTTOM_H: f32 =
+    ROTATED_LABEL_LEN + 3.0 * ICON_BTN_H + COLLAPSED_METER_H - TOP_BAND_H - FADER_H;
 /// Collapsed strips are a glance-only readout: name, Mute/Solo (kept
 /// live — see this function's own doc comment), and a VU meter; no
 /// fader, no pan, no route. Width is set by the header (name + expand
@@ -325,10 +335,11 @@ impl<Message> canvas::Program<Message> for RotatedLabel {
     }
 }
 
-fn rotated_label<'a, Msg: 'a + Clone>(text: String, size: f32, scale: f32) -> Element<'a, Msg> {
+fn rotated_label<'a, Msg: 'a + Clone>(text: String, size: f32) -> Element<'a, Msg> {
+    // Fills what its band leaves it (see `collapsed_strip`).
     Canvas::new(RotatedLabel { text, size })
         .width(Length::Fill)
-        .height(Length::Fixed(ROTATED_LABEL_LEN * scale))
+        .height(Length::Fill)
         .into()
 }
 
@@ -411,6 +422,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
 
     let mute_btn = hint(
         button(centered_label("M", theme::TEXT_XS * scale))
+            .padding(0)
             .width(Length::Fill)
             .height(btn_h)
             .style(theme::armed_toggle_button(p.mute, p.mute_armed, theme::MUTE_COLOR))
@@ -424,6 +436,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     );
     let solo_btn = hint(
         button(centered_label("S", theme::TEXT_XS * scale))
+            .padding(0)
             .width(Length::Fill)
             .height(btn_h)
             .style(theme::armed_toggle_button(p.solo, p.solo_armed, theme::SOLO_COLOR))
@@ -459,23 +472,27 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     } else {
         solo_btn.into()
     };
-    let rows = column![
-        rotated_label(short_label(&p.name).to_string(), theme::TEXT_SM * scale, scale),
+    // Three bands on a full strip's grid: name and M/S where a full strip
+    // has its name, pan and M/S; the meter exactly where the neighbouring
+    // faders run, so their rulers line up; the expand button at the
+    // bottom. The meter used to be taller and start lower, so its 0, 6,
+    // 10... sat a few pixels off the strips beside it.
+    let top = column![
+        rotated_label(short_label(&p.name).to_string(), theme::TEXT_SM * scale),
         mute_btn,
         solo_slot,
-        container(vu_meter(
-            p.meter,
-            COLLAPSED_METER_H * scale,
-            scale,
-            p.meter_available,
-        ))
-            .width(Length::Fill)
-            .center_x(Length::Fill),
-        expand_btn,
     ]
     .spacing(theme::SPACE_HAIRLINE)
-    .width(Length::Fill)
-    .align_x(iced::Alignment::Center);
+    .height(Length::Fixed(TOP_BAND_H * scale + 2.0 * theme::SPACE_HAIRLINE));
+    let meter = container(vu_meter(p.meter, FADER_H * scale, scale, p.meter_available))
+        .width(Length::Fill)
+        .center_x(Length::Fill);
+    let bottom = column![iced::widget::Space::new().height(Length::Fill), expand_btn]
+        .height(Length::Fixed(COLLAPSED_BOTTOM_H * scale));
+    let rows = column![top, meter, bottom]
+        .spacing(theme::SPACE_HAIRLINE)
+        .width(Length::Fill)
+        .align_x(iced::Alignment::Center);
 
     mouse_area(
         container(rows)

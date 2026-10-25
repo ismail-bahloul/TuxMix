@@ -402,7 +402,7 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
 }
 
 /// A knob's total footprint (at `scale == 1.0`).
-const BOX_SIZE: f32 = DIAMETER + MARGIN * 2.0;
+pub(crate) const BOX_SIZE: f32 = DIAMETER + MARGIN * 2.0;
 
 pub fn knob<'a, Message: 'a>(knob: Knob<Message>) -> Element<'a, Message>
 where
