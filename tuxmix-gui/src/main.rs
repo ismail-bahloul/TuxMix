@@ -85,7 +85,7 @@ Options:
   --osc-port PORT        OSC listen port (default 9000)
   --osc-send-port PORT   OSC send port (default 9001)
   --osc-host HOST        OSC send host (default 127.0.0.1)
-  --osc-dialect NAME     OSC address space: native (default) or oscmix
+  --osc-dialect NAME     OSC address space: native (default) or rme (alias: oscmix)
   --fullscreen           start fullscreen
   --minimized            start hidden in the tray
   -h, --help             show this help
@@ -128,7 +128,7 @@ fn main() -> iced::Result {
         dialect: arg_value(&args, "--osc-dialect")
             .and_then(|v| {
                 osc::Dialect::from_arg(&v).or_else(|| {
-                    eprintln!("Unknown --osc-dialect {v:?} (use native|oscmix), using native");
+                    eprintln!("Unknown --osc-dialect {v:?} (use native|rme), using native");
                     None
                 })
             })

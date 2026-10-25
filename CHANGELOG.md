@@ -3,11 +3,17 @@
 ## Unreleased
 
 ### Added
-- `--osc-dialect oscmix` makes the OSC bridge speak oscmix's address space
-  (1-based indices, dB, `/mix/<out>/<input|playback>/<in>` with volume and
-  pan together, `/refresh`, `/device/*`) so oscmix UIs can drive a Babyface.
-  Output pairs map to oscmix outputs `2p+1`/`2p+2`; solo has no oscmix
-  address. The default dialect is unchanged.
+- `--osc-dialect rme` makes the OSC bridge speak RME's documented
+  TotalMix address space: 0-based indices, dB faders, pan in -1.0..+1.0,
+  `/mix/{in|pb}/<source>/<submix>/{fader,faderlin,balpan,solo}`,
+  per-channel `mute`, `/output/<n>/volume`, `/status/*`, and the `/send*`
+  dump requests. `oscmix` is kept as an alias, since oscmix speaks the
+  same dialect. The default dialect is unchanged.
+
+### Fixed
+- A full-state snapshot no longer loses its tail: the outbound queue held
+  100 messages and `try_send` silently dropped the rest, which hid every
+  output channel on refresh.
 
 ## 0.3.2 (2026-10-23)
 

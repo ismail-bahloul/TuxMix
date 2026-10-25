@@ -5,17 +5,19 @@
 //! `--osc` (see `main.rs`); off by default, and bound to loopback only, so
 //! enabling it never silently exposes control to the LAN.
 //!
-//! Address space (v1 — matrix channels only, matching what `tuxmix-core`
-//! actually exposes today):
+//! Address space (native, v1 — matrix channels only, matching what
+//! `tuxmix-core` actually exposes today):
 //! - `/input/<id>/volume/<out>` f   `/playback/<id>/volume/<out>` f
 //! - `/input/<id>/pan/<out>` f      `/playback/<id>/pan/<out>` f  (-100..100)
 //! - `/input|playback|output/<id>/mute` f|i|T|F (0/1)
 //! - `/input|playback|output/<id>/solo` f|i|T|F (0/1)
 //! - `/output/<id>/volume` f
 //!
-//! `--osc-dialect oscmix` swaps this for the address space of
-//! [oscmix](https://github.com/michaelforney/oscmix) (see `Dialect::Oscmix`),
-//! so oscmix UIs and tools can drive a Babyface through TuxMix.
+//! `--osc-dialect rme` swaps this for RME's documented TotalMix OSC
+//! address space, the one oscmix speaks too (see `Dialect::Rme`), so both
+//! TotalMix clients and oscmix UIs can drive a Babyface through TuxMix.
+//! Indices are 0-based there, volumes are dB, pan is -1.0..+1.0, and a
+//! crosspoint is `/mix/{in|pb}/<source>/<submix>/{fader,faderlin,balpan,solo}`.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -35,17 +37,19 @@ pub enum Dialect {
     /// TuxMix's own v1 addresses, documented above.
     #[default]
     Native,
-    /// oscmix's: 1-based indices, volumes in dB, `/mix/<out>/<input|playback>/<in>`
-    /// carrying volume + pan together, `/refresh`, and `/device/*` info.
-    /// TuxMix output pairs map to oscmix mono outputs `2p+1`/`2p+2`.
-    Oscmix,
+    /// RME's TotalMix dialect, the one oscmix speaks: 0-based indices,
+    /// volumes in dB, pan in -1.0..+1.0, and separate crosspoint parameters
+    /// under `/mix/{in|pb}/<source>/<submix>/`. A TuxMix output pair is two
+    /// consecutive mono submixes (`2p`, `2p+1`).
+    Rme,
 }
 
 impl Dialect {
     pub fn from_arg(s: &str) -> Option<Self> {
         match s {
             "native" => Some(Dialect::Native),
-            "oscmix" => Some(Dialect::Oscmix),
+            // oscmix uses RME's addressing, so the old name keeps working.
+            "rme" | "oscmix" => Some(Dialect::Rme),
             _ => None,
         }
     }
@@ -183,9 +187,39 @@ impl OscCommand {
     }
 }
 
-/// oscmix volumes are dB, with anything at or below -65 meaning silence.
+/// RME's fader curve (sheet "Fader curve"): a position of 0..1 maps to
+/// -65 dB .. +6 dB, and anything below -64.9 dB means off.
+const FADER_MAX_POS: f32 = 1023.0;
+const RME_OFF_DB: f32 = -64.9;
+
+fn fader_pos_to_db(pos: f32) -> f32 {
+    let p = pos.clamp(0.0, 1.0) * FADER_MAX_POS;
+    let db = if p >= 649.0 {
+        p * 0.032_085_5615 - 26.823_529_4118
+    } else {
+        p * p * (-1.0 / 11033.0) + p * 0.149_732_6203 - 65.0
+    };
+    if db < RME_OFF_DB {
+        f32::NEG_INFINITY
+    } else {
+        db
+    }
+}
+
+/// Inverse of `fader_pos_to_db`, used when reporting a fader position.
+#[allow(dead_code)]
+fn db_to_fader_pos(db: f32) -> f32 {
+    let p = if db >= -6.0 {
+        (db + 26.823_529_4118) / 0.032_085_5615
+    } else {
+        826.0 - (-34869.0 - 11033.0 * db).max(0.0).sqrt()
+    };
+    (p / FADER_MAX_POS).clamp(0.0, 1.0)
+}
+
+/// RME fader values are dB, with anything below -64.9 dB meaning silence.
 fn db_to_linear(db: f32) -> f32 {
-    if db <= -65.0 {
+    if db < RME_OFF_DB {
         0.0
     } else {
         10f32.powf(db / 20.0).clamp(0.0, 2.0)
@@ -194,127 +228,152 @@ fn db_to_linear(db: f32) -> f32 {
 
 fn linear_to_db(v: f32) -> f32 {
     if v <= 0.0 {
-        f32::NEG_INFINITY
+        -300.0
     } else {
-        20.0 * v.log10()
+        (20.0 * v.log10()).clamp(-300.0, 6.0)
     }
 }
 
-/// oscmix outputs are mono, 1-based; a TuxMix output is a stereo pair.
-fn oscmix_out_to_pair(n: usize) -> Option<usize> {
-    n.checked_sub(1).map(|i| i / 2)
+/// RME's `/mix` bus names: inputs and playbacks are sources.
+fn mix_source(bus: &str, channel: &str) -> Option<ChannelId> {
+    let id: usize = channel.parse().ok()?;
+    match bus {
+        "in" => Some(ChannelId::Input(id)),
+        "pb" => Some(ChannelId::Playback(id)),
+        _ => None,
+    }
 }
 
-fn pair_to_oscmix_out(pair: usize) -> usize {
-    pair * 2 + 1
+/// Per-channel addresses. Inputs, playbacks and outputs are all mono
+/// channels here; only a `/mix` submix is a pair (see `osc_snapshot`).
+fn bus_channel(kind: &str, channel: &str) -> Option<ChannelId> {
+    let id: usize = channel.parse().ok()?;
+    match kind {
+        "input" => Some(ChannelId::Input(id)),
+        "playback" => Some(ChannelId::Playback(id)),
+        "output" => Some(ChannelId::Output(id)),
+        _ => None,
+    }
 }
 
 impl OscCommand {
-    /// Decodes an incoming message in the oscmix dialect. One message can
-    /// carry several commands (`/mix/...` takes volume and pan together).
-    pub fn parse_oscmix(addr: &str, args: &[OscType]) -> Vec<Self> {
+    /// Decodes an incoming message in RME's TotalMix dialect, which oscmix
+    /// speaks too. Indices are 0-based; every crosspoint parameter is its
+    /// own address, so a message carries at most one command.
+    pub fn parse_rme(addr: &str, args: &[OscType]) -> Vec<Self> {
         let parts: Vec<&str> = addr.split('/').filter(|s| !s.is_empty()).collect();
-        let one_based = |s: &str| s.parse::<usize>().ok().filter(|n| *n >= 1);
+        let first = args.first();
         match parts.as_slice() {
-            ["refresh"] => vec![OscCommand::Refresh],
-            ["mix", out, kind, inn] => {
-                let (Some(out), Some(inn)) = (one_based(out), one_based(inn)) else {
-                    return vec![];
-                };
-                let (Some(pair), Some(cid)) =
-                    (oscmix_out_to_pair(out), parse_matrix_channel(kind, inn - 1))
+            // oscmix's /refresh is not RME, but it is the name every
+            // existing client uses to ask for the full state.
+            ["refresh"] | ["sendall"] | ["sendsettings"] | ["sendmix"] | ["sendstate"] => {
+                vec![OscCommand::Refresh]
+            }
+            ["sendchan", _, _] | ["sendsubmix", _] => vec![OscCommand::Refresh],
+            ["mix", bus, src, out, param] => {
+                let (Some(cid), Some(out)) = (mix_source(bus, src), out.parse::<usize>().ok())
                 else {
                     return vec![];
                 };
-                let mut cmds = Vec::new();
-                let mut rest = args;
-                // `N` in the volume slot means "leave the volume alone".
-                match rest.first() {
-                    Some(OscType::Nil) => rest = &rest[1..],
-                    Some(a) => {
-                        let Some(db) = arg_f32(a) else { return vec![] };
-                        cmds.push(OscCommand::Volume(cid, pair, db_to_linear(db)));
-                        rest = &rest[1..];
-                    }
-                    None => return vec![],
-                }
-                if let Some(a) = rest.first() {
-                    if let Some(p) = arg_f32(a) {
-                        cmds.push(OscCommand::Pan(cid, pair, p.clamp(-100.0, 100.0) as i8));
-                    }
-                }
-                cmds
-            }
-            [kind, n, "mute"] => {
-                let (Some(n), Some(v)) = (one_based(n), args.first().and_then(arg_bool)) else {
-                    return vec![];
-                };
-                let id = if *kind == "output" {
-                    n.checked_sub(1).map(|i| i / 2)
-                } else {
-                    n.checked_sub(1)
-                };
-                match id.and_then(|id| parse_any_channel(kind, id)) {
-                    Some(cid) => vec![OscCommand::Mute(cid, v)],
-                    None => vec![],
+                let pair = out / 2;
+                match *param {
+                    "fader" => match first.and_then(arg_f32) {
+                        Some(db) => vec![OscCommand::Volume(cid, pair, db_to_linear(db))],
+                        None => vec![],
+                    },
+                    "faderlin" => match first.and_then(arg_f32) {
+                        Some(pos) => vec![OscCommand::Volume(
+                            cid,
+                            pair,
+                            db_to_linear(fader_pos_to_db(pos)),
+                        )],
+                        None => vec![],
+                    },
+                    "balpan" => match first.and_then(arg_f32) {
+                        Some(p) => vec![OscCommand::Pan(
+                            cid,
+                            pair,
+                            (p.clamp(-1.0, 1.0) * 100.0).round() as i8,
+                        )],
+                        None => vec![],
+                    },
+                    "solo" => match first.and_then(arg_bool) {
+                        Some(s) => vec![OscCommand::Solo(cid, s)],
+                        None => vec![],
+                    },
+                    _ => vec![],
                 }
             }
-            ["output", n, "volume"] => {
-                let (Some(pair), Some(db)) = (
-                    one_based(n).and_then(oscmix_out_to_pair),
-                    args.first().and_then(arg_f32),
-                ) else {
+            [kind, channel, "mute"] => match (bus_channel(kind, channel), first.and_then(arg_bool))
+            {
+                (Some(cid), Some(v)) => vec![OscCommand::Mute(cid, v)],
+                _ => vec![],
+            },
+            ["output", channel, "volume"] => {
+                let (Some(id), Some(db)) = (channel.parse::<usize>().ok(), first.and_then(arg_f32))
+                else {
                     return vec![];
                 };
-                vec![OscCommand::OutputVolume(pair, db_to_linear(db))]
+                vec![OscCommand::OutputVolume(id, db_to_linear(db))]
             }
             _ => vec![],
         }
     }
 }
 
-/// Last volume/pan sent per crosspoint, so each oscmix `/mix/...` message
-/// can carry both values the way oscmix itself emits them.
-type MixCache = std::collections::HashMap<(ChannelId, usize), (f32, i8)>;
-
 impl OscOutbound {
-    /// Encodes this change for the oscmix dialect — empty when oscmix has
-    /// no address for it (solo).
-    fn into_oscmix_packets(self, cache: &mut MixCache) -> Vec<OscPacket> {
+    /// Encodes this change for the RME dialect. `mono_outputs` is how many
+    /// mono output channels the device reports; a TuxMix solo is per source
+    /// across every submix, so it fans out to that many `/mix` nodes.
+    fn into_rme_packets(self, mono_outputs: usize) -> Vec<OscPacket> {
         let msg = |addr: String, args: Vec<OscType>| OscPacket::Message(OscMessage { addr, args });
-        let mix = |id: ChannelId, out: usize, (v, p): (f32, i8)| {
-            let (kind, i) = channel_prefix(id);
-            msg(
-                format!("/mix/{}/{kind}/{}", pair_to_oscmix_out(out), i + 1),
-                vec![OscType::Float(linear_to_db(v)), OscType::Int(i32::from(p))],
-            )
+        let mix = |id: ChannelId, out: usize, param: &str, value: OscType| -> Option<OscPacket> {
+            let (bus, i) = match id {
+                ChannelId::Input(i) => ("in", i),
+                ChannelId::Playback(i) => ("pb", i),
+                ChannelId::Output(_) => return None,
+            };
+            Some(msg(
+                format!("/mix/{bus}/{i}/{}/{param}", out * 2),
+                vec![value],
+            ))
         };
         match self {
             OscOutbound::Volume(id, out, v) => {
-                let e = cache.entry((id, out)).or_insert((v, 0));
-                e.0 = v;
-                vec![mix(id, out, *e)]
+                mix(id, out, "fader", OscType::Float(linear_to_db(v)))
+                    .into_iter()
+                    .collect()
             }
             OscOutbound::Pan(id, out, p) => {
-                let e = cache.entry((id, out)).or_insert((1.0, p));
-                e.1 = p;
-                vec![mix(id, out, *e)]
+                mix(id, out, "balpan", OscType::Float(f32::from(p) / 100.0))
+                    .into_iter()
+                    .collect()
             }
             OscOutbound::Mute(id, m) => {
                 let (kind, i) = channel_prefix(id);
-                let n = if kind == "output" {
-                    pair_to_oscmix_out(i)
-                } else {
-                    i + 1
-                };
-                vec![msg(
-                    format!("/{kind}/{n}/mute"),
-                    vec![OscType::Int(i32::from(m))],
-                )]
+                let value = OscType::Float(if m { 1.0 } else { 0.0 });
+                vec![msg(format!("/{kind}/{i}/mute"), vec![value])]
             }
-            OscOutbound::Solo(..) => vec![],
+            OscOutbound::Solo(id, s) => {
+                let (bus, i) = match id {
+                    ChannelId::Input(i) => ("in", i),
+                    ChannelId::Playback(i) => ("pb", i),
+                    ChannelId::Output(_) => return Vec::new(),
+                };
+                let value = OscType::Float(if s { 1.0 } else { 0.0 });
+                // One node per stereo pair: RME addresses the even channel of
+                // a pair, the same way fader and balpan do.
+                (0..mono_outputs / 2)
+                    .map(|pair| {
+                        msg(
+                            format!("/mix/{bus}/{i}/{}/solo", pair * 2),
+                            vec![value.clone()],
+                        )
+                    })
+                    .collect()
+            }
             OscOutbound::OutputVolume(id, v) => vec![msg(
-                format!("/output/{}/volume", pair_to_oscmix_out(id)),
+                format!("/output/{id}/volume"),
                 vec![OscType::Float(linear_to_db(v))],
             )],
             OscOutbound::DeviceInfo {
@@ -322,6 +381,9 @@ impl OscOutbound {
                 inputs,
                 outputs,
             } => vec![
+                msg("/status/device".into(), vec![OscType::String(name.clone())]),
+                msg("/status/connection".into(), vec![OscType::Float(1.0)]),
+                msg("/status/dsp".into(), vec![OscType::Float(0.0)]),
                 msg("/device/name".into(), vec![OscType::String(name.clone())]),
                 msg("/device/uid".into(), vec![OscType::String(name)]),
                 msg("/device/flags".into(), vec![OscType::Int(0)]),
@@ -414,14 +476,18 @@ pub fn worker(config: &OscConfig) -> impl Stream<Item = Message> {
         };
         let send_addr = SocketAddr::new(config.send_host, config.send_port);
 
-        let (tx, mut rx) = mpsc::channel::<OscOutbound>(100);
+        // A full snapshot is several hundred messages, and it is pushed in
+        // one tight loop. 100 slots silently dropped the tail of it.
+        let (tx, mut rx) = mpsc::channel::<OscOutbound>(1024);
         if output.send(Message::OscReady(tx)).await.is_err() {
             return;
         }
 
         log::info!("OSC: listening on {recv_addr}, feedback to {send_addr}");
         let mut buf = [0u8; rosc::decoder::MTU];
-        let mut mix_cache = MixCache::new();
+        // Filled from DeviceInfo on connect. Only used to fan a per-channel
+        // solo out over every submix node; 12 is the Babyface Pro FS.
+        let mut mono_outputs = 12usize;
         loop {
             tokio::select! {
                 res = socket.recv_from(&mut buf) => {
@@ -435,7 +501,7 @@ pub fn worker(config: &OscConfig) -> impl Stream<Item = Message> {
                             Dialect::Native => {
                                 OscCommand::parse(&msg.addr, &msg.args).into_iter().collect()
                             }
-                            Dialect::Oscmix => OscCommand::parse_oscmix(&msg.addr, &msg.args),
+                            Dialect::Rme => OscCommand::parse_rme(&msg.addr, &msg.args),
                         };
                         for cmd in cmds {
                             if output.send(Message::OscCommand(cmd)).await.is_err() {
@@ -448,7 +514,12 @@ pub fn worker(config: &OscConfig) -> impl Stream<Item = Message> {
                     let Some(outbound) = outbound else { continue };
                     let packets = match config.dialect {
                         Dialect::Native => outbound.into_packet().into_iter().collect(),
-                        Dialect::Oscmix => outbound.into_oscmix_packets(&mut mix_cache),
+                        Dialect::Rme => {
+                            if let OscOutbound::DeviceInfo { outputs, .. } = &outbound {
+                                mono_outputs = *outputs;
+                            }
+                            outbound.into_rme_packets(mono_outputs)
+                        }
                     };
                     for packet in packets {
                         if let OscPacket::Message(ref msg) = packet {
@@ -548,64 +619,181 @@ mod tests {
         assert_eq!(cmd, Some(OscCommand::Volume(ChannelId::Input(3), 1, 0.42)));
     }
 
-    #[test]
-    fn oscmix_mix_sets_volume_and_pan() {
-        // oscmix out 3 = TuxMix pair 1; input 2 = id 1; 0 dB = 1.0 linear.
-        let cmds =
-            OscCommand::parse_oscmix("/mix/3/input/2", &[OscType::Float(0.0), OscType::Int(-40)]);
-        assert_eq!(
-            cmds,
-            vec![
-                OscCommand::Volume(ChannelId::Input(1), 1, 1.0),
-                OscCommand::Pan(ChannelId::Input(1), 1, -40),
-            ]
-        );
-    }
-
-    #[test]
-    fn oscmix_mix_nil_volume_keeps_it_and_floor_is_silence() {
-        let cmds = OscCommand::parse_oscmix("/mix/1/playback/1", &[OscType::Nil, OscType::Int(10)]);
-        assert_eq!(cmds, vec![OscCommand::Pan(ChannelId::Playback(0), 0, 10)]);
-        let cmds = OscCommand::parse_oscmix("/mix/1/input/1", &[OscType::Float(-65.0)]);
-        assert_eq!(cmds, vec![OscCommand::Volume(ChannelId::Input(0), 0, 0.0)]);
-    }
-
-    #[test]
-    fn oscmix_rejects_zero_index_and_unknown() {
-        assert!(OscCommand::parse_oscmix("/mix/0/input/1", &[OscType::Float(0.0)]).is_empty());
-        assert!(OscCommand::parse_oscmix("/input/0/mute", &[OscType::Int(1)]).is_empty());
-        assert!(OscCommand::parse_oscmix("/input/1/solo", &[OscType::Int(1)]).is_empty());
-    }
-
-    #[test]
-    fn oscmix_mute_volume_refresh() {
-        assert_eq!(
-            OscCommand::parse_oscmix("/output/4/mute", &[OscType::Int(1)]),
-            vec![OscCommand::Mute(ChannelId::Output(1), true)]
-        );
-        assert_eq!(
-            OscCommand::parse_oscmix("/output/3/volume", &[OscType::Float(-6.0)]),
-            vec![OscCommand::OutputVolume(1, db_to_linear(-6.0))]
-        );
-        assert_eq!(
-            OscCommand::parse_oscmix("/refresh", &[]),
-            vec![OscCommand::Refresh]
-        );
-    }
-
-    #[test]
-    fn oscmix_outbound_combines_volume_and_pan() {
-        let mut cache = MixCache::new();
-        let id = ChannelId::Input(0);
-        OscOutbound::Volume(id, 0, 1.0).into_oscmix_packets(&mut cache);
-        let pkts = OscOutbound::Pan(id, 0, 25).into_oscmix_packets(&mut cache);
-        let OscPacket::Message(m) = &pkts[0] else {
-            panic!()
+    fn float_arg(packet: &OscPacket) -> f32 {
+        let OscPacket::Message(m) = packet else {
+            panic!("expected a message")
         };
-        assert_eq!(m.addr, "/mix/1/input/1");
-        assert_eq!(m.args, vec![OscType::Float(0.0), OscType::Int(25)]);
-        assert!(OscOutbound::Solo(id, true)
-            .into_oscmix_packets(&mut cache)
-            .is_empty());
+        match &m.args[0] {
+            OscType::Float(f) => *f,
+            other => panic!("expected a float, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rme_mix_fader_is_zero_based_db() {
+        assert_eq!(
+            OscCommand::parse_rme("/mix/in/0/0/fader", &[OscType::Float(-6.0)]),
+            vec![OscCommand::Volume(
+                ChannelId::Input(0),
+                0,
+                db_to_linear(-6.0)
+            )]
+        );
+        assert_eq!(
+            OscCommand::parse_rme("/mix/pb/1/2/fader", &[OscType::Float(-6.0)]),
+            vec![OscCommand::Volume(
+                ChannelId::Playback(1),
+                1,
+                db_to_linear(-6.0)
+            )]
+        );
+    }
+
+    #[test]
+    fn rme_fader_below_the_floor_is_silence() {
+        assert_eq!(
+            OscCommand::parse_rme("/mix/in/3/0/fader", &[OscType::Float(-300.0)]),
+            vec![OscCommand::Volume(ChannelId::Input(3), 0, 0.0)]
+        );
+    }
+
+    #[test]
+    fn rme_faderlin_uses_the_fader_curve() {
+        let cmds = OscCommand::parse_rme("/mix/in/0/0/faderlin", &[OscType::Float(1.0)]);
+        let OscCommand::Volume(ChannelId::Input(0), 0, v) = cmds[0] else {
+            panic!("expected a volume")
+        };
+        assert!((v - db_to_linear(6.0)).abs() < 1e-4, "got {v}");
+
+        assert_eq!(
+            OscCommand::parse_rme("/mix/in/0/0/faderlin", &[OscType::Float(0.0)]),
+            vec![OscCommand::Volume(ChannelId::Input(0), 0, 0.0)]
+        );
+    }
+
+    #[test]
+    fn rme_balpan_is_minus_one_to_one() {
+        assert_eq!(
+            OscCommand::parse_rme("/mix/in/2/3/balpan", &[OscType::Float(0.5)]),
+            vec![OscCommand::Pan(ChannelId::Input(2), 1, 50)]
+        );
+        assert_eq!(
+            OscCommand::parse_rme("/mix/in/2/3/balpan", &[OscType::Float(-1.0)]),
+            vec![OscCommand::Pan(ChannelId::Input(2), 1, -100)]
+        );
+    }
+
+    #[test]
+    fn rme_mix_solo() {
+        assert_eq!(
+            OscCommand::parse_rme("/mix/in/4/0/solo", &[OscType::Float(1.0)]),
+            vec![OscCommand::Solo(ChannelId::Input(4), true)]
+        );
+    }
+
+    #[test]
+    fn rme_channel_mute_and_output_volume() {
+        assert_eq!(
+            OscCommand::parse_rme("/input/0/mute", &[OscType::Float(1.0)]),
+            vec![OscCommand::Mute(ChannelId::Input(0), true)]
+        );
+        assert_eq!(
+            OscCommand::parse_rme("/output/3/mute", &[OscType::Float(1.0)]),
+            vec![OscCommand::Mute(ChannelId::Output(3), true)]
+        );
+        assert_eq!(
+            OscCommand::parse_rme("/output/2/volume", &[OscType::Float(-6.0)]),
+            vec![OscCommand::OutputVolume(2, db_to_linear(-6.0))]
+        );
+    }
+
+    #[test]
+    fn rme_dump_requests_trigger_a_snapshot() {
+        for addr in [
+            "/refresh",
+            "/sendall",
+            "/sendsettings",
+            "/sendmix",
+            "/sendstate",
+            "/sendchan/in/2",
+            "/sendsubmix/0",
+        ] {
+            assert_eq!(
+                OscCommand::parse_rme(addr, &[]),
+                vec![OscCommand::Refresh],
+                "{addr}"
+            );
+        }
+    }
+
+    #[test]
+    fn rme_rejects_unknown_bus_and_malformed() {
+        assert!(OscCommand::parse_rme("/mix/out/0/0/fader", &[OscType::Float(-6.0)]).is_empty());
+        assert!(OscCommand::parse_rme("/mix/in/x/0/fader", &[OscType::Float(-6.0)]).is_empty());
+        assert!(OscCommand::parse_rme("/input/-1/mute", &[OscType::Float(1.0)]).is_empty());
+    }
+
+    #[test]
+    fn rme_outbound_uses_separate_fader_and_balpan() {
+        let packets = OscOutbound::Volume(ChannelId::Input(0), 0, 1.0).into_rme_packets(6);
+        let OscPacket::Message(m) = &packets[0] else {
+            panic!("expected a message")
+        };
+        assert_eq!(m.addr, "/mix/in/0/0/fader");
+        assert!(float_arg(&packets[0]).abs() < 1e-4);
+
+        let packets = OscOutbound::Pan(ChannelId::Input(0), 1, 25).into_rme_packets(6);
+        let OscPacket::Message(m) = &packets[0] else {
+            panic!("expected a message")
+        };
+        assert_eq!(m.addr, "/mix/in/0/2/balpan");
+        assert_eq!(m.args, vec![OscType::Float(0.25)]);
+    }
+
+    #[test]
+    fn rme_outbound_fans_solo_over_every_submix() {
+        let packets = OscOutbound::Solo(ChannelId::Playback(1), true).into_rme_packets(6);
+        assert_eq!(packets.len(), 3);
+        let OscPacket::Message(m) = &packets[1] else {
+            panic!("expected a message")
+        };
+        assert_eq!(m.addr, "/mix/pb/1/2/solo");
+        assert_eq!(m.args, vec![OscType::Float(1.0)]);
+    }
+
+    #[test]
+    fn rme_outbound_mute_and_output_volume_use_mono_indices() {
+        let packets = OscOutbound::Mute(ChannelId::Output(1), true).into_rme_packets(6);
+        let OscPacket::Message(m) = &packets[0] else {
+            panic!("expected a message")
+        };
+        assert_eq!(m.addr, "/output/1/mute");
+
+        let packets = OscOutbound::OutputVolume(1, 0.5).into_rme_packets(6);
+        let OscPacket::Message(m) = &packets[0] else {
+            panic!("expected a message")
+        };
+        assert_eq!(m.addr, "/output/1/volume");
+        assert!((float_arg(&packets[0]) + 6.0206).abs() < 1e-3);
+    }
+
+    #[test]
+    fn rme_device_info_serves_status_and_device() {
+        let packets = OscOutbound::DeviceInfo {
+            name: "Babyface Pro FS".into(),
+            inputs: 12,
+            outputs: 6,
+        }
+        .into_rme_packets(6);
+        let addrs: Vec<&str> = packets
+            .iter()
+            .filter_map(|p| match p {
+                OscPacket::Message(m) => Some(m.addr.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(addrs.contains(&"/status/device"));
+        assert!(addrs.contains(&"/status/connection"));
+        assert!(addrs.contains(&"/device/inputs"));
     }
 }
