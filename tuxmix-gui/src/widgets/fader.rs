@@ -109,18 +109,17 @@ impl MeterFrame {
 /// goes before clipping a 2-digit label at `theme::TEXT_MICRO`, checked
 /// via a live screenshot rather than guessed.
 ///
-/// 2026-10-20: the numbers left the meter for a lane of their own, because
-/// printed on the fill they were hard to read. 2026-10-25: back in the
-/// meter, as TotalMix draws it: one dark well, the level bars inset in it,
-/// the numbers centered over both. A dark halo keeps them legible over a
-/// lit bar (see `draw_ruler`), which is what the separate lane was for;
-/// the lane had made the bar a thin stripe at the well's left edge.
-const METER_RULER_W: f32 = 22.0;
-/// How far the level bars sit in from each side of the well.
-const BAR_INSET: f32 = 4.0;
-/// Between the well and the fader track; the ruler's tick dashes run
-/// across it, from the numbers to the rail.
-const GAP: f32 = 6.0;
+/// 2026-10-20: the numbers left the meter for a lane of their own. Printed
+/// on the wash they collided with the fill (and, on a linked pair, with the
+/// gap between the two bars), and the wash had to stay translucent just so
+/// they could be read through it. The column is now `[meter][ruler lane]`,
+/// the meter fully opaque; `METER_RULER_W` is still the whole column, so
+/// `layout_x` and the collapsed `vu_meter` keep sizing against one number.
+const METER_W: f32 = 9.0;
+const LANE_GAP: f32 = 1.0;
+const RULER_LANE_W: f32 = 12.0;
+const METER_RULER_W: f32 = METER_W + LANE_GAP + RULER_LANE_W;
+const GAP: f32 = 4.0;
 const TRACK_W: f32 = 26.0;
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Gap after the last `WheelScrolled` event that means "this is a new
@@ -530,9 +529,7 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
         // one). Redrawn every time.
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         if self.show_meter {
-            let (meter_rect, well) =
-                meter_column(meter_x, METER_RULER_W * self.scale, bounds.height, self.scale);
-            draw_well(&mut frame, well, self.scale);
+            let (meter_rect, _) = meter_column(meter_x, bounds.height, self.scale);
             draw_meter(
                 &mut frame,
                 meter_rect,
@@ -571,9 +568,8 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
                 state.ruler_cache.clear();
             }
             layers.push(state.ruler_cache.draw(renderer, bounds.size(), |frame| {
-                let (_, well) =
-                    meter_column(meter_x, METER_RULER_W * self.scale, bounds.height, self.scale);
-                draw_ruler(frame, well, self.scale, Ticks::TowardTrack);
+                let (_, ruler_rect) = meter_column(meter_x, bounds.height, self.scale);
+                draw_ruler(frame, ruler_rect, self.scale);
             }));
         }
 
@@ -638,26 +634,15 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
     }
 }
 
-/// The meter's well, `width` wide from `x`, and the rect inset in it that
-/// the level bars fill. The ruler's numbers are printed over both.
-fn meter_column(x: f32, width: f32, height: f32, scale: f32) -> (Rectangle, Rectangle) {
-    let well = Rectangle::new(Point::new(x, 0.0), Size::new(width, height));
-    let inset = BAR_INSET * scale;
-    let bars = Rectangle::new(
-        Point::new(x + inset, 0.0),
-        Size::new((width - 2.0 * inset).max(0.0), height),
+/// Splits the meter/ruler column starting at `x` into the bar itself and
+/// the lane the dB numbers sit in, right of it (next to the fader track).
+fn meter_column(x: f32, height: f32, scale: f32) -> (Rectangle, Rectangle) {
+    let meter = Rectangle::new(Point::new(x, 0.0), Size::new(METER_W * scale, height));
+    let ruler = Rectangle::new(
+        Point::new(x + (METER_W + LANE_GAP) * scale, 0.0),
+        Size::new(RULER_LANE_W * scale, height),
     );
-    (bars, well)
-}
-
-/// The dark well the bars and the numbers sit in.
-fn draw_well(frame: &mut Frame, well: Rectangle, scale: f32) {
-    frame.fill(
-        &Path::new(|b| {
-            b.rounded_rectangle(well.position(), well.size(), (METER_RADIUS * scale).into())
-        }),
-        Color::from_rgb8(0x08, 0x08, 0x0a),
-    );
+    (meter, ruler)
 }
 
 const METER_RADIUS: f32 = 2.0;
@@ -690,9 +675,10 @@ const METER_ZONES: [(f32, Color); 3] = [
     (TOP_DB, theme::MRED),
 ];
 
-/// Fill opacity: all but solid, with just enough give to sit in the dark
-/// well instead of glaring. The numbers on top stay legible through their
-/// halo (`draw_ruler`), not through a see-through fill.
+/// Fill opacity. It used to be 0.55 so the ruler's numbers could be read
+/// *through* the wash; they have their own lane now (`RULER_LANE_W`), so
+/// the fill is all but solid, with just enough give to sit in the dark
+/// well instead of glaring.
 const FILL_ALPHA: f32 = 0.92;
 
 /// A full-width wash spanning the whole ruler column — not a slim pill
@@ -978,105 +964,52 @@ fn draw_track(
     );
 }
 
-/// Where `draw_ruler` puts each tick's dash: from the well's right edge to
-/// the fader rail (a full strip), or inside both edges of the well, framing
-/// the number (a collapsed strip, which has no rail).
-#[derive(Clone, Copy, PartialEq)]
-enum Ticks {
-    TowardTrack,
-    BothSides,
-}
-
-/// The dB ruler, printed over the meter as TotalMix does: each number
-/// centered in the well, on a dark halo so it reads over a lit bar too, with
-/// a dash beside it, and shorter dashes between the numbers.
-fn draw_ruler(frame: &mut Frame, r: Rectangle, scale: f32, ticks: Ticks) {
-    const LABELLED: [f32; 6] = [0.0, -6.0, -10.0, -20.0, -40.0, -60.0];
-    const MINOR: [f32; 4] = [-3.0, -15.0, -30.0, -50.0];
+/// Drawn on top of the (translucent, see `FILL_ALPHA`) meter wash, so it
+/// needs to stay legible against whatever color is lit behind it —
+/// numbers centered in the same rect `draw_meter` just filled, TotalMix-
+/// style, rather than pushed into their own lane to one side of it. The
+/// tick dash sits at the rect's own right edge — right where the fader
+/// track begins right after it (see `Fader::layout_x`), the same
+/// "shared between the meter and the fader" position the reference uses.
+fn draw_ruler(frame: &mut Frame, r: Rectangle, scale: f32) {
+    const TICKS: [f32; 6] = [0.0, -6.0, -10.0, -20.0, -40.0, -60.0];
     let label_x = r.x + r.width / 2.0;
     // Measured against the *full* height, matching `draw_track`'s own
     // `pos_of` (the fader cap) and `draw_meter`'s fill: all three agree on
     // where a given dB value sits.
-    let y_of = |db: f32| {
-        let y = r.y + r.height - r.height * db_to_t(db);
-        safe_clamp(y, r.y + 4.0 * scale, r.y + r.height - 4.0 * scale)
-    };
-    let dash_color = Color {
-        a: 0.45,
-        ..theme::TEXT_SEC
-    };
-    let dash = |frame: &mut Frame, y: f32, len: f32| {
-        let mut draw = |x0: f32, x1: f32| {
-            frame.stroke(
-                &Path::line(Point::new(x0, y), Point::new(x1, y)),
-                Stroke::default().with_color(dash_color).with_width(1.0),
-            );
-        };
-        match ticks {
-            Ticks::TowardTrack => {
-                let x0 = r.x + r.width + 1.0 * scale;
-                draw(x0, x0 + len);
-            }
-            Ticks::BothSides => {
-                let inset = 1.0 * scale;
-                draw(r.x + inset, r.x + inset + len);
-                draw(r.x + r.width - inset - len, r.x + r.width - inset);
-            }
-        }
-    };
-    let major_len = match ticks {
-        Ticks::TowardTrack => (GAP - 2.0) * scale,
-        Ticks::BothSides => 3.0 * scale,
-    };
-    for db in MINOR {
-        dash(frame, y_of(db), major_len / 2.0);
-    }
     // -6 and -10 sit about one text height apart at every zoom; below
     // ~7 px the two numbers run into each other, so zoomed out only -10
     // is labelled there.
     let crowded = theme::TEXT_MICRO * scale < 7.0;
-    for db in LABELLED {
-        let y = y_of(db);
-        dash(frame, y, major_len);
+    for db in TICKS {
         if crowded && db == -6.0 {
             continue;
         }
+        let t = db_to_t(db);
+        let y = r.y + r.height - r.height * t;
+        let y = safe_clamp(y, r.y + 4.0 * scale, r.y + r.height - 4.0 * scale);
         let label = if db == 0.0 {
             "0".to_string()
         } else {
             format!("{}", -db as i32)
         };
-        let text = |content: String, position: Point, color: Color| canvas::Text {
-            content,
-            position,
-            color,
+        frame.fill_text(canvas::Text {
+            content: label,
+            position: Point::new(label_x, y),
+            // 0 dB is the reference the cap rests on: one step brighter.
+            color: if db == 0.0 {
+                theme::TEXT_SEC
+            } else {
+                Color {
+                    a: 0.6,
+                    ..theme::TEXT_SEC
+                }
+            },
             size: (theme::TEXT_MICRO * scale).into(),
             align_x: advanced_text::Alignment::Center,
             align_y: iced::alignment::Vertical::Center,
             ..canvas::Text::default()
-        };
-        // The halo: an outline in the well's own dark, the number drawn
-        // one pixel off in all eight directions under the number itself.
-        let halo = Color::from_rgb8(0x08, 0x08, 0x0a);
-        for (dx, dy) in [
-            (-1.0, -1.0),
-            (0.0, -1.0),
-            (1.0, -1.0),
-            (-1.0, 0.0),
-            (1.0, 0.0),
-            (-1.0, 1.0),
-            (0.0, 1.0),
-            (1.0, 1.0),
-        ] {
-            frame.fill_text(text(label.clone(), Point::new(label_x + dx, y + dy), halo));
-        }
-        // 0 dB is the reference the cap rests on: one step brighter.
-        let color = if db == 0.0 {
-            theme::TEXT_PRIMARY
-        } else {
-            theme::TEXT_SEC
-        };
-        frame.fill_text(text(label, Point::new(label_x, y), color));
+        });
     }
 }
 
@@ -1141,9 +1074,7 @@ impl<Message> canvas::Program<Message> for VuMeter {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        // The well takes the collapsed card's whole width, as in TotalMix.
-        let (meter_rect, well) = meter_column(0.0, bounds.width, bounds.height, self.scale);
-        draw_well(&mut frame, well, self.scale);
+        let (meter_rect, ruler_rect) = meter_column(0.0, bounds.height, self.scale);
         draw_meter(
             &mut frame,
             meter_rect,
@@ -1155,7 +1086,7 @@ impl<Message> canvas::Program<Message> for VuMeter {
             // for this pass, single-bar only here.
             None,
         );
-        draw_ruler(&mut frame, well, self.scale, Ticks::BothSides);
+        draw_ruler(&mut frame, ruler_rect, self.scale);
         vec![frame.into_geometry()]
     }
 }
@@ -1171,7 +1102,7 @@ pub fn vu_meter<'a, Message: 'a>(
         scale,
         available,
     })
-    .width(Length::Fill)
+    .width(Length::Fixed(METER_RULER_W * scale))
     .height(Length::Fixed(height))
     .into()
 }
