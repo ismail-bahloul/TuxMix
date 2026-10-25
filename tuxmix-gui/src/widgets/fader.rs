@@ -634,13 +634,15 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
     }
 }
 
-/// Splits the meter/ruler column starting at `x` into the bar itself and
-/// the lane the dB numbers sit in, right of it (next to the fader track).
+/// Splits the meter/ruler column starting at `x` into the lane the dB
+/// numbers sit in and the bar itself, right of it: the bar runs beside the
+/// fader rail, as TotalMix puts its level next to the fader, instead of at
+/// the card's left edge with the numbers between it and the rail.
 fn meter_column(x: f32, height: f32, scale: f32) -> (Rectangle, Rectangle) {
-    let meter = Rectangle::new(Point::new(x, 0.0), Size::new(METER_W * scale, height));
-    let ruler = Rectangle::new(
-        Point::new(x + (METER_W + LANE_GAP) * scale, 0.0),
-        Size::new(RULER_LANE_W * scale, height),
+    let ruler = Rectangle::new(Point::new(x, 0.0), Size::new(RULER_LANE_W * scale, height));
+    let meter = Rectangle::new(
+        Point::new(x + (RULER_LANE_W + LANE_GAP) * scale, 0.0),
+        Size::new(METER_W * scale, height),
     );
     (meter, ruler)
 }
