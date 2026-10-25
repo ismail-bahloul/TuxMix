@@ -977,7 +977,14 @@ fn draw_ruler(frame: &mut Frame, r: Rectangle, scale: f32) {
     // Measured against the *full* height, matching `draw_track`'s own
     // `pos_of` (the fader cap) and `draw_meter`'s fill: all three agree on
     // where a given dB value sits.
+    // -6 and -10 sit about one text height apart at every zoom; below
+    // ~7 px the two numbers run into each other, so zoomed out only -10
+    // is labelled there.
+    let crowded = theme::TEXT_MICRO * scale < 7.0;
     for db in TICKS {
+        if crowded && db == -6.0 {
+            continue;
+        }
         let t = db_to_t(db);
         let y = r.y + r.height - r.height * t;
         let y = safe_clamp(y, r.y + 4.0 * scale, r.y + r.height - 4.0 * scale);
