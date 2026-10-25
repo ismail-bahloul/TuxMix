@@ -2385,6 +2385,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 state.show_device_panel = false;
             } else if state.show_settings {
                 state.show_settings = false;
+            } else if state.flyout_open.iter().any(|&(_, k)| k == strip::FlyoutKind::Route) {
+                // The bus popover is an overlay like the panels above;
+                // Settings/Eq/Trim are inline and keep their own toggle.
+                close_route_flyout(state);
             } else if state.renaming.is_some() {
                 state.renaming = None;
                 state.rename_buf.clear();
@@ -6233,6 +6237,18 @@ mod tests {
             state.flyout_open.contains(&(a, strip::FlyoutKind::Eq)),
             "a's EQ flyout must survive b's Route opening"
         );
+    }
+
+    #[test]
+    fn escape_closes_the_bus_popover_but_not_inline_panels() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(2);
+        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Eq));
+        let _ = update(&mut state, Message::ToggleFlyout(b, strip::FlyoutKind::Route));
+        let _ = update(&mut state, Message::EscapePressed);
+        assert!(!state.flyout_open.contains(&(b, strip::FlyoutKind::Route)));
+        assert!(state.flyout_open.contains(&(a, strip::FlyoutKind::Eq)));
     }
 
     #[test]
