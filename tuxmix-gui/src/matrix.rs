@@ -580,10 +580,13 @@ impl GridDims {
     }
 
     fn width(&self, scale: f32) -> f32 {
+        // A row is two label columns, the cells, and a gap after each
+        // pair, with a hairline between every two of those items.
+        let items = 2 + self.n_outputs + self.n_outputs / 2;
         (GROUP_LABEL_W + IDX_LABEL_W) * scale
             + self.n_outputs as f32 * CELL_W * scale
             + (self.n_outputs / 2) as f32 * PAIR_GAP * scale
-            + (self.n_outputs + 2) as f32 * theme::SPACE_HAIRLINE
+            + (items - 1) as f32 * theme::SPACE_HAIRLINE
     }
 }
 
@@ -594,9 +597,10 @@ impl GridDims {
 /// past the fit still works, and scrolls as before.
 fn fit_scale(zoom: f32, dims: &GridDims, size: iced::Size, pad: f32) -> f32 {
     // Every size above is `a * scale + b`: solve for the scale that fills
-    // the room. The 2 px are the panel's border.
-    let room_w = size.width - 2.0 * pad - 2.0;
-    let room_h = size.height - 2.0 * pad - 2.0;
+    // the room. The 4 px are the panel's border and a margin for layout
+    // rounding, without which an exact fit could still scroll by a pixel.
+    let room_w = size.width - 2.0 * pad - 4.0;
+    let room_h = size.height - 2.0 * pad - 4.0;
     let (bw, aw) = (dims.width(0.0), dims.width(1.0) - dims.width(0.0));
     let h = |s: f32| dims.sources_h(s) + dims.fixed_h(s);
     let (bh, ah) = (h(0.0), h(1.0) - h(0.0));
