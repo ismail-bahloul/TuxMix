@@ -829,13 +829,15 @@ fn slot_grid<'a>(
         for n in first..=(first + 1).min(count) {
             let is_active = active == Some(n as usize);
             // An empty slot is still clickable (selecting it is how you
-            // pick where "store" writes), but it reads as empty.
+            // pick where "store" writes), but it reads as empty. Dimmer
+            // than a stored slot, yet clearly above the 0.4 of a disabled
+            // control, which it used to be mistaken for.
             let is_stored = stored.get((n - 1) as usize).copied().unwrap_or(false);
             let name_color = if is_stored || is_active {
                 None
             } else {
                 Some(Color {
-                    a: 0.45,
+                    a: 0.7,
                     ..theme::TEXT_SEC
                 })
             };
