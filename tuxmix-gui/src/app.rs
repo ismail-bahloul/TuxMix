@@ -4398,6 +4398,9 @@ fn sidebar_does_not_fit(state: &TuxMix, w: f32) -> bool {
 /// small controls, and at the strips' 175 % it was as wide as half a
 /// small window for no gain.
 const SIDEBAR_SCALE_MAX: f32 = 1.25;
+/// Nor does it shrink below 100 %: zooming out is for fitting more
+/// strips, and at 75 % the sidebar's labels were 6 px.
+const SIDEBAR_SCALE_MIN: f32 = 1.0;
 /// A starting zoom for a monitor of `height` logical pixels (the OS scale
 /// factor is already in it): 100 % at 1080p and below, more on bigger
 /// screens, where the 10-13 px text is small. Only used at the first
@@ -4414,9 +4417,10 @@ pub(crate) fn initial_zoom_for(height: f32) -> f32 {
     }
 }
 
-/// The scale the sidebar draws at: the zoom, capped (`SIDEBAR_SCALE_MAX`).
+/// The scale the sidebar draws at: the zoom, held between
+/// `SIDEBAR_SCALE_MIN` and `SIDEBAR_SCALE_MAX`.
 pub(crate) fn sidebar_scale(state: &TuxMix) -> f32 {
-    state.ui_scale.min(SIDEBAR_SCALE_MAX)
+    state.ui_scale.clamp(SIDEBAR_SCALE_MIN, SIDEBAR_SCALE_MAX)
 }
 
 /// One strip's width at scale 1 (collapsed or full).
@@ -6819,6 +6823,8 @@ mod tests {
         state.ui_scale = 1.75;
         assert_eq!(super::sidebar_scale(&state), 1.25);
         state.ui_scale = 1.0;
+        assert_eq!(super::sidebar_scale(&state), 1.0);
+        state.ui_scale = 0.75;
         assert_eq!(super::sidebar_scale(&state), 1.0);
     }
 
