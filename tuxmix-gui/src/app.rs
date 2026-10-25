@@ -807,6 +807,10 @@ pub enum Message {
     /// While a text field is open, it asks the field whether it still has
     /// focus, see `Message::FieldFocus`.
     PointerPressed,
+    /// The release of that press. A click that did not land on a bus
+    /// control closes an open bus popover here, after the clicked widget's
+    /// own message (see `route_click_consumed`).
+    PointerReleased,
     /// The answer to that question: `false` means the click landed outside
     /// the field (iced unfocuses a text input then), so its text is
     /// accepted, the way a click away commits an edit in any desktop app.
@@ -1106,6 +1110,14 @@ pub struct TuxMix {
     /// widget's own message; this makes that one press not count as a
     /// click away.
     pub field_opening: bool,
+    /// The current click landed on a bus control (a strip's bus button or
+    /// a bus in a popover). Without it, the release closes an open bus
+    /// popover, so a click anywhere else (the sidebar, the top bar,
+    /// another row) dismisses it and still does what it clicked. A flag
+    /// set by the widget's message, not a state read at the press: iced
+    /// can deliver a quick click's widget message before the press itself,
+    /// but always before the release.
+    pub route_click_consumed: bool,
     /// PipeWire's graph clock (rate, buffer), when the sound server owns
     /// it (`rate_follows_sound_server`); simulated for the mock, which
     /// never touches the real PipeWire; `None` for the USB backend.
@@ -1388,6 +1400,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         matrix_hover: None,
         undo_gesture: None,
         field_opening: false,
+        route_click_consumed: false,
         engine: simulated.then_some(SIMULATED_ENGINE),
         engine_force_rate: 0,
         engine_force_quantum: 0,
@@ -1899,6 +1912,14 @@ fn open_flyout(state: &mut TuxMix, cid: ChannelId, kind: strip::FlyoutKind) {
     state.flyout_open.insert((cid, kind));
 }
 
+/// Whether a strip's bus popover (`FlyoutKind::Route`) is showing.
+fn route_popover_open(state: &TuxMix) -> bool {
+    state
+        .flyout_open
+        .iter()
+        .any(|&(_, k)| k == strip::FlyoutKind::Route)
+}
+
 /// Closes every currently-open `Route` flyout — the only kind
 /// `Message::CloseFlyout` is ever sent for (the click-outside catcher in
 /// `with_flyout`, `Route`'s own Stack overlay); Settings/Eq/Trim have no
@@ -1988,6 +2009,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::DimToggle
             | Message::MatrixHover(..)
             | Message::PointerPressed
+            | Message::PointerReleased
             | Message::FieldFocus(..)
             | Message::EngineRate(_)
             | Message::EngineQuantum(_)
@@ -2348,6 +2370,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             // job. Doesn't touch any other (Settings/Eq/Trim) flyout
             // that happens to be open elsewhere.
             close_route_flyout(state);
+            state.route_click_consumed = true;
         }
         Message::ModifiersChanged(m) => state.modifiers = m,
         Message::WindowSize(w, h) => {
@@ -2385,7 +2408,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 state.show_device_panel = false;
             } else if state.show_settings {
                 state.show_settings = false;
-            } else if state.flyout_open.iter().any(|&(_, k)| k == strip::FlyoutKind::Route) {
+            } else if route_popover_open(state) {
                 // The bus popover is an overlay like the panels above;
                 // Settings/Eq/Trim are inline and keep their own toggle.
                 close_route_flyout(state);
@@ -2667,6 +2690,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::ToggleFlyout(cid, kind) => {
+            if kind == strip::FlyoutKind::Route {
+                state.route_click_consumed = true;
+            }
             if state.flyout_open.contains(&(cid, kind)) {
                 state.flyout_open.remove(&(cid, kind));
             } else {
@@ -2917,6 +2943,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             if state.device.rate_follows_sound_server() {
                 state.engine = clock;
                 state.card_stream = stream;
+            }
+        }
+        Message::PointerReleased => {
+            if !std::mem::take(&mut state.route_click_consumed) {
+                close_route_flyout(state);
             }
         }
         Message::PointerPressed => {
@@ -3213,6 +3244,9 @@ fn handle_global_event(
         }
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
             Some(Message::PointerPressed)
+        }
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+            Some(Message::PointerReleased)
         }
         iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta, .. }) => {
             // Reported every wheel tick; `update` decides whether it's a
@@ -5621,7 +5655,7 @@ mod tests {
     use super::{
         any_channel_muted, any_channel_soloed, apply_pending_resize,
         apply_prefs, channel_is_muted, channel_is_soloed, is_undoable, new, prefs_of,
-        mute_armed, power_sum_output_meters, update, zoom, ChannelId, EditField, MeterAnim, Message, RowMode, View, ZOOM_STEP,
+        mute_armed, power_sum_output_meters, route_popover_open, update, zoom, ChannelId, EditField, MeterAnim, Message, RowMode, TuxMix, View, ZOOM_STEP,
     };
     use crate::sidebar;
     use crate::theme;
@@ -6237,6 +6271,74 @@ mod tests {
             state.flyout_open.contains(&(a, strip::FlyoutKind::Eq)),
             "a's EQ flyout must survive b's Route opening"
         );
+    }
+
+    /// One click as iced delivers it: the press, then the clicked
+    /// widget's message (`None` for empty space or a widget that sends
+    /// nothing), then the release.
+    fn click(state: &mut TuxMix, widget: Option<Message>) {
+        let _ = update(state, Message::PointerPressed);
+        if let Some(m) = widget {
+            let _ = update(state, m);
+        }
+        let _ = update(state, Message::PointerReleased);
+    }
+
+    #[test]
+    fn a_click_elsewhere_closes_the_bus_popover_and_still_acts() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        click(&mut state, Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)));
+        click(&mut state, Some(Message::DimToggle));
+        assert!(!route_popover_open(&state));
+        assert!(state.device.settings().dim, "the click itself still lands");
+
+        click(&mut state, Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)));
+        click(&mut state, None);
+        assert!(!route_popover_open(&state));
+    }
+
+    #[test]
+    fn bus_clicks_keep_working_with_the_popover_open() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(2);
+        click(&mut state, Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)));
+        // Another strip's bus button moves the popover there.
+        click(&mut state, Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)));
+        assert!(state.flyout_open.contains(&(b, strip::FlyoutKind::Route)));
+        // Picking a bus selects it and closes the popover.
+        click(&mut state, Some(Message::SelectOutput(3)));
+        assert_eq!(state.sel_out, 3);
+        assert!(!route_popover_open(&state));
+        // The same bus button opens it, then closes it again.
+        click(&mut state, Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)));
+        assert!(route_popover_open(&state));
+        click(&mut state, Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)));
+        assert!(!route_popover_open(&state));
+    }
+
+    #[test]
+    fn a_click_with_no_popover_open_is_not_an_undo_step() {
+        let mut state = new(true, None, None);
+        click(&mut state, None);
+        assert!(state.undo_stack.is_empty());
+    }
+
+    #[test]
+    fn a_quick_click_delivered_out_of_order_still_opens_the_popover() {
+        // A fast click can arrive as one batch: the button's message, then
+        // the press, then the release.
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Route));
+        let _ = update(&mut state, Message::PointerPressed);
+        let _ = update(&mut state, Message::PointerReleased);
+        assert!(route_popover_open(&state));
+        let _ = update(&mut state, Message::DimToggle);
+        let _ = update(&mut state, Message::PointerPressed);
+        let _ = update(&mut state, Message::PointerReleased);
+        assert!(!route_popover_open(&state));
     }
 
     #[test]
