@@ -5012,16 +5012,24 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
 /// Settings flyout is open, which naturally pushes every strip after it
 /// over — ordinary layout, no `Stack`/`opaque` overlay machinery needed.
 ///
-/// Positioning assumes the row isn't horizontally scrolled — a known v1
-/// gap (no per-row scroll-offset tracking yet); the panel can land at a
-/// slightly wrong x if it is.
+/// `open` is the open strip's right edge and width within the row, and
+/// `room` the width the popover has to fit in: the row's own width when it
+/// scrolls sideways (the layer sits inside the scroller, so it scrolls with
+/// the strips), the visible width otherwise. A popover that would overrun
+/// it opens on the strip's left instead.
 fn with_flyout<'a>(
     state: &'a TuxMix,
     row_element: Element<'a, Message>,
-    open_x: Option<f32>,
+    open: Option<(f32, f32)>,
+    room: f32,
 ) -> Element<'a, Message> {
-    let Some(x) = open_x else {
+    let Some((right, strip_w)) = open else {
         return row_element;
+    };
+    let x = if right + strip::FLYOUT_W > room {
+        (right - strip_w - strip::FLYOUT_W).max(0.0)
+    } else {
+        right
     };
     if !state
         .flyout_open
@@ -5060,8 +5068,13 @@ fn with_flyout<'a>(
             .align_bottom(Length::Fill)
             .into(),
     ])
-    .width(Length::Fill)
-    .height(Length::Fill)
+    .width(Length::Fixed(room))
+    // As tall as the strip row (the stack's base layer), and so are the
+    // catcher and the popover's positioning layer. A `Fill` stack inside
+    // the "2 Row" sideways scroller, itself in the vertical page, had no
+    // height bound: the popover went to the bottom of an endless layer,
+    // out of sight, and pushed the outputs row off the page.
+    .height(Length::Shrink)
     .into()
 }
 
@@ -5084,7 +5097,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
     let mut input_strips = row![].spacing(theme::SPACE_MD);
     let mut input_width = 0.0f32;
     let mut input_item_count = 0usize;
-    let mut input_open_x: Option<f32> = None;
+    let mut input_open_x: Option<(f32, f32)> = None;
     let n_input_pairs = state.device.inputs().len() / 2;
     for pair in 0..n_input_pairs {
         let l = pair * 2;
@@ -5164,7 +5177,10 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // Gaps placed so far (`item_count - 1`, spacing is between
                 // items) plus the content accumulated up to and including this
                 // strip is exactly its right edge on screen.
-                input_open_x = Some(input_width + (input_item_count - 1) as f32 * theme::SPACE_MD);
+                input_open_x = Some((
+                    input_width + (input_item_count - 1) as f32 * theme::SPACE_MD,
+                    item_width,
+                ));
             }
         }
     }
@@ -5174,7 +5190,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
     let mut pb_strips = row![].spacing(theme::SPACE_MD);
     let mut pb_width = 0.0f32;
     let mut pb_item_count = 0usize;
-    let mut pb_open_x: Option<f32> = None;
+    let mut pb_open_x: Option<(f32, f32)> = None;
     let n_pb_pairs = state.device.playbacks().len() / 2;
     for pair in 0..n_pb_pairs {
         let l = pair * 2;
@@ -5210,7 +5226,10 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             pb_width += item_width;
             pb_item_count += 1;
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Route)) {
-                pb_open_x = Some(pb_width + (pb_item_count - 1) as f32 * theme::SPACE_MD);
+                pb_open_x = Some((
+                    pb_width + (pb_item_count - 1) as f32 * theme::SPACE_MD,
+                    item_width,
+                ));
             }
         }
     }
@@ -5299,7 +5318,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             column![
                 section_header("HARDWARE INPUTS", scale),
                 submix_hint(),
-                with_flyout(state, input_strips.into(), input_open_x),
+                with_flyout(state, input_strips.into(), input_open_x, input_width),
             ]
             .spacing(theme::SPACE_LG)
             .width(Length::Fixed(input_width)),
@@ -5308,7 +5327,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // Keeps the playback strips level with the input strips,
                 // which have the submix hint above them.
                 text(" ").size(theme::TEXT_XS * scale),
-                with_flyout(state, pb_strips.into(), pb_open_x),
+                with_flyout(state, pb_strips.into(), pb_open_x, pb_width),
             ]
             .spacing(theme::SPACE_LG)
             .width(Length::Fixed(pb_width)),
@@ -5319,16 +5338,26 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
         column![
             section_header("HARDWARE INPUTS", scale),
             submix_hint(),
-            with_flyout(
-                state,
-                responsive_row(input_strips.into(), input_width, available_width),
-                input_open_x,
+            responsive_row(
+                with_flyout(
+                    state,
+                    input_strips.into(),
+                    input_open_x,
+                    input_width.max(available_width),
+                ),
+                input_width,
+                available_width,
             ),
             section_header("SOFTWARE PLAYBACK", scale),
-            with_flyout(
-                state,
-                responsive_row(pb_strips.into(), pb_width, available_width),
-                pb_open_x,
+            responsive_row(
+                with_flyout(
+                    state,
+                    pb_strips.into(),
+                    pb_open_x,
+                    pb_width.max(available_width),
+                ),
+                pb_width,
+                available_width,
             ),
         ]
         .spacing(theme::SPACE_LG)
