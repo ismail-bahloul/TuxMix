@@ -4246,6 +4246,7 @@ fn strip_params<'a>(
         modifiers: state.modifiers,
         collapsed: state.collapsed.contains(&cid),
         collapse_anim: state.collapse_anim.get(&cid).copied(),
+        can_collapse: true,
         scale: state.ui_scale,
         selected: state.selected.contains(&cid),
         hovered: state.hovered_strip == Some(cid),
@@ -5586,6 +5587,14 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
         source_params.scale = big_scale;
         let mut dest_params = strip_params(state, dest_cid, sel_out);
         dest_params.scale = big_scale;
+        // Always drawn full here: the two strips are the whole view, and a
+        // strip collapsed in the Mixer (the state is shared) came in as a
+        // narrow card under a full-width picker, off the layout's grid.
+        for p in [&mut source_params, &mut dest_params] {
+            p.collapsed = false;
+            p.collapse_anim = None;
+            p.can_collapse = false;
+        }
         // Named and metered as the Mixer's output strip is: a linked pair
         // is one "AN1/2" bus with both channels' meters, not its left half.
         if state.device.output_linked(sel_out) {

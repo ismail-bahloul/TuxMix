@@ -221,6 +221,9 @@ pub struct StripParams<'a> {
     pub modifiers: Modifiers,
     pub collapsed: bool,
     pub collapse_anim: Option<CollapseAnim>,
+    /// Offers collapsing (the minus button, a double-click on the card).
+    /// Off in the Quick view, whose two strips are meant to be large.
+    pub can_collapse: bool,
     pub scale: f32,
     pub selected: bool,
     pub hovered: bool,
@@ -882,11 +885,20 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // stays symmetric around the row's true center, rather than losing
     // width asymmetrically to a right-hand sibling the way the fader
     // row itself used to (see `Fader::layout_x`'s doc comment).
+    // Without collapsing, a spacer of the button's width keeps the
+    // readout centered the same way.
+    let collapse_slot: Element<'_, Message> = if p.can_collapse {
+        collapse_btn
+    } else {
+        iced::widget::Space::new()
+            .width(Length::Fixed(ICON_BTN_W * scale))
+            .into()
+    };
     rows = rows.push(
         row![
             iced::widget::Space::new().width(Length::Fixed(ICON_BTN_W * scale)),
             container(db_display).width(Length::Fill).center_x(Length::Fill),
-            collapse_btn,
+            collapse_slot,
         ]
         .spacing(theme::SPACE_TIGHT)
         .align_y(iced::Alignment::Center)
@@ -965,7 +977,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // click there is a no-op; Ctrl/Shift+click toggles multi-selection
     // (see `Message::StripClicked`) — mute/solo/collapse on any selected
     // strip then apply to the whole selection at once.
-    mouse_area(
+    let card = mouse_area(
         container(
             rows.width(Length::Fill)
                 .align_x(iced::Alignment::Center),
@@ -989,10 +1001,13 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         .clip(true),
     )
     .on_press(Message::StripClicked(cid))
-    .on_double_click(Message::ToggleCollapse(cid))
     .on_enter(Message::StripHovered(Some(cid)))
-    .on_exit(Message::StripHovered(None))
-    .into()
+    .on_exit(Message::StripHovered(None));
+    if p.can_collapse {
+        card.on_double_click(Message::ToggleCollapse(cid)).into()
+    } else {
+        card.into()
+    }
 }
 
 #[cfg(test)]
