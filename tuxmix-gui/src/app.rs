@@ -29,7 +29,7 @@ use crate::widgets::fader;
 use crate::widgets::knob::{knob, Knob};
 use crate::widgets::strip::{self, hint};
 
-pub const OUT_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "A3/A4", "A5/A6", "A7/A8"];
+pub const OUT_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "ADAT3/4", "ADAT5/6", "ADAT7/8"];
 
 /// Strips redundant prefixes baked into a channel's stored name before it's
 /// shown in a strip header — "PCM " for playback channels, "OUT " for
@@ -2160,11 +2160,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             // CHANGES on the panel, so a GUI click on the submix picker
             // keeps winning until the user touches OUT. Panel OUT
             // selection (0=Ch1/2, 1=Phones, 2=Opt) → submix pair index
-            // (OUT_LABELS: AN1/2=0, PH3/4=1, … A7/A8=5).
+            // (OUT_LABELS: AN1/2=0, PH3/4=1, … ADAT7/8=5).
             if let Some((_, _, out_sel)) = state.device.panel_selection() {
                 let out = match out_sel {
                     1 => 1,
-                    2 => 5, // Opt = the optical output (A7/A8)
+                    2 => 5, // Opt = the optical output (ADAT7/8)
                     _ => 0,
                 };
                 if state.last_panel_out != Some(out_sel) {
