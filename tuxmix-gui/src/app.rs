@@ -6509,6 +6509,7 @@ mod tests {
     fn matrix_drag_then_toggle_undoes_step_by_step() {
         let mut state = new(true, None, None);
         let cid = ChannelId::Input(4);
+        let start = state.device.inputs()[4].volumes[1];
         for v in [0.9, 0.7, 0.5] {
             let _ = update(&mut state, Message::VolumeChanged(cid, 1, v));
         }
@@ -6518,7 +6519,7 @@ mod tests {
         let _ = update(&mut state, Message::Undo);
         assert!((state.device.inputs()[4].volumes[1] - 0.5).abs() < 1e-6);
         let _ = update(&mut state, Message::Undo);
-        assert!((state.device.inputs()[4].volumes[1] - 1.0).abs() < 1e-3);
+        assert!((state.device.inputs()[4].volumes[1] - start).abs() < 1e-3);
     }
 
     #[test]

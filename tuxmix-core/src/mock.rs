@@ -170,12 +170,25 @@ impl RmeDevice for MockBabyfacePro {
             // `eq_strip_name`, same `idx < 4` gate) — every other input
             // type stays `None`.
             ch.eq = (i < 4).then(InputEq::default);
+            // Inputs start routed nowhere, as after TotalMix's "Reset
+            // mix: straight playback" (see `playbacks` below).
+            ch.volumes.fill(0.0);
+        }
+        // Each playback pair plays on its own output pair at 0 dB and
+        // nowhere else, instead of every crosspoint at 0 dB: a mock that
+        // looks like a real card's default mix, in the Matrix and in
+        // screenshots.
+        let mut playbacks = PROFILE.build_playbacks();
+        for (i, ch) in playbacks.iter_mut().enumerate() {
+            for (pair, v) in ch.volumes.iter_mut().enumerate() {
+                *v = if pair == i / 2 { 1.0 } else { 0.0 };
+            }
         }
 
         Ok(Self {
             model_name: format!("{} (mock)", PROFILE.model_name),
             inputs,
-            playbacks: PROFILE.build_playbacks(),
+            playbacks,
             outputs: PROFILE.build_outputs(),
             settings: DeviceSettings {
                 clock_source: "Internal".into(),
@@ -749,12 +762,14 @@ mod tests {
     #[test]
     fn test_per_output_volume() {
         let mut dev = MockBabyfacePro::open().unwrap();
+        let before_0 = dev.volume(ChannelId::Input(0), 0).unwrap();
+        let before_5 = dev.volume(ChannelId::Input(0), 5).unwrap();
         // Set volume for input 0 towards output 2 only
         dev.set_volume(ChannelId::Input(0), 2, 0.3).unwrap();
         assert!((dev.volume(ChannelId::Input(0), 2).unwrap() - 0.3).abs() < 1e-6);
-        // Other outputs should be unchanged (default 0 dB = 1.0)
-        assert!((dev.volume(ChannelId::Input(0), 0).unwrap() - 1.0).abs() < 1e-6);
-        assert!((dev.volume(ChannelId::Input(0), 5).unwrap() - 1.0).abs() < 1e-6);
+        // Other outputs should be unchanged
+        assert!((dev.volume(ChannelId::Input(0), 0).unwrap() - before_0).abs() < 1e-6);
+        assert!((dev.volume(ChannelId::Input(0), 5).unwrap() - before_5).abs() < 1e-6);
     }
 
     #[test]
