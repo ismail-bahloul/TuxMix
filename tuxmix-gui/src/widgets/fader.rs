@@ -811,7 +811,17 @@ fn draw_meter_bar(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, avail
         }
     }
 
-    // Clip LED — a fixed indicator above the track, dim until triggered.
+    // Clip LED: the meter's top segment, as wide as the bar and with the
+    // bar's own corners, split from the fill by a hairline of the well's
+    // dark. It used to be a fully rounded pill on a square-cornered bar,
+    // which read as a dot stuck on top rather than part of the meter.
+    frame.fill(
+        &Path::rectangle(
+            Point::new(r.x, r.y + clip_h),
+            Size::new(fill_w, 1.0 * scale),
+        ),
+        Color::from_rgb8(0x08, 0x08, 0x0a),
+    );
     let clip_rect = Rectangle::new(Point::new(r.x, r.y), Size::new(fill_w, clip_h));
     let clipping = l >= 0.95;
     let clip_color = if clipping {
@@ -829,11 +839,7 @@ fn draw_meter_bar(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, avail
         );
         frame.fill(
             &Path::new(|b| {
-                b.rounded_rectangle(
-                    glow.position(),
-                    glow.size(),
-                    (clip_h / 2.0 + 2.0 * scale).into(),
-                )
+                b.rounded_rectangle(glow.position(), glow.size(), (radius + 2.0 * scale).into())
             }),
             Color {
                 a: 0.35,
@@ -843,11 +849,7 @@ fn draw_meter_bar(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, avail
     }
     frame.fill(
         &Path::new(|b| {
-            b.rounded_rectangle(
-                clip_rect.position(),
-                clip_rect.size(),
-                (clip_h / 2.0).into(),
-            )
+            b.rounded_rectangle(clip_rect.position(), clip_rect.size(), radius.into())
         }),
         clip_color,
     );
