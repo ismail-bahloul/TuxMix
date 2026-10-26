@@ -18,6 +18,8 @@
 //! TotalMix clients and oscmix UIs can drive a Babyface through TuxMix.
 //! Indices are 0-based there, volumes are dB, pan is -1.0..+1.0, and a
 //! crosspoint is `/mix/{in|pb}/<source>/<submix>/{fader,faderlin,balpan,solo}`.
+//! Meter peaks go out on `/level/{in|pb|out}/<n>` at the meter tick, and
+//! `/set/level/{peak,rms,fx}` selects what each message carries.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -93,6 +95,13 @@ pub enum OscOutbound {
         name: String,
         inputs: usize,
         outputs: usize,
+    },
+    /// Meter peaks, linear 0..1, one entry per channel and bus. Sent on the
+    /// meter tick; the RME encoder drops values that did not move.
+    Levels {
+        inputs: Vec<f32>,
+        playback: Vec<f32>,
+        outputs: Vec<f32>,
     },
 }
 
@@ -390,8 +399,88 @@ impl OscOutbound {
                 msg("/device/inputs".into(), vec![OscType::Int(inputs as i32)]),
                 msg("/device/outputs".into(), vec![OscType::Int(outputs as i32)]),
             ],
+            // Encoded separately, because it needs the last-sent cache.
+            OscOutbound::Levels { .. } => Vec::new(),
         }
     }
+}
+
+/// `/set/level/*` toggles, as RME documents them: peak on and rms off by
+/// default. TuxMix only has a peak value, so rms repeats it rather than
+/// changing the message layout a client expects.
+#[derive(Clone, Copy)]
+struct LevelConfig {
+    peak: bool,
+    rms: bool,
+    fx: bool,
+}
+
+impl Default for LevelConfig {
+    fn default() -> Self {
+        Self {
+            peak: true,
+            rms: false,
+            fx: true,
+        }
+    }
+}
+
+fn level_config_packets(cfg: &LevelConfig) -> Vec<OscPacket> {
+    [("peak", cfg.peak), ("rms", cfg.rms), ("fx", cfg.fx)]
+        .into_iter()
+        .map(|(name, on)| {
+            OscPacket::Message(OscMessage {
+                addr: format!("/set/level/{name}"),
+                args: vec![OscType::Float(if on { 1.0 } else { 0.0 })],
+            })
+        })
+        .collect()
+}
+
+/// Meter peaks travel as dB, floored where TotalMix's scale ends.
+fn meter_db(v: f32) -> f32 {
+    if v <= 0.0 {
+        -96.0
+    } else {
+        (20.0 * v.log10()).clamp(-96.0, 12.0)
+    }
+}
+
+fn level_packets(
+    inputs: &[f32],
+    playback: &[f32],
+    outputs: &[f32],
+    cfg: &LevelConfig,
+    last: &mut std::collections::HashMap<(u8, usize), f32>,
+) -> Vec<OscPacket> {
+    if !cfg.peak && !cfg.rms {
+        return Vec::new();
+    }
+    let mut packets = Vec::new();
+    for (bus, tag, levels) in [
+        (0u8, "in", inputs),
+        (1, "pb", playback),
+        (2, "out", outputs),
+    ] {
+        for (i, v) in levels.iter().enumerate() {
+            let db = meter_db(*v);
+            let prev = last.entry((bus, i)).or_insert(f32::NEG_INFINITY);
+            if (db - *prev).abs() < 0.1 {
+                continue;
+            }
+            *prev = db;
+            let args = if cfg.peak && cfg.rms {
+                vec![OscType::Float(db), OscType::Float(db)]
+            } else {
+                vec![OscType::Float(db)]
+            };
+            packets.push(OscPacket::Message(OscMessage {
+                addr: format!("/level/{tag}/{i}"),
+                args,
+            }));
+        }
+    }
+    packets
 }
 
 impl OscOutbound {
@@ -426,6 +515,7 @@ impl OscOutbound {
                 (format!("/output/{id}/volume"), vec![OscType::Float(v)])
             }
             OscOutbound::DeviceInfo { .. } => return None,
+            OscOutbound::Levels { .. } => return None,
         };
         Some(OscPacket::Message(OscMessage { addr, args }))
     }
@@ -488,6 +578,8 @@ pub fn worker(config: &OscConfig) -> impl Stream<Item = Message> {
         // Filled from DeviceInfo on connect. Only used to fan a per-channel
         // solo out over every submix node; 12 is the Babyface Pro FS.
         let mut mono_outputs = 12usize;
+        let mut level_cfg = LevelConfig::default();
+        let mut last_levels = std::collections::HashMap::new();
         loop {
             tokio::select! {
                 res = socket.recv_from(&mut buf) => {
@@ -497,6 +589,28 @@ pub fn worker(config: &OscConfig) -> impl Stream<Item = Message> {
                         let _ = output
                             .send(Message::OscLog(log_line("IN ", &msg.addr, &msg.args)))
                             .await;
+                        // Meter preferences are worker-local: they only
+                        // affect how this process encodes /level.
+                        if config.dialect == Dialect::Rme {
+                            if let Some(name) = msg.addr.strip_prefix("/set/level/") {
+                                if let Some(on) = msg.args.first().and_then(arg_bool) {
+                                    match name {
+                                        "peak" => level_cfg.peak = on,
+                                        "rms" => level_cfg.rms = on,
+                                        "fx" => level_cfg.fx = on,
+                                        _ => {}
+                                    }
+                                    let reply = OscPacket::Message(OscMessage {
+                                        addr: format!("/set/level/{name}"),
+                                        args: vec![OscType::Float(if on { 1.0 } else { 0.0 })],
+                                    });
+                                    if let Ok(bytes) = rosc::encoder::encode(&reply) {
+                                        let _ = socket.send_to(&bytes, send_addr).await;
+                                    }
+                                }
+                                continue;
+                            }
+                        }
                         let cmds = match config.dialect {
                             Dialect::Native => {
                                 OscCommand::parse(&msg.addr, &msg.args).into_iter().collect()
@@ -512,20 +626,46 @@ pub fn worker(config: &OscConfig) -> impl Stream<Item = Message> {
                 }
                 outbound = rx.next() => {
                     let Some(outbound) = outbound else { continue };
+                    let is_device_info = matches!(&outbound, OscOutbound::DeviceInfo { .. });
                     let packets = match config.dialect {
                         Dialect::Native => outbound.into_packet().into_iter().collect(),
-                        Dialect::Rme => {
-                            if let OscOutbound::DeviceInfo { outputs, .. } = &outbound {
-                                mono_outputs = *outputs;
+                        Dialect::Rme => match outbound {
+                            OscOutbound::Levels {
+                                inputs,
+                                playback,
+                                outputs,
+                            } => level_packets(
+                                &inputs,
+                                &playback,
+                                &outputs,
+                                &level_cfg,
+                                &mut last_levels,
+                            ),
+                            other => {
+                                if let OscOutbound::DeviceInfo { outputs, .. } = &other {
+                                    mono_outputs = *outputs;
+                                }
+                                other.into_rme_packets(mono_outputs)
                             }
-                            outbound.into_rme_packets(mono_outputs)
-                        }
+                        },
+                    };
+                    // RME replays the meter toggles on a full refresh.
+                    let packets = if config.dialect == Dialect::Rme && is_device_info {
+                        let mut with_cfg = level_config_packets(&level_cfg);
+                        with_cfg.extend(packets);
+                        with_cfg
+                    } else {
+                        packets
                     };
                     for packet in packets {
                         if let OscPacket::Message(ref msg) = packet {
-                            let _ = output
-                                .send(Message::OscLog(log_line("OUT", &msg.addr, &msg.args)))
-                                .await;
+                            // Meters are a stream, not state: keep them out
+                            // of the debug log panel.
+                            if !msg.addr.starts_with("/level/") {
+                                let _ = output
+                                    .send(Message::OscLog(log_line("OUT", &msg.addr, &msg.args)))
+                                    .await;
+                            }
                         }
                         if let Ok(bytes) = rosc::encoder::encode(&packet) {
                             let _ = socket.send_to(&bytes, send_addr).await;
@@ -775,6 +915,40 @@ mod tests {
         };
         assert_eq!(m.addr, "/output/1/volume");
         assert!((float_arg(&packets[0]) + 6.0206).abs() < 1e-3);
+    }
+
+    #[test]
+    fn rme_levels_are_db_and_only_resent_on_change() {
+        let cfg = LevelConfig::default();
+        let mut last = std::collections::HashMap::new();
+
+        let first = level_packets(&[0.5], &[], &[], &cfg, &mut last);
+        assert_eq!(first.len(), 1);
+        let OscPacket::Message(m) = &first[0] else {
+            panic!("expected a message")
+        };
+        assert_eq!(m.addr, "/level/in/0");
+        assert!((float_arg(&first[0]) + 6.0206).abs() < 1e-3);
+
+        assert!(level_packets(&[0.5], &[], &[], &cfg, &mut last).is_empty());
+        assert_eq!(level_packets(&[0.25], &[], &[], &cfg, &mut last).len(), 1);
+    }
+
+    #[test]
+    fn rme_level_toggles_replay_as_three_messages() {
+        let packets = level_config_packets(&LevelConfig::default());
+        assert_eq!(packets.len(), 3);
+        let addrs: Vec<&str> = packets
+            .iter()
+            .filter_map(|p| match p {
+                OscPacket::Message(m) => Some(m.addr.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            addrs,
+            vec!["/set/level/peak", "/set/level/rms", "/set/level/fx"]
+        );
     }
 
     #[test]
