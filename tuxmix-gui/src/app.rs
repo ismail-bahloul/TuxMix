@@ -811,6 +811,10 @@ pub enum Message {
     /// control closes an open bus popover here, after the clicked widget's
     /// own message (see `route_click_consumed`).
     PointerReleased,
+    /// A click on a strip's meter while its clip LED is lit: clears the
+    /// LED of `cid`'s channel, and of the next one too when the strip is a
+    /// linked pair showing both (`true`).
+    ClipReset(ChannelId, bool),
     /// The answer to that question: `false` means the click landed outside
     /// the field (iced unfocuses a text input then), so its text is
     /// accepted, the way a click away commits an edit in any desktop app.
@@ -1225,7 +1229,15 @@ pub struct MeterAnim {
     /// the release ease-out curve. Clamped at `METER_RELEASE_MS`, meaning
     /// "fully settled into the tail rate".
     release_elapsed_ms: f32,
+    /// The channel touched full scale (`CLIP_LEVEL`) since its clip LED
+    /// was last cleared. Set from the raw reading, not the smoothed
+    /// `value`, which would ride over a clip of a few milliseconds.
+    pub clipped: bool,
 }
+
+/// A raw reading at or above this is a clip: 0 dBFS, give or take the
+/// float rounding of a full-scale sample.
+const CLIP_LEVEL: f32 = 0.999;
 
 impl MeterAnim {
     fn new() -> Self {
@@ -1234,6 +1246,7 @@ impl MeterAnim {
             value: 0.0,
             last_step_at: Instant::now(),
             release_elapsed_ms: METER_RELEASE_MS,
+            clipped: false,
         }
     }
 
@@ -1263,6 +1276,9 @@ impl MeterAnim {
     }
 
     fn step_for(&mut self, target: f32, dt_ms: f32) {
+        if target >= CLIP_LEVEL {
+            self.clipped = true;
+        }
         self.prev_value = self.value;
         let ratio = dt_ms / METER_TICK_MS;
         let eff = |alpha: f32| 1.0 - (1.0 - alpha).powf(ratio);
@@ -2010,6 +2026,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::MatrixHover(..)
             | Message::PointerPressed
             | Message::PointerReleased
+            | Message::ClipReset(..)
             | Message::FieldFocus(..)
             | Message::EngineRate(_)
             | Message::EngineQuantum(_)
@@ -2943,6 +2960,17 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             if state.device.rate_follows_sound_server() {
                 state.engine = clock;
                 state.card_stream = stream;
+            }
+        }
+        Message::ClipReset(cid, pair) => {
+            let (meters, i) = match cid {
+                ChannelId::Input(i) => (&mut state.input_meters, i),
+                ChannelId::Playback(i) => (&mut state.playback_meters, i),
+                ChannelId::Output(i) => (&mut state.output_meters, i),
+            };
+            let n = if pair { 2 } else { 1 };
+            for m in meters.iter_mut().skip(i).take(n) {
+                m.clipped = false;
             }
         }
         Message::PointerReleased => {
@@ -4209,6 +4237,8 @@ fn strip_params<'a>(
         meter_available: false,
         meter2: None,
         meter2_available: false,
+        clip: false,
+        clip2: false,
         has_48v: false,
         has_pad: false,
         phantom: false,
@@ -4267,6 +4297,7 @@ fn strip_params<'a>(
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
                 meter_available: state.device.has_input_meter(i),
+                clip: state.input_meters.get(i).is_some_and(|m| m.clipped),
                 has_48v,
                 has_pad: has_48v,
                 phantom: ch.phantom,
@@ -4302,6 +4333,7 @@ fn strip_params<'a>(
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
                 meter_available: playback_meter_available(state, i),
+                clip: state.playback_meters.get(i).is_some_and(|m| m.clipped),
                 stereo_linked: state.device.playback_linked(i / 2),
                 mute: ch.mute,
                 solo: ch.solo,
@@ -4325,6 +4357,7 @@ fn strip_params<'a>(
                 // when every nonzero crosspoint feeding this pair has
                 // a real meter (see `output_meter_available`).
                 meter_available: output_meter_available(state, i),
+                clip: state.output_meters.get(i).is_some_and(|m| m.clipped),
                 loopback: ch.loopback,
                 stereo_linked: state.device.output_linked(i / 2),
                 mute: ch.mute,
@@ -5126,6 +5159,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // right channel's own real level was captured but never
                 // displayed at all while linked (found 2026-09-07).
                 params.meter2 = state.input_meters.get(l + 1).map(MeterAnim::frame);
+                params.clip2 = state.input_meters.get(l + 1).is_some_and(|m| m.clipped);
                 params.meter2_available = state.device.has_input_meter(l + 1);
             }
             let strip_widget = strip::strip(finish_params(state, params));
@@ -5210,6 +5244,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                     params.name = pair_bus_label(&params.name, &right.name);
                 }
                 params.meter2 = state.playback_meters.get(l + 1).map(MeterAnim::frame);
+                params.clip2 = state.playback_meters.get(l + 1).is_some_and(|m| m.clipped);
                 params.meter2_available = playback_meter_available(state, l + 1);
             }
             let strip_widget = strip::strip(finish_params(state, params));
@@ -5262,6 +5297,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                     params.name = pair_bus_label(&params.name, &right.name);
                 }
                 params.meter2 = state.output_meters.get(l + 1).map(MeterAnim::frame);
+                params.clip2 = state.output_meters.get(l + 1).is_some_and(|m| m.clipped);
                 params.meter2_available = output_meter_available(state, l + 1);
             }
             let strip_widget = strip::strip(finish_params(state, params));
@@ -5603,6 +5639,7 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
                 dest_params.name = pair_bus_label(&dest_params.name, &right.name);
             }
             dest_params.meter2 = state.output_meters.get(l + 1).map(MeterAnim::frame);
+            dest_params.clip2 = state.output_meters.get(l + 1).is_some_and(|m| m.clipped);
             dest_params.meter2_available = output_meter_available(state, l + 1);
         }
 
@@ -6358,6 +6395,31 @@ mod tests {
         assert!(route_popover_open(&state));
         click(&mut state, Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)));
         assert!(!route_popover_open(&state));
+    }
+
+    #[test]
+    fn a_clip_holds_until_it_is_cleared() {
+        let mut m = MeterAnim::new();
+        m.step(0.9);
+        assert!(!m.clipped, "loud is not a clip");
+        m.step(1.0);
+        m.step(0.1);
+        m.step(0.0);
+        assert!(m.clipped, "the LED holds after the level falls");
+    }
+
+    #[test]
+    fn clip_reset_clears_one_channel_or_a_pair() {
+        let mut state = new(true, None, None);
+        for m in state.input_meters.iter_mut().take(4) {
+            m.step(1.0);
+        }
+        let _ = update(&mut state, Message::ClipReset(ChannelId::Input(0), false));
+        assert!(!state.input_meters[0].clipped);
+        assert!(state.input_meters[1].clipped);
+        let _ = update(&mut state, Message::ClipReset(ChannelId::Input(2), true));
+        assert!(!state.input_meters[2].clipped && !state.input_meters[3].clipped);
+        assert!(state.undo_stack.is_empty(), "clearing a LED is not an edit");
     }
 
     #[test]

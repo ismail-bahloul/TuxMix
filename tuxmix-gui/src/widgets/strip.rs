@@ -165,6 +165,9 @@ pub struct StripParams<'a> {
     /// every unlinked/mono strip.
     pub meter2: Option<MeterFrame>,
     pub meter2_available: bool,
+    /// The clip LED of `meter` / `meter2` is held lit (see `Fader::clip`).
+    pub clip: bool,
+    pub clip2: bool,
     pub has_48v: bool,
     pub has_pad: bool,
     pub phantom: bool,
@@ -484,7 +487,14 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     ]
     .spacing(theme::SPACE_HAIRLINE)
     .height(Length::Fixed(TOP_BAND_H * scale + 2.0 * theme::SPACE_HAIRLINE));
-    let meter = container(vu_meter(p.meter, FADER_H * scale, scale, p.meter_available))
+    let meter = container(vu_meter(
+        p.meter,
+        FADER_H * scale,
+        scale,
+        p.meter_available,
+        p.clip || p.clip2,
+        (p.clip || p.clip2).then_some(Message::ClipReset(cid, p.meter2.is_some())),
+    ))
         .width(Length::Fill)
         .center_x(Length::Fill);
     let bottom = column![iced::widget::Space::new().height(Length::Fill), expand_btn]
@@ -710,6 +720,10 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         meter_available: p.meter_available,
         meter2: p.meter2,
         meter2_available: p.meter2_available,
+        clip: p.clip,
+        clip2: p.clip2,
+        on_clip_reset: (p.clip || p.clip2)
+            .then_some(Message::ClipReset(cid, p.meter2.is_some())),
         height: fader_h,
         show_meter: true,
         // The icon column (`icon_col`, built below) is this canvas's

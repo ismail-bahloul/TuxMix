@@ -197,6 +197,12 @@ pub struct Fader<Message> {
     /// strip, unaffected.
     pub meter2: Option<MeterFrame>,
     pub meter2_available: bool,
+    /// The clip LED of `meter` / `meter2` is lit: the channel touched
+    /// 0 dBFS since the LED was last cleared (it holds until then).
+    pub clip: bool,
+    pub clip2: bool,
+    /// Sent by a click on the meter column while a clip LED is lit.
+    pub on_clip_reset: Option<Message>,
     pub height: f32,
     pub show_meter: bool,
     /// Extra width (at `scale == 1.0`... no, already-scaled pixels, same
@@ -353,7 +359,7 @@ pub struct State {
     display: Option<MeterFrame>,
 }
 
-impl<Message> canvas::Program<Message> for Fader<Message> {
+impl<Message: Clone> canvas::Program<Message> for Fader<Message> {
     type State = State;
 
     fn update(
@@ -374,7 +380,12 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let pos = cursor.position_over(bounds)?;
                 if !self.is_over_track(pos.x, bounds.x, bounds.width) {
-                    return None;
+                    // The meter column: a click there clears a lit clip
+                    // LED, and otherwise falls through to the strip.
+                    return self
+                        .on_clip_reset
+                        .clone()
+                        .map(|m| canvas::Action::publish(m).and_capture());
                 }
                 let now = Instant::now();
                 let is_double = state
@@ -535,9 +546,9 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
                 meter_rect,
                 self.meter.shown(Instant::now()),
                 self.scale,
-                self.meter_available,
+                (self.meter_available, self.clip),
                 self.meter2
-                    .map(|m| (m.shown(Instant::now()), self.meter2_available)),
+                    .map(|m| (m.shown(Instant::now()), self.meter2_available, self.clip2)),
             );
         }
         if let Some(label) = &self.label {
@@ -712,11 +723,11 @@ fn draw_meter(
     r: Rectangle,
     level: f32,
     scale: f32,
-    available: bool,
-    right: Option<(f32, bool)>,
+    (available, clip): (bool, bool),
+    right: Option<(f32, bool, bool)>,
 ) {
-    let Some((level2, available2)) = right else {
-        draw_meter_bar(frame, r, level, scale, available);
+    let Some((level2, available2, clip2)) = right else {
+        draw_meter_bar(frame, r, level, scale, available, clip);
         return;
     };
     let gap = 1.0 * scale;
@@ -726,11 +737,18 @@ fn draw_meter(
         Point::new(r.x + half_w + gap, r.y),
         Size::new(half_w, r.height),
     );
-    draw_meter_bar(frame, left_rect, level, scale, available);
-    draw_meter_bar(frame, right_rect, level2, scale, available2);
+    draw_meter_bar(frame, left_rect, level, scale, available, clip);
+    draw_meter_bar(frame, right_rect, level2, scale, available2, clip2);
 }
 
-fn draw_meter_bar(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available: bool) {
+fn draw_meter_bar(
+    frame: &mut Frame,
+    r: Rectangle,
+    level: f32,
+    scale: f32,
+    available: bool,
+    clipping: bool,
+) {
     let l = level.clamp(0.0, 1.0);
     let fill_w = r.width;
     let radius = METER_RADIUS * scale;
@@ -822,8 +840,10 @@ fn draw_meter_bar(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, avail
         ),
         Color::from_rgb8(0x08, 0x08, 0x0a),
     );
+    // Lit while the channel's clip is held (`clipping`), not while the
+    // smoothed level shown here is high: a clip lasts a few milliseconds
+    // and the smoothed level would miss it.
     let clip_rect = Rectangle::new(Point::new(r.x, r.y), Size::new(fill_w, clip_h));
-    let clipping = l >= 0.95;
     let clip_color = if clipping {
         Color {
             a: FILL_ALPHA,
@@ -1042,24 +1062,34 @@ where
 /// The meter+ruler column on its own, with no track/cap and no mouse
 /// interaction at all — for a collapsed strip, which trades every control
 /// (fader, mute/solo, pan) for a glance-only level readout.
-struct VuMeter {
+struct VuMeter<Message> {
     level: MeterFrame,
     scale: f32,
     available: bool,
+    clip: bool,
+    on_clip_reset: Option<Message>,
 }
 
-impl<Message> canvas::Program<Message> for VuMeter {
+impl<Message: Clone> canvas::Program<Message> for VuMeter<Message> {
     type State = ();
 
     fn update(
         &self,
         _state: &mut (),
         event: &canvas::Event,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         // See `Fader`'s identical arm.
         match event {
+            // A click clears a lit clip LED (see `Fader::on_clip_reset`).
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if cursor.is_over(bounds) =>
+            {
+                self.on_clip_reset
+                    .clone()
+                    .map(|m| canvas::Action::publish(m).and_capture())
+            }
             canvas::Event::Window(window::Event::RedrawRequested(now))
                 if INTERPOLATE_METERS && self.level.is_settling(*now) =>
             {
@@ -1084,7 +1114,7 @@ impl<Message> canvas::Program<Message> for VuMeter {
             meter_rect,
             self.level.shown(Instant::now()),
             self.scale,
-            self.available,
+            (self.available, self.clip),
             // Collapsed strips are a glance-only view with no room for a
             // second bar even if this were a linked pair — out of scope
             // for this pass, single-bar only here.
@@ -1095,16 +1125,20 @@ impl<Message> canvas::Program<Message> for VuMeter {
     }
 }
 
-pub fn vu_meter<'a, Message: 'a>(
+pub fn vu_meter<'a, Message: Clone + 'a>(
     level: MeterFrame,
     height: f32,
     scale: f32,
     available: bool,
+    clip: bool,
+    on_clip_reset: Option<Message>,
 ) -> Element<'a, Message> {
     Canvas::new(VuMeter {
         level,
         scale,
         available,
+        clip,
+        on_clip_reset,
     })
     .width(Length::Fixed(METER_RULER_W * scale))
     .height(Length::Fixed(height))

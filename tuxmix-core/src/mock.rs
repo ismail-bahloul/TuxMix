@@ -73,6 +73,14 @@ impl MockBabyfacePro {
             *v += (target - *v) * 0.03;
             *v = v.clamp(0.0, 1.0);
         }
+        // `TUXMIX_MOCK_CLIP=1` (or any value) has AN1 touch full scale now
+        // and then, which is how the clip LED is shown and screenshotted
+        // without a real overload.
+        if self.tick % 40 == 0 && std::env::var_os("TUXMIX_MOCK_CLIP").is_some() {
+            if let Some(v) = self.input_meters.first_mut() {
+                *v = 1.0;
+            }
+        }
     }
 
     pub fn input_meter(&self, idx: usize) -> f32 {
