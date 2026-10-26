@@ -1864,6 +1864,12 @@ fn osc_snapshot(state: &mut TuxMix) {
         }
         notify_osc(state, OscOutbound::Mute(cid, ch.mute));
         notify_osc(state, OscOutbound::Solo(cid, ch.solo));
+        if let Some(gain) = ch.gain {
+            notify_osc(state, OscOutbound::Gain(ch.id, gain));
+        }
+        notify_osc(state, OscOutbound::Phantom(ch.id, ch.phantom));
+        notify_osc(state, OscOutbound::Pad(ch.id, ch.pad));
+        notify_osc(state, OscOutbound::InputPhase(ch.id, ch.phase));
     }
     for ch in state.device.playbacks().to_vec() {
         let cid = ChannelId::Playback(ch.id);
@@ -1878,6 +1884,9 @@ fn osc_snapshot(state: &mut TuxMix) {
         notify_osc(state, OscOutbound::OutputVolume(ch.id, ch.volume));
         notify_osc(state, OscOutbound::Mute(ChannelId::Output(ch.id), ch.mute));
         notify_osc(state, OscOutbound::Solo(ChannelId::Output(ch.id), ch.solo));
+        if ch.id % 2 == 0 {
+            notify_osc(state, OscOutbound::Loopback(ch.id / 2, ch.loopback));
+        }
     }
 }
 
@@ -2538,16 +2547,28 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::Phantom(idx, p) => {
             if let Err(e) = state.device.set_input_phantom(idx, p) {
                 fail(state, "set_input_phantom", &e);
+            } else {
+                notify_osc(state, OscOutbound::Phantom(idx, p));
             }
         }
         Message::Pad(idx, p) => {
             if let Err(e) = state.device.set_input_pad(idx, p) {
                 fail(state, "set_input_pad", &e);
+            } else {
+                notify_osc(state, OscOutbound::Pad(idx, p));
             }
         }
         Message::Gain(idx, g) => {
             if let Err(e) = state.device.set_input_gain(idx, g) {
                 fail(state, "set_input_gain", &e);
+            } else {
+                let applied = state
+                    .device
+                    .inputs()
+                    .get(idx)
+                    .and_then(|c| c.gain)
+                    .unwrap_or(g);
+                notify_osc(state, OscOutbound::Gain(idx, applied));
             }
         }
         Message::Sensitivity(idx, plus4) => {
@@ -2661,6 +2682,8 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             };
             if let Err(e) = state.device.set_loopback(pair, on) {
                 fail(state, "set_loopback", &e);
+            } else {
+                notify_osc(state, OscOutbound::Loopback(pair, on));
             }
         }
         Message::StereoLinkChanged(cid, linked) => {
@@ -2716,6 +2739,8 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             if let ChannelId::Input(idx) = cid {
                 if let Err(e) = state.device.set_phase(idx, invert) {
                     fail(state, "set_phase", &e);
+                } else {
+                    notify_osc(state, OscOutbound::InputPhase(idx, invert));
                 }
             }
         }
@@ -2897,6 +2922,47 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 // through the output-pair link logic.
                 set_channel_volume(state, cid, id, v);
                 notify_osc(state, OscOutbound::OutputVolume(id, v));
+            }
+            OscCommand::Gain(idx, db) => {
+                if let Err(e) = state.device.set_input_gain(idx, db) {
+                    fail(state, "set_input_gain", &e);
+                } else {
+                    let applied = state
+                        .device
+                        .inputs()
+                        .get(idx)
+                        .and_then(|c| c.gain)
+                        .unwrap_or(db);
+                    notify_osc(state, OscOutbound::Gain(idx, applied));
+                }
+            }
+            OscCommand::Phantom(idx, on) => {
+                if let Err(e) = state.device.set_input_phantom(idx, on) {
+                    fail(state, "set_input_phantom", &e);
+                } else {
+                    notify_osc(state, OscOutbound::Phantom(idx, on));
+                }
+            }
+            OscCommand::Pad(idx, on) => {
+                if let Err(e) = state.device.set_input_pad(idx, on) {
+                    fail(state, "set_input_pad", &e);
+                } else {
+                    notify_osc(state, OscOutbound::Pad(idx, on));
+                }
+            }
+            OscCommand::InputPhase(idx, on) => {
+                if let Err(e) = state.device.set_phase(idx, on) {
+                    fail(state, "set_phase", &e);
+                } else {
+                    notify_osc(state, OscOutbound::InputPhase(idx, on));
+                }
+            }
+            OscCommand::Loopback(pair, on) => {
+                if let Err(e) = state.device.set_loopback(pair, on) {
+                    fail(state, "set_loopback", &e);
+                } else {
+                    notify_osc(state, OscOutbound::Loopback(pair, on));
+                }
             }
         },
         Message::OscLog(line) => {

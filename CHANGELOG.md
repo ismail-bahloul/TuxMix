@@ -11,6 +11,9 @@
   same dialect. The default dialect is unchanged.
 - Meter peaks go out as `/level/{in|pb|out}/<n>` in dB, only when they
   move, with `/set/level/peak|rms|fx` selecting what each message carries.
+- The RME dialect covers the per-channel preamp controls: `/input/<n>/gain`,
+  `/48v`, `/pad` and `/phase`, plus `/output/<n>/loopback`, in both
+  directions and in the full snapshot.
 
 ### Fixed
 - A full-state snapshot no longer loses its tail: the outbound queue held
