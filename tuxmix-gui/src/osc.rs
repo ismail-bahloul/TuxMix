@@ -75,6 +75,12 @@ pub enum OscCommand {
     Mute(ChannelId, bool),
     Solo(ChannelId, bool),
     OutputVolume(usize, f32),
+    Gain(usize, u32),
+    Phantom(usize, bool),
+    Pad(usize, bool),
+    InputPhase(usize, bool),
+    /// Loopback is a per-pair control; the index is the output pair.
+    Loopback(usize, bool),
     /// oscmix `/refresh` — re-send the whole state.
     Refresh,
 }
@@ -89,6 +95,11 @@ pub enum OscOutbound {
     Mute(ChannelId, bool),
     Solo(ChannelId, bool),
     OutputVolume(usize, f32),
+    Gain(usize, u32),
+    Phantom(usize, bool),
+    Pad(usize, bool),
+    InputPhase(usize, bool),
+    Loopback(usize, bool),
     /// Device identity, sent on connect/refresh. Only the oscmix dialect has
     /// an address for it.
     DeviceInfo {
@@ -325,6 +336,38 @@ impl OscCommand {
                 };
                 vec![OscCommand::OutputVolume(id, db_to_linear(db))]
             }
+            [kind, channel, "gain"] if *kind == "input" => {
+                match (channel.parse::<usize>().ok(), first.and_then(arg_f32)) {
+                    (Some(id), Some(db)) => {
+                        vec![OscCommand::Gain(id, db.max(0.0).round() as u32)]
+                    }
+                    _ => vec![],
+                }
+            }
+            [kind, channel, "48v"] if *kind == "input" => {
+                match (channel.parse::<usize>().ok(), first.and_then(arg_bool)) {
+                    (Some(id), Some(on)) => vec![OscCommand::Phantom(id, on)],
+                    _ => vec![],
+                }
+            }
+            [kind, channel, "pad"] if *kind == "input" => {
+                match (channel.parse::<usize>().ok(), first.and_then(arg_bool)) {
+                    (Some(id), Some(on)) => vec![OscCommand::Pad(id, on)],
+                    _ => vec![],
+                }
+            }
+            [kind, channel, "phase"] if *kind == "input" => {
+                match (channel.parse::<usize>().ok(), first.and_then(arg_bool)) {
+                    (Some(id), Some(on)) => vec![OscCommand::InputPhase(id, on)],
+                    _ => vec![],
+                }
+            }
+            ["output", channel, "loopback"] => {
+                match (channel.parse::<usize>().ok(), first.and_then(arg_bool)) {
+                    (Some(id), Some(on)) => vec![OscCommand::Loopback(id / 2, on)],
+                    _ => vec![],
+                }
+            }
             _ => vec![],
         }
     }
@@ -384,6 +427,26 @@ impl OscOutbound {
             OscOutbound::OutputVolume(id, v) => vec![msg(
                 format!("/output/{id}/volume"),
                 vec![OscType::Float(linear_to_db(v))],
+            )],
+            OscOutbound::Gain(id, db) => vec![msg(
+                format!("/input/{id}/gain"),
+                vec![OscType::Float(db as f32)],
+            )],
+            OscOutbound::Phantom(id, on) => vec![msg(
+                format!("/input/{id}/48v"),
+                vec![OscType::Float(if on { 1.0 } else { 0.0 })],
+            )],
+            OscOutbound::Pad(id, on) => vec![msg(
+                format!("/input/{id}/pad"),
+                vec![OscType::Float(if on { 1.0 } else { 0.0 })],
+            )],
+            OscOutbound::InputPhase(id, on) => vec![msg(
+                format!("/input/{id}/phase"),
+                vec![OscType::Float(if on { 1.0 } else { 0.0 })],
+            )],
+            OscOutbound::Loopback(pair, on) => vec![msg(
+                format!("/output/{}/loopback", pair * 2),
+                vec![OscType::Float(if on { 1.0 } else { 0.0 })],
             )],
             OscOutbound::DeviceInfo {
                 name,
@@ -514,6 +577,11 @@ impl OscOutbound {
             OscOutbound::OutputVolume(id, v) => {
                 (format!("/output/{id}/volume"), vec![OscType::Float(v)])
             }
+            OscOutbound::Gain(..)
+            | OscOutbound::Phantom(..)
+            | OscOutbound::Pad(..)
+            | OscOutbound::InputPhase(..)
+            | OscOutbound::Loopback(..) => return None,
             OscOutbound::DeviceInfo { .. } => return None,
             OscOutbound::Levels { .. } => return None,
         };
@@ -829,6 +897,53 @@ mod tests {
             OscCommand::parse_rme("/mix/in/4/0/solo", &[OscType::Float(1.0)]),
             vec![OscCommand::Solo(ChannelId::Input(4), true)]
         );
+    }
+
+    #[test]
+    fn rme_channel_preamp_and_loopback() {
+        assert_eq!(
+            OscCommand::parse_rme("/input/0/gain", &[OscType::Float(35.4)]),
+            vec![OscCommand::Gain(0, 35)]
+        );
+        assert_eq!(
+            OscCommand::parse_rme("/input/1/48v", &[OscType::Float(1.0)]),
+            vec![OscCommand::Phantom(1, true)]
+        );
+        assert_eq!(
+            OscCommand::parse_rme("/input/1/pad", &[OscType::Float(0.0)]),
+            vec![OscCommand::Pad(1, false)]
+        );
+        assert_eq!(
+            OscCommand::parse_rme("/input/2/phase", &[OscType::Float(1.0)]),
+            vec![OscCommand::InputPhase(2, true)]
+        );
+        assert_eq!(
+            OscCommand::parse_rme("/output/3/loopback", &[OscType::Float(1.0)]),
+            vec![OscCommand::Loopback(1, true)]
+        );
+    }
+
+    #[test]
+    fn rme_outbound_preamp_and_loopback() {
+        let packets = OscOutbound::Gain(1, 35).into_rme_packets(6);
+        let OscPacket::Message(m) = &packets[0] else {
+            panic!("expected a message")
+        };
+        assert_eq!(m.addr, "/input/1/gain");
+        assert_eq!(m.args, vec![OscType::Float(35.0)]);
+        assert!(matches!(OscOutbound::Gain(1, 35).into_packet(), None));
+
+        let packets = OscOutbound::InputPhase(2, true).into_rme_packets(6);
+        let OscPacket::Message(m) = &packets[0] else {
+            panic!("expected a message")
+        };
+        assert_eq!(m.addr, "/input/2/phase");
+
+        let packets = OscOutbound::Loopback(1, true).into_rme_packets(6);
+        let OscPacket::Message(m) = &packets[0] else {
+            panic!("expected a message")
+        };
+        assert_eq!(m.addr, "/output/2/loopback");
     }
 
     #[test]
