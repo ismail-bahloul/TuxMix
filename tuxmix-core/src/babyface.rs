@@ -2301,6 +2301,24 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
+    fn restore_auto_scene(&mut self, scene: &Scene) -> Result<(), Error> {
+        scene.check_compatible(self.canonical_model())?;
+        // The hardware already told us every level when it opened, so only
+        // the names, which live in the app, are restored from the saved
+        // snapshot. Re-applying the levels would move the unit back to a
+        // stale state.
+        for (mine, saved) in self.inputs.iter_mut().zip(&scene.inputs) {
+            mine.name = saved.name.clone();
+        }
+        for (mine, saved) in self.playbacks.iter_mut().zip(&scene.playbacks) {
+            mine.name = saved.name.clone();
+        }
+        for (mine, saved) in self.outputs.iter_mut().zip(&scene.outputs) {
+            mine.name = saved.name.clone();
+        }
+        Ok(())
+    }
+
     fn poll_events(&mut self) -> Result<(), Error> {
         let now = std::time::Instant::now();
         if self.mixer.handle_events()? > 0 {

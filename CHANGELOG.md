@@ -18,6 +18,10 @@
   output channel on refresh.
 - A preamp gain changed on the unit now reaches the UI: the ALSA backend
   re-reads the four gains on a 250 ms poll, not only on an ALSA event.
+- Opening TuxMix no longer re-applies the auto-saved snapshot over the ALSA
+  backend: the unit is the source of truth for levels and gains, so only
+  the channel names are restored. A crosspoint at the 50% position now
+  reads as 0 dB instead of being rewritten to -6 dB.
 
 ## 0.3.2 (2026-10-23)
 
