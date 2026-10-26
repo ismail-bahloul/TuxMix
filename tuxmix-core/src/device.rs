@@ -747,6 +747,16 @@ pub trait RmeDevice {
     /// Apply a previously captured [`Scene`] to the hardware.
     fn apply_scene(&mut self, scene: &Scene) -> Result<(), Error>;
 
+    /// Restore the auto-saved scene when the device opens. A backend that
+    /// reads its mixer state back from the hardware must not re-apply the
+    /// saved volumes over it: the unit is the source of truth, and a stale
+    /// snapshot would silently move every fader. Such a backend overrides
+    /// this to restore only app-level state (channel names). The ones with
+    /// no readback keep the default and re-apply everything.
+    fn restore_auto_scene(&mut self, scene: &Scene) -> Result<(), Error> {
+        self.apply_scene(scene)
+    }
+
     // ── Polling ─────────────────────────────────────────────────
 
     /// Process pending ALSA events (e.g. hardware state changes).

@@ -326,6 +326,9 @@ impl RmeDevice for DeviceHandle {
     fn apply_scene(&mut self, s: &Scene) -> Result<(), tuxmix_core::Error> {
         delegate!(self, apply_scene(s))
     }
+    fn restore_auto_scene(&mut self, s: &Scene) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, restore_auto_scene(s))
+    }
     fn poll_events(&mut self) -> Result<(), tuxmix_core::Error> {
         delegate!(self, poll_events)
     }
@@ -1330,7 +1333,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
     // with the TUI, so whichever UI ran last wins.
     if real_device {
         if let Some(scene) = tuxmix_core::scene::load_auto_scene() {
-            if let Err(e) = device.apply_scene(&scene) {
+            if let Err(e) = device.restore_auto_scene(&scene) {
                 eprintln!("auto scene load failed: {e:?}");
             }
         }
@@ -2210,7 +2213,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                         state.device = fresh;
                         state.connected = true;
                         if let Some(scene) = tuxmix_core::scene::load_auto_scene() {
-                            if let Err(e) = state.device.apply_scene(&scene) {
+                            if let Err(e) = state.device.restore_auto_scene(&scene) {
                                 fail(state, "apply_scene", &e);
                             }
                         }
