@@ -6684,6 +6684,22 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_sidebar_width_below_the_floor_is_raised() {
+        // The floor was 170, where the Options segments overlap; a width
+        // saved back then must not bring the overlap back.
+        let mut state = new(true, None, None);
+        apply_prefs(
+            &mut state,
+            crate::prefs::Prefs {
+                sidebar_width: Some(170.0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(state.sidebar_width, sidebar::MIN_WIDTH);
+        assert!(sidebar::MIN_WIDTH <= sidebar::DEFAULT_WIDTH);
+    }
+
+    #[test]
     fn hand_edited_prefs_are_clamped_to_reachable_values() {
         let mut state = new(true, None, None);
         apply_prefs(
