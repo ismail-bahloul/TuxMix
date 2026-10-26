@@ -19,8 +19,6 @@ use tuxmix_core::{
 use crate::about;
 use crate::matrix;
 use crate::osc::{self, OscCommand, OscConfig, OscOutbound};
-use tuxmix_core::pw_clock::{self, CardStream, PwClock};
-use tuxmix_core::pw_meter;
 use crate::scenes::{load_scene_file, save_scene_file};
 use crate::sidebar::{self, Group};
 use crate::theme;
@@ -28,6 +26,8 @@ use crate::widgets::eq_plot::{self, eq_plot, EqPlotActions};
 use crate::widgets::fader;
 use crate::widgets::knob::{knob, Knob};
 use crate::widgets::strip::{self, hint};
+use tuxmix_core::pw_clock::{self, CardStream, PwClock};
+use tuxmix_core::pw_meter;
 
 pub const OUT_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "ADAT3/4", "ADAT5/6", "ADAT7/8"];
 
@@ -449,9 +449,17 @@ impl DeviceHandle {
     /// `power_sum_output_meters`'s own doc comment for the math.
     pub fn output_meters_from(&self, input_meters: &[f32], playback_meters: &[f32]) -> Vec<f32> {
         power_sum_output_meters(
-            &self.inputs().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
+            &self
+                .inputs()
+                .iter()
+                .map(|c| c.volumes.clone())
+                .collect::<Vec<_>>(),
             input_meters,
-            &self.playbacks().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
+            &self
+                .playbacks()
+                .iter()
+                .map(|c| c.volumes.clone())
+                .collect::<Vec<_>>(),
             playback_meters,
             self.outputs().len(),
         )
@@ -1308,7 +1316,9 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         DeviceHandle::open_mock()
     } else {
         DeviceHandle::open_real(backend.as_deref()).unwrap_or_else(|| {
-            eprintln!("No device found; starting in simulation (pass --mock to make that explicit).");
+            eprintln!(
+                "No device found; starting in simulation (pass --mock to make that explicit)."
+            );
             DeviceHandle::open_mock()
         })
     };
@@ -1726,7 +1736,9 @@ fn all_channel_ids(state: &TuxMix) -> Vec<ChannelId> {
 /// "M" button's toggle direction and its lit state (`sidebar::msf_row`
 /// reads this too, hence `pub(crate)`).
 pub(crate) fn any_channel_muted(state: &TuxMix) -> bool {
-    all_channel_ids(state).into_iter().any(|cid| channel_is_muted(state, cid))
+    all_channel_ids(state)
+        .into_iter()
+        .any(|cid| channel_is_muted(state, cid))
 }
 
 /// Whether `cid`'s mute is held off by the Mute master: the master's last
@@ -1749,7 +1761,9 @@ pub(crate) fn solo_armed(state: &TuxMix, cid: ChannelId) -> bool {
 /// Whether at least one channel is currently soloed — drives the
 /// global "S" button's lit state (there's something for it to clear).
 pub(crate) fn any_channel_soloed(state: &TuxMix) -> bool {
-    all_channel_ids(state).into_iter().any(|cid| channel_is_soloed(state, cid))
+    all_channel_ids(state)
+        .into_iter()
+        .any(|cid| channel_is_soloed(state, cid))
 }
 
 /// Every *other* channel that should move/mute/solo alongside `cid`
@@ -1761,11 +1775,7 @@ pub(crate) fn any_channel_soloed(state: &TuxMix) -> bool {
 /// else supposed to move." A `HashSet` (not `Vec`) since a channel can
 /// be both multi-selected *and* in a linked group — the union must
 /// de-duplicate, not propagate to the same channel twice.
-fn propagation_set(
-    state: &TuxMix,
-    cid: ChannelId,
-    link: sidebar::GroupLink,
-) -> HashSet<ChannelId> {
+fn propagation_set(state: &TuxMix, cid: ChannelId, link: sidebar::GroupLink) -> HashSet<ChannelId> {
     let mut set = HashSet::new();
     if state.selected.len() > 1 && state.selected.contains(&cid) {
         set.extend(state.selected.iter().copied());
@@ -1931,7 +1941,9 @@ fn set_collapsed(state: &mut TuxMix, cid: ChannelId, target: bool) {
 ///   same strip would just sit in the set unrendered.
 fn open_flyout(state: &mut TuxMix, cid: ChannelId, kind: strip::FlyoutKind) {
     if kind == strip::FlyoutKind::Route {
-        state.flyout_open.retain(|&(_, k)| k != strip::FlyoutKind::Route);
+        state
+            .flyout_open
+            .retain(|&(_, k)| k != strip::FlyoutKind::Route);
     } else {
         state
             .flyout_open
@@ -1954,7 +1966,9 @@ fn route_popover_open(state: &TuxMix) -> bool {
 /// such catcher, they're plain inline layout with their own explicit
 /// close (re-pressing the same gear/EQ/T icon).
 fn close_route_flyout(state: &mut TuxMix) {
-    state.flyout_open.retain(|&(_, k)| k != strip::FlyoutKind::Route);
+    state
+        .flyout_open
+        .retain(|&(_, k)| k != strip::FlyoutKind::Route);
 }
 
 /// Cap on `TuxMix::undo_stack`/`redo_stack` — unbounded growth over a
@@ -2157,7 +2171,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             return iced::window::set_mode(id, mode);
         }
         Message::Tick => {
-            if state.notice.as_ref().is_some_and(|(_, at)| at.elapsed() > NOTICE_FOR) {
+            if state
+                .notice
+                .as_ref()
+                .is_some_and(|(_, at)| at.elapsed() > NOTICE_FOR)
+            {
                 state.notice = None;
             }
             if state.tray_active {
@@ -2180,9 +2198,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             // the same path the app started with, and re-apply the
             // auto-saved scene exactly like `new` does, so the UI and the
             // hardware agree again.
-            let conn_due = state
-                .last_conn_check
-                .map_or(true, |t| t.elapsed() >= Duration::from_millis(CONN_CHECK_MS));
+            let conn_due = state.last_conn_check.map_or(true, |t| {
+                t.elapsed() >= Duration::from_millis(CONN_CHECK_MS)
+            });
             if conn_due {
                 state.last_conn_check = Some(Instant::now());
                 state.connected = state.device.is_connected();
@@ -2242,6 +2260,18 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             let out_levels = state.device.output_meters_from(&in_levels, &pb_levels);
             for (i, m) in state.output_meters.iter_mut().enumerate() {
                 m.step_elapsed(out_levels.get(i).copied().unwrap_or(0.0));
+            }
+            // OSC clients want the raw peaks, not the smoothed meter
+            // animation. Only build the clone when the bridge is on.
+            if state.osc_tx.is_some() {
+                notify_osc(
+                    state,
+                    OscOutbound::Levels {
+                        inputs: in_levels.clone(),
+                        playback: pb_levels.clone(),
+                        outputs: out_levels.clone(),
+                    },
+                );
             }
             // A live signal keeps the UI on the fast tick (and the fade
             // after it, `ACTIVE_FOR`); silence lets it go idle.
@@ -2467,8 +2497,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::GlobalMuteToggle => {
-            let muted: Vec<ChannelId> =
-                all_channel_ids(state).into_iter().filter(|&cid| channel_is_muted(state, cid)).collect();
+            let muted: Vec<ChannelId> = all_channel_ids(state)
+                .into_iter()
+                .filter(|&cid| channel_is_muted(state, cid))
+                .collect();
             if muted.is_empty() {
                 for cid in std::mem::take(&mut state.last_cleared_mutes) {
                     set_channel_mute(state, cid, true);
@@ -2483,8 +2515,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::GlobalSoloToggle => {
-            let soloed: Vec<ChannelId> =
-                all_channel_ids(state).into_iter().filter(|&cid| channel_is_soloed(state, cid)).collect();
+            let soloed: Vec<ChannelId> = all_channel_ids(state)
+                .into_iter()
+                .filter(|&cid| channel_is_soloed(state, cid))
+                .collect();
             if soloed.is_empty() {
                 for cid in std::mem::take(&mut state.last_cleared_solos) {
                     set_channel_solo(state, cid, true);
@@ -3204,7 +3238,11 @@ fn panel_fingerprint(state: &TuxMix) -> f64 {
             (o.volume as f64 + if o.mute { 1000.0 } else { 0.0 }) * (1.0 + i as f64 * 0.01)
         })
         .sum::<f64>()
-        + if state.device.settings().dim { 7777.0 } else { 0.0 }
+        + if state.device.settings().dim {
+            7777.0
+        } else {
+            0.0
+        }
 }
 
 /// The tick while something is moving (meters, a drag, the front panel):
@@ -3300,9 +3338,7 @@ fn handle_global_event(
                 }
             }
             match key {
-                Key::Named(keyboard::key::Named::F11) => {
-                    Some(Message::ToggleFullscreen(id))
-                }
+                Key::Named(keyboard::key::Named::F11) => Some(Message::ToggleFullscreen(id)),
                 Key::Named(keyboard::key::Named::Tab) => Some(Message::TabPressed),
                 Key::Named(keyboard::key::Named::Escape) => Some(Message::EscapePressed),
                 _ => None,
@@ -3524,18 +3560,19 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
 
     // Caption column shared by every labelled row, so the controls line up.
     const LABEL_W: f32 = 92.0;
-    let labelled = |label: &'static str, control: Element<'static, Message>| -> Element<'static, Message> {
-        row![
-            text(label)
-                .color(theme::TEXT_SEC)
-                .size(theme::TEXT_XS * scale)
-                .width(Length::Fixed(LABEL_W * scale)),
-            control,
-        ]
-        .spacing(theme::SPACE_MD * scale)
-        .align_y(iced::Alignment::Center)
-        .into()
-    };
+    let labelled =
+        |label: &'static str, control: Element<'static, Message>| -> Element<'static, Message> {
+            row![
+                text(label)
+                    .color(theme::TEXT_SEC)
+                    .size(theme::TEXT_XS * scale)
+                    .width(Length::Fixed(LABEL_W * scale)),
+                control,
+            ]
+            .spacing(theme::SPACE_MD * scale)
+            .align_y(iced::Alignment::Center)
+            .into()
+        };
     let section = |label: &'static str| -> Element<'static, Message> {
         row![
             text(label)
@@ -3593,13 +3630,17 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
     } else {
         clock.push(labelled(
             "Sample rate",
-            pick_list(rates, Some(settings.sample_rate), Message::SampleRateSelected)
-                .style(theme::pick_list)
-                .menu_style(theme::menu)
-                .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
-                .text_size(theme::TEXT_MD * scale)
-                .width(Length::Fill)
-                .into(),
+            pick_list(
+                rates,
+                Some(settings.sample_rate),
+                Message::SampleRateSelected,
+            )
+            .style(theme::pick_list)
+            .menu_style(theme::menu)
+            .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+            .text_size(theme::TEXT_MD * scale)
+            .width(Length::Fill)
+            .into(),
         ))
     };
 
@@ -3624,18 +3665,19 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
     // optical-format control lives in the Global grid below.
 
     if state.device.protocol_features() {
-        let knob_cell = |label: &'static str, k: Element<'static, Message>| -> Element<'static, Message> {
-            column![
-                k,
-                text(label)
-                    .color(theme::TEXT_SEC)
-                    .size(theme::TEXT_XS * scale),
-            ]
-            .spacing(theme::SPACE_SM * scale)
-            .align_x(iced::Alignment::Center)
-            .width(Length::Fill)
-            .into()
-        };
+        let knob_cell =
+            |label: &'static str, k: Element<'static, Message>| -> Element<'static, Message> {
+                column![
+                    k,
+                    text(label)
+                        .color(theme::TEXT_SEC)
+                        .size(theme::TEXT_XS * scale),
+                ]
+                .spacing(theme::SPACE_SM * scale)
+                .align_x(iced::Alignment::Center)
+                .width(Length::Fill)
+                .into()
+            };
         let output = column![
             section("OUTPUT"),
             row![
@@ -3681,8 +3723,16 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
             ("MS Proc", settings.ms_proc, Message::MsProcChanged),
             ("AN 1>2", settings.an12, Message::An12Changed),
             ("Input Link", settings.input_link, Message::InputLinkChanged),
-            ("EQ for Record", settings.eq_for_record, Message::EqForRecordChanged),
-            ("Opt Out: SPDIF", settings.optical_out_spdif, Message::OpticalOutFormatChanged),
+            (
+                "EQ for Record",
+                settings.eq_for_record,
+                Message::EqForRecordChanged,
+            ),
+            (
+                "Opt Out: SPDIF",
+                settings.optical_out_spdif,
+                Message::OpticalOutFormatChanged,
+            ),
         ];
         let mut grid = column![section("GLOBAL")].spacing(theme::SPACE_SM * scale);
         for pair in flags.chunks(2) {
@@ -3724,7 +3774,11 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
 
 /// The card of a popover docked beside the sidebar, closing on `close` when
 /// a click lands outside it.
-fn popover<'a>(state: &'a TuxMix, body: Element<'a, Message>, close: Message) -> Element<'a, Message> {
+fn popover<'a>(
+    state: &'a TuxMix,
+    body: Element<'a, Message>,
+    close: Message,
+) -> Element<'a, Message> {
     let scale = state.ui_scale;
     const CARD_W: f32 = 320.0;
     let card = opaque(
@@ -3923,8 +3977,8 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
     // label used to show. See `auto_quantum_label`.
     let quantum_opts: Vec<String> =
         std::iter::once(auto_quantum_label(clock.force_quantum, state.card_stream))
-        .chain(quanta.iter().map(|q| format!("{q} samples")))
-        .collect();
+            .chain(quanta.iter().map(|q| format!("{q} samples")))
+            .collect();
     let quantum_sel = if clock.force_quantum == 0 {
         quantum_opts[0].clone()
     } else {
@@ -3946,7 +4000,11 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
     let quanta_for_pick = quanta.clone();
     let quantum_pick = field(pick_list(quantum_opts, Some(quantum_sel), move |label| {
         let idx = quantum_list.iter().position(|l| *l == label).unwrap_or(0);
-        Message::EngineQuantum(if idx == 0 { 0 } else { quanta_for_pick[idx - 1] })
+        Message::EngineQuantum(if idx == 0 {
+            0
+        } else {
+            quanta_for_pick[idx - 1]
+        })
     }));
 
     column![
@@ -4113,22 +4171,21 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
     // Flat fields, like everything else in the bar: this was the bar's
     // only boxed element (a `chip`), and read as dropped into the corner.
     let session = row![
-            text("Submix")
-                .color(theme::TEXT_SEC)
-                .size(theme::TEXT_XS * scale),
-            pick_list(
-                OUT_LABELS.to_vec(),
-                Some(OUT_LABELS[state.sel_out]),
-                |label| {
-                    let idx = OUT_LABELS.iter().position(|l| *l == label).unwrap_or(0);
-                    Message::SelectOutput(idx)
-                },
-            )
-            .style(theme::pick_list)
-            .menu_style(theme::menu)
-            .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
-            .text_size(theme::TEXT_MD * scale),
-
+        text("Submix")
+            .color(theme::TEXT_SEC)
+            .size(theme::TEXT_XS * scale),
+        pick_list(
+            OUT_LABELS.to_vec(),
+            Some(OUT_LABELS[state.sel_out]),
+            |label| {
+                let idx = OUT_LABELS.iter().position(|l| *l == label).unwrap_or(0);
+                Message::SelectOutput(idx)
+            },
+        )
+        .style(theme::pick_list)
+        .menu_style(theme::menu)
+        .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+        .text_size(theme::TEXT_MD * scale),
     ]
     .spacing(theme::SPACE_SM * scale)
     .align_y(iced::Alignment::Center);
@@ -4236,18 +4293,11 @@ fn output_meter_available(state: &TuxMix, out_idx: usize) -> bool {
         out_idx / 2
     };
     let inputs_ok = state.device.inputs().iter().enumerate().all(|(i, ch)| {
-        ch.volumes.get(pair).copied().unwrap_or(0.0) == 0.0
-            || state.device.has_input_meter(i)
+        ch.volumes.get(pair).copied().unwrap_or(0.0) == 0.0 || state.device.has_input_meter(i)
     });
-    let playbacks_ok = state
-        .device
-        .playbacks()
-        .iter()
-        .enumerate()
-        .all(|(i, ch)| {
-            ch.volumes.get(pair).copied().unwrap_or(0.0) == 0.0
-                || playback_meter_available(state, i)
-        });
+    let playbacks_ok = state.device.playbacks().iter().enumerate().all(|(i, ch)| {
+        ch.volumes.get(pair).copied().unwrap_or(0.0) == 0.0 || playback_meter_available(state, i)
+    });
     inputs_ok && playbacks_ok
 }
 
@@ -4672,7 +4722,12 @@ fn flyout_card<'a>(
 /// pushes the row instead of overlaying it (no more `Stack`/`opaque`, see
 /// `with_flyout`), that failure mode's precondition is gone, so Gain
 /// moved in with the rest.
-fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element<'_, Message> {
+fn settings_popover(
+    state: &TuxMix,
+    cid: ChannelId,
+    width: f32,
+    scale: f32,
+) -> Element<'_, Message> {
     let p = strip_params(state, cid, state.sel_out);
 
     let mut col = column![].spacing(theme::SPACE_SM * scale);
@@ -4789,7 +4844,10 @@ fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> E
                     .on_press(Message::Sensitivity(idx, !p.sensitivity_plus4)),
             );
         } else {
-            let dim = Color { a: 0.4, ..theme::TEXT_SEC };
+            let dim = Color {
+                a: 0.4,
+                ..theme::TEXT_SEC
+            };
             col = col.push(
                 button(text(label).size(theme::TEXT_SM * scale).color(dim))
                     .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
@@ -4816,7 +4874,9 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Eleme
     let trim = state.device.inputs()[idx].trim;
 
     let col = column![
-        text("Trim").size(theme::TEXT_SM * scale).color(theme::TEXT_SEC),
+        text("Trim")
+            .size(theme::TEXT_SM * scale)
+            .color(theme::TEXT_SEC),
         container(knob(Knob {
             tint: None,
             value: trim,
@@ -4887,7 +4947,11 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
             .padding([1.0 * scale, theme::SPACE_SM * scale])
             .style(theme::toggle_button(eq.enabled, theme::ACCENT))
             .on_press(Message::EqEnabled(idx, !eq.enabled)),
-        if eq.enabled { "EQ on (click to bypass)" } else { "EQ bypassed (click to turn on)" },
+        if eq.enabled {
+            "EQ on (click to bypass)"
+        } else {
+            "EQ bypassed (click to turn on)"
+        },
         scale,
     ))
     .width(Length::Fill)
@@ -4905,9 +4969,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         scale,
         modifiers,
         EqPlotActions {
-            on_band: Box::new(move |band, freq, gain| {
-                Message::EqBandPoint(idx, band, freq, gain)
-            }),
+            on_band: Box::new(move |band, freq, gain| Message::EqBandPoint(idx, band, freq, gain)),
             on_band_reset: Box::new(move |band| Message::EqBandReset(idx, band)),
             on_band_q: Box::new(move |band, q| Message::EqBandQ(idx, band, q)),
             on_low_cut: Box::new(move |freq| Message::EqLowCutFreq(idx, freq)),
@@ -5055,9 +5117,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
                     log_scale: false,
                     modifiers,
                     scale: eq_scale,
-                    on_change: Box::new(move |v| {
-                        Message::EqBandQ(idx, band, v.clamp(0.05, 10.0))
-                    }),
+                    on_change: Box::new(move |v| Message::EqBandQ(idx, band, v.clamp(0.05, 10.0))),
                     on_reset: Box::new(move || Message::EqBandQ(idx, band, 0.7)),
                 }),
                 "Band Q",
@@ -5074,7 +5134,9 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
     let low_cut_on = eq.low_cut_on();
     // One track of four cells, like the sidebar's switches, rather than four
     // separate squares: the slope is one choice among four.
-    let mut slope_row = row![].spacing(theme::SPACE_HAIRLINE * scale).width(Length::Fill);
+    let mut slope_row = row![]
+        .spacing(theme::SPACE_HAIRLINE * scale)
+        .width(Length::Fill);
     for slope in [6u8, 12, 18, 24] {
         slope_row = slope_row.push(
             button(
@@ -5084,7 +5146,9 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
             )
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
             .width(Length::Fill)
-            .style(theme::segment_cell(low_cut_on && eq.low_cut_slope_db_oct == slope))
+            .style(theme::segment_cell(
+                low_cut_on && eq.low_cut_slope_db_oct == slope,
+            ))
             .on_press_maybe(low_cut_on.then_some(Message::EqLowCutSlope(idx, slope))),
         );
     }
@@ -5152,7 +5216,11 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         .width(Length::Fill)
         .style(theme::toggle_button(low_cut_on, theme::ACCENT))
         .on_press(Message::EqLowCutEnabled(idx, !low_cut_on)),
-        if low_cut_on { "Low cut on (click to switch off)" } else { "Low cut off (click to switch on)" },
+        if low_cut_on {
+            "Low cut on (click to switch off)"
+        } else {
+            "Low cut off (click to switch on)"
+        },
         scale,
     ))
     .width(Length::Fixed(label_w));
@@ -5316,16 +5384,20 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             // `with_flyout`, since ordinary `row!` layout already pushes
             // every later sibling over for free once this one item is
             // wider.
-            if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
+            if state
+                .flyout_open
+                .contains(&(cid, strip::FlyoutKind::Settings))
+            {
                 // Same width as the strip itself (see the reference
                 // design), not the Route flyout's own fixed `FLYOUT_W` —
                 // a dropdown list of bus names and a settings panel of
                 // knobs/buttons don't need to match each other's width,
                 // just their own strip's.
                 let panel_w = strip::full_width(cid) * state.ui_scale;
-                input_strips = input_strips.push(
-                    strip_with_panel(strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)),
-                );
+                input_strips = input_strips.push(strip_with_panel(
+                    strip_widget,
+                    settings_popover(state, cid, panel_w, state.ui_scale),
+                ));
                 item_width += panel_w + theme::SPACE_MD;
             } else if state.flyout_open.contains(&(cid, strip::FlyoutKind::Eq)) {
                 // Unlike Settings, sized to fit the three-column band
@@ -5333,9 +5405,10 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // width. `EQ_FLYOUT_W` is the width at scale 1.0, so the
                 // manual zoom scales the panel with its contents.
                 let panel_w = strip::EQ_FLYOUT_W * state.ui_scale;
-                input_strips = input_strips.push(
-                    strip_with_panel(strip_widget, eq_popover(state, cid, panel_w, state.ui_scale)),
-                );
+                input_strips = input_strips.push(strip_with_panel(
+                    strip_widget,
+                    eq_popover(state, cid, panel_w, state.ui_scale),
+                ));
                 item_width += panel_w + theme::SPACE_MD;
             } else if state.flyout_open.contains(&(cid, strip::FlyoutKind::Trim)) {
                 // One knob — reuses the Route flyout's own fixed width
@@ -5343,9 +5416,10 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // the strip's own width" doesn't apply here since there's
                 // no strip-width-scaling content (no button rows) to fit.
                 let panel_w = strip::FLYOUT_W;
-                input_strips = input_strips.push(
-                    strip_with_panel(strip_widget, trim_popover(state, cid, panel_w, state.ui_scale)),
-                );
+                input_strips = input_strips.push(strip_with_panel(
+                    strip_widget,
+                    trim_popover(state, cid, panel_w, state.ui_scale),
+                ));
                 item_width += panel_w + theme::SPACE_MD;
             } else {
                 input_strips = input_strips.push(strip_widget);
@@ -5393,11 +5467,15 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             }
             let strip_widget = strip::strip(finish_params(state, params));
             let mut item_width = rendered_strip_width(state, cid);
-            if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
+            if state
+                .flyout_open
+                .contains(&(cid, strip::FlyoutKind::Settings))
+            {
                 let panel_w = strip::full_width(cid) * state.ui_scale;
-                pb_strips = pb_strips.push(
-                    strip_with_panel(strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)),
-                );
+                pb_strips = pb_strips.push(strip_with_panel(
+                    strip_widget,
+                    settings_popover(state, cid, panel_w, state.ui_scale),
+                ));
                 item_width += panel_w + theme::SPACE_MD;
             } else {
                 pb_strips = pb_strips.push(strip_widget);
@@ -5445,11 +5523,15 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             }
             let strip_widget = strip::strip(finish_params(state, params));
             let mut item_width = rendered_strip_width(state, cid);
-            if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
+            if state
+                .flyout_open
+                .contains(&(cid, strip::FlyoutKind::Settings))
+            {
                 let panel_w = strip::full_width(cid) * state.ui_scale;
-                out_strips = out_strips.push(
-                    strip_with_panel(strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)),
-                );
+                out_strips = out_strips.push(strip_with_panel(
+                    strip_widget,
+                    settings_popover(state, cid, panel_w, state.ui_scale),
+                ));
                 item_width += panel_w + theme::SPACE_MD;
             } else {
                 out_strips = out_strips.push(strip_widget);
@@ -5467,8 +5549,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
     // window, so a row could overflow under the sidebar without ever
     // switching to its scrolling form).
     let sidebar_w = sidebar_px(state);
-    let available_width =
-        (state.window_width - sidebar_w - 2.0 * theme::SPACE_XL - 4.0).max(0.0);
+    let available_width = (state.window_width - sidebar_w - 2.0 * theme::SPACE_XL - 4.0).max(0.0);
 
     let scale = state.ui_scale;
     let submix_hint = || {
@@ -5673,17 +5754,23 @@ fn quick_block<'a>(
         None
     };
     let gap = theme::SPACE_MD * state.ui_scale;
-    let head = container(column![heading, picker].spacing(gap).align_x(iced::Alignment::Center))
-        .width(Length::Fixed(strip_w))
-        .center_x(Length::Fixed(strip_w));
+    let head = container(
+        column![heading, picker]
+            .spacing(gap)
+            .align_x(iced::Alignment::Center),
+    )
+    .width(Length::Fixed(strip_w))
+    .center_x(Length::Fixed(strip_w));
     let body: Element<'a, Message> = match panel {
         // A stack, not a row: the strip alone sets the height, and the
         // panel's layer fills it (a `Fill` panel in a row would take all
         // the room the page offers).
         Some((panel, panel_w)) => iced::widget::stack![
-            row![strip_widget, iced::widget::Space::new().width(panel_w + gap)],
-            row![iced::widget::Space::new().width(strip_w + gap), panel]
-                .height(Length::Fill),
+            row![
+                strip_widget,
+                iced::widget::Space::new().width(panel_w + gap)
+            ],
+            row![iced::widget::Space::new().width(strip_w + gap), panel].height(Length::Fill),
         ]
         .into(),
         None => strip_widget,
@@ -5874,9 +5961,10 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use super::{
-        any_channel_muted, any_channel_soloed, apply_pending_resize,
-        apply_prefs, channel_is_muted, channel_is_soloed, is_undoable, new, prefs_of,
-        mute_armed, power_sum_output_meters, route_popover_open, update, zoom, LOW_CUT_ON_HZ, ChannelId, EditField, MeterAnim, Message, RowMode, TuxMix, View, ZOOM_STEP,
+        any_channel_muted, any_channel_soloed, apply_pending_resize, apply_prefs, channel_is_muted,
+        channel_is_soloed, is_undoable, mute_armed, new, power_sum_output_meters, prefs_of,
+        route_popover_open, update, zoom, ChannelId, EditField, Message, MeterAnim, RowMode,
+        TuxMix, View, LOW_CUT_ON_HZ, ZOOM_STEP,
     };
     use crate::sidebar;
     use crate::theme;
@@ -5901,8 +5989,14 @@ mod tests {
         assert_eq!(out[1], 0.0, "pair 0 (ch1) has no signal routed to it");
         assert_eq!(out[2], 0.0, "pair 1 (ch2) has no signal routed to it");
         assert_eq!(out[3], 0.0, "pair 1 (ch3) has no signal routed to it");
-        assert_eq!(out[4], 1.0, "pair 2 (ch4) should read the full routed signal");
-        assert_eq!(out[5], 1.0, "pair 2 (ch5) should read the full routed signal");
+        assert_eq!(
+            out[4], 1.0,
+            "pair 2 (ch4) should read the full routed signal"
+        );
+        assert_eq!(
+            out[5], 1.0,
+            "pair 2 (ch5) should read the full routed signal"
+        );
     }
 
     #[test]
@@ -5948,7 +6042,10 @@ mod tests {
         assert!(state.window_hidden, "with a tray the app lives on, hidden");
         // Another window's close is none of our business.
         state.window_id = Some(id);
-        let _ = update(&mut state, Message::WindowClosed(iced::window::Id::unique()));
+        let _ = update(
+            &mut state,
+            Message::WindowClosed(iced::window::Id::unique()),
+        );
         assert_eq!(state.window_id, Some(id));
     }
 
@@ -6069,7 +6166,10 @@ mod tests {
         let _ = update(&mut state, Message::Mute(cid, true));
         assert!(state.device.inputs()[0].mute);
         let _ = update(&mut state, Message::Undo);
-        assert!(!state.device.inputs()[0].mute, "undo should revert the mute");
+        assert!(
+            !state.device.inputs()[0].mute,
+            "undo should revert the mute"
+        );
     }
 
     #[test]
@@ -6080,7 +6180,10 @@ mod tests {
         let _ = update(&mut state, Message::Undo);
         assert!(!state.device.inputs()[0].mute);
         let _ = update(&mut state, Message::Redo);
-        assert!(state.device.inputs()[0].mute, "redo should reapply the mute");
+        assert!(
+            state.device.inputs()[0].mute,
+            "redo should reapply the mute"
+        );
     }
 
     #[test]
@@ -6089,7 +6192,10 @@ mod tests {
         let cid = ChannelId::Input(0);
         let _ = update(&mut state, Message::Mute(cid, true));
         let _ = update(&mut state, Message::Undo);
-        assert!(!state.redo_stack.is_empty(), "sanity: undo should have populated redo");
+        assert!(
+            !state.redo_stack.is_empty(),
+            "sanity: undo should have populated redo"
+        );
         let _ = update(&mut state, Message::Mute(cid, true));
         assert!(
             state.redo_stack.is_empty(),
@@ -6125,7 +6231,10 @@ mod tests {
         state.selected.insert(a);
         state.selected.insert(b);
         let _ = update(&mut state, Message::GroupEditToggle);
-        let _ = update(&mut state, Message::GroupLinkToggle(0, sidebar::GroupLink::Mute));
+        let _ = update(
+            &mut state,
+            Message::GroupLinkToggle(0, sidebar::GroupLink::Mute),
+        );
         assert_eq!(state.groups[0].members.len(), 2);
         assert!(state.groups[0].mute_linked);
         // Clear the selection used to assign membership — isolates
@@ -6151,7 +6260,10 @@ mod tests {
         state.selected.insert(a);
         state.selected.insert(b);
         let _ = update(&mut state, Message::GroupEditToggle);
-        let _ = update(&mut state, Message::GroupLinkToggle(0, sidebar::GroupLink::Solo));
+        let _ = update(
+            &mut state,
+            Message::GroupLinkToggle(0, sidebar::GroupLink::Solo),
+        );
         state.selected.clear();
 
         let _ = update(&mut state, Message::Mute(a, true));
@@ -6170,7 +6282,10 @@ mod tests {
         state.selected.insert(a);
         state.selected.insert(b);
         let _ = update(&mut state, Message::GroupEditToggle);
-        let _ = update(&mut state, Message::GroupLinkToggle(0, sidebar::GroupLink::Fader));
+        let _ = update(
+            &mut state,
+            Message::GroupLinkToggle(0, sidebar::GroupLink::Fader),
+        );
         state.selected.clear();
 
         // Both start at the default unity volume (1.0) — an equal
@@ -6191,7 +6306,10 @@ mod tests {
         let a = ChannelId::Input(0);
         state.selected.insert(a);
         let _ = update(&mut state, Message::GroupEditToggle);
-        let _ = update(&mut state, Message::GroupLinkToggle(0, sidebar::GroupLink::Mute));
+        let _ = update(
+            &mut state,
+            Message::GroupLinkToggle(0, sidebar::GroupLink::Mute),
+        );
         assert!(!state.groups[0].members.is_empty());
 
         let _ = update(&mut state, Message::GroupClear);
@@ -6266,7 +6384,11 @@ mod tests {
         // Messages that are not protocol-bound still land, and still push.
         let _ = update(&mut state, Message::Mute(ChannelId::Input(0), true));
         assert!(state.device.inputs()[0].mute);
-        assert_eq!(state.undo_stack.len(), pushed + 1, "a real action still pushes a scene");
+        assert_eq!(
+            state.undo_stack.len(),
+            pushed + 1,
+            "a real action still pushes a scene"
+        );
     }
 
     #[test]
@@ -6344,7 +6466,10 @@ mod tests {
         let _ = update(&mut state, Message::GlobalMuteToggle);
         assert!(channel_is_muted(&state, a));
         assert!(channel_is_muted(&state, b));
-        assert!(state.last_cleared_mutes.is_empty(), "the remembered set was used up");
+        assert!(
+            state.last_cleared_mutes.is_empty(),
+            "the remembered set was used up"
+        );
     }
 
     #[test]
@@ -6434,7 +6559,10 @@ mod tests {
 
         let _ = update(&mut state, Message::StereoLinkChanged(cid, false));
         assert!(state.device.playbacks()[0].split);
-        assert!(state.device.playbacks()[1].split, "split mirrors across both channels of the pair");
+        assert!(
+            state.device.playbacks()[1].split,
+            "split mirrors across both channels of the pair"
+        );
 
         let _ = update(&mut state, Message::StereoLinkChanged(cid, true));
         assert!(!state.device.playbacks()[0].split);
@@ -6452,15 +6580,32 @@ mod tests {
         let a = ChannelId::Input(0);
         let b = ChannelId::Input(2);
 
-        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Settings));
-        let _ = update(&mut state, Message::ToggleFlyout(b, strip::FlyoutKind::Settings));
-        assert!(state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
-        assert!(state.flyout_open.contains(&(b, strip::FlyoutKind::Settings)));
+        let _ = update(
+            &mut state,
+            Message::ToggleFlyout(a, strip::FlyoutKind::Settings),
+        );
+        let _ = update(
+            &mut state,
+            Message::ToggleFlyout(b, strip::FlyoutKind::Settings),
+        );
+        assert!(state
+            .flyout_open
+            .contains(&(a, strip::FlyoutKind::Settings)));
+        assert!(state
+            .flyout_open
+            .contains(&(b, strip::FlyoutKind::Settings)));
 
         // Re-pressing the same strip's own trigger still closes just it.
-        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Settings));
-        assert!(!state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
-        assert!(state.flyout_open.contains(&(b, strip::FlyoutKind::Settings)));
+        let _ = update(
+            &mut state,
+            Message::ToggleFlyout(a, strip::FlyoutKind::Settings),
+        );
+        assert!(!state
+            .flyout_open
+            .contains(&(a, strip::FlyoutKind::Settings)));
+        assert!(state
+            .flyout_open
+            .contains(&(b, strip::FlyoutKind::Settings)));
     }
 
     #[test]
@@ -6473,16 +6618,27 @@ mod tests {
         // render per strip (the render loop is an if/else-if chain), so
         // the second replaces the first rather than both lingering
         // unrendered in the set.
-        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Settings));
+        let _ = update(
+            &mut state,
+            Message::ToggleFlyout(a, strip::FlyoutKind::Settings),
+        );
         let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Eq));
-        assert!(!state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
+        assert!(!state
+            .flyout_open
+            .contains(&(a, strip::FlyoutKind::Settings)));
         assert!(state.flyout_open.contains(&(a, strip::FlyoutKind::Eq)));
 
         // Route stays exclusive with itself across DIFFERENT strips too
         // (the Stack overlay only positions one popover) — but doesn't
         // touch `a`'s still-open EQ.
-        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Route));
-        let _ = update(&mut state, Message::ToggleFlyout(b, strip::FlyoutKind::Route));
+        let _ = update(
+            &mut state,
+            Message::ToggleFlyout(a, strip::FlyoutKind::Route),
+        );
+        let _ = update(
+            &mut state,
+            Message::ToggleFlyout(b, strip::FlyoutKind::Route),
+        );
         assert!(
             !state.flyout_open.contains(&(a, strip::FlyoutKind::Route)),
             "opening b's Route flyout must close a's"
@@ -6509,12 +6665,18 @@ mod tests {
     fn a_click_elsewhere_closes_the_bus_popover_and_still_acts() {
         let mut state = new(true, None, None);
         let a = ChannelId::Input(0);
-        click(&mut state, Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)));
+        click(
+            &mut state,
+            Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)),
+        );
         click(&mut state, Some(Message::DimToggle));
         assert!(!route_popover_open(&state));
         assert!(state.device.settings().dim, "the click itself still lands");
 
-        click(&mut state, Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)));
+        click(
+            &mut state,
+            Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)),
+        );
         click(&mut state, None);
         assert!(!route_popover_open(&state));
     }
@@ -6524,18 +6686,30 @@ mod tests {
         let mut state = new(true, None, None);
         let a = ChannelId::Input(0);
         let b = ChannelId::Input(2);
-        click(&mut state, Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)));
+        click(
+            &mut state,
+            Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)),
+        );
         // Another strip's bus button moves the popover there.
-        click(&mut state, Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)));
+        click(
+            &mut state,
+            Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)),
+        );
         assert!(state.flyout_open.contains(&(b, strip::FlyoutKind::Route)));
         // Picking a bus selects it and closes the popover.
         click(&mut state, Some(Message::SelectOutput(3)));
         assert_eq!(state.sel_out, 3);
         assert!(!route_popover_open(&state));
         // The same bus button opens it, then closes it again.
-        click(&mut state, Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)));
+        click(
+            &mut state,
+            Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)),
+        );
         assert!(route_popover_open(&state));
-        click(&mut state, Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)));
+        click(
+            &mut state,
+            Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)),
+        );
         assert!(!route_popover_open(&state));
     }
 
@@ -6577,7 +6751,10 @@ mod tests {
         // the press, then the release.
         let mut state = new(true, None, None);
         let a = ChannelId::Input(0);
-        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Route));
+        let _ = update(
+            &mut state,
+            Message::ToggleFlyout(a, strip::FlyoutKind::Route),
+        );
         let _ = update(&mut state, Message::PointerPressed);
         let _ = update(&mut state, Message::PointerReleased);
         assert!(route_popover_open(&state));
@@ -6592,18 +6769,25 @@ mod tests {
         let mut state = new(true, None, None);
         let a = ChannelId::Input(0);
         let b = ChannelId::Input(2);
-        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Settings));
+        let _ = update(
+            &mut state,
+            Message::ToggleFlyout(a, strip::FlyoutKind::Settings),
+        );
         let _ = update(&mut state, Message::ToggleFlyout(b, strip::FlyoutKind::Eq));
         let _ = update(&mut state, Message::ToggleCollapse(a));
         assert!(state.collapsed.contains(&a));
-        assert!(!state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
+        assert!(!state
+            .flyout_open
+            .contains(&(a, strip::FlyoutKind::Settings)));
         assert!(
             state.flyout_open.contains(&(b, strip::FlyoutKind::Eq)),
             "another strip's panel stays"
         );
         // Expanding does not bring it back.
         let _ = update(&mut state, Message::ToggleCollapse(a));
-        assert!(!state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
+        assert!(!state
+            .flyout_open
+            .contains(&(a, strip::FlyoutKind::Settings)));
     }
 
     fn low_cut_hz(state: &TuxMix) -> u16 {
@@ -6640,7 +6824,10 @@ mod tests {
         let a = ChannelId::Input(0);
         let b = ChannelId::Input(2);
         let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Eq));
-        let _ = update(&mut state, Message::ToggleFlyout(b, strip::FlyoutKind::Route));
+        let _ = update(
+            &mut state,
+            Message::ToggleFlyout(b, strip::FlyoutKind::Route),
+        );
         let _ = update(&mut state, Message::EscapePressed);
         assert!(!state.flyout_open.contains(&(b, strip::FlyoutKind::Route)));
         assert!(state.flyout_open.contains(&(a, strip::FlyoutKind::Eq)));
@@ -6681,7 +6868,10 @@ mod tests {
 
         let _ = update(&mut state, Message::GlobalSoloToggle);
         assert!(!any_channel_soloed(&state));
-        assert!(channel_is_muted(&state, a), "solo-clear must not touch mute state");
+        assert!(
+            channel_is_muted(&state, a),
+            "solo-clear must not touch mute state"
+        );
     }
 
     #[test]
@@ -6740,7 +6930,10 @@ mod tests {
         let mut state = new(true, None, None);
         state.active_snapshot = Some(1);
         assert!(!state.snapshot_dirty);
-        let _ = update(&mut state, Message::VolumeChanged(ChannelId::Input(0), 0, 0.5));
+        let _ = update(
+            &mut state,
+            Message::VolumeChanged(ChannelId::Input(0), 0, 0.5),
+        );
         assert!(state.snapshot_dirty, "a fader drag step is a mix change");
         let _ = update(&mut state, Message::SnapshotClicked(1));
         assert!(!state.snapshot_dirty, "recalling the slot clears it");
@@ -6758,7 +6951,10 @@ mod tests {
         let _ = update(&mut state, Message::RenameCommit);
         assert_eq!(state.renaming, None);
         assert_eq!(state.labels.get(&cid).map(String::as_str), Some("Vocal"));
-        assert!(state.undo_stack.is_empty(), "a label is not part of the mix");
+        assert!(
+            state.undo_stack.is_empty(),
+            "a label is not part of the mix"
+        );
 
         // Editing starts from the current label; an empty commit restores
         // the hardware name.
@@ -6779,7 +6975,10 @@ mod tests {
         assert_eq!(state.renaming, Some(cid));
         let _ = update(&mut state, Message::RenameChanged("Kick".into()));
         // A later click: the field reports it lost focus.
-        let _ = update(&mut state, Message::FieldFocus(EditField::Rename, cid, false));
+        let _ = update(
+            &mut state,
+            Message::FieldFocus(EditField::Rename, cid, false),
+        );
         assert_eq!(state.renaming, None);
         assert_eq!(state.labels.get(&cid).map(String::as_str), Some("Kick"));
     }
@@ -6789,7 +6988,10 @@ mod tests {
         let mut state = new(true, None, None);
         let cid = ChannelId::Input(0);
         let _ = update(&mut state, Message::RenameStart(cid));
-        let _ = update(&mut state, Message::FieldFocus(EditField::Rename, cid, true));
+        let _ = update(
+            &mut state,
+            Message::FieldFocus(EditField::Rename, cid, true),
+        );
         assert_eq!(state.renaming, Some(cid));
     }
 
@@ -6857,8 +7059,14 @@ mod tests {
         assert_eq!(state.row_mode, RowMode::Two);
         let old: crate::prefs::Prefs = serde_json::from_str(r#"{ "two_row": false }"#).unwrap();
         apply_prefs(&mut state, old);
-        assert_eq!(state.row_mode, RowMode::Auto, "false was only the old default");
-        assert!(!serde_json::to_string(&prefs_of(&state)).unwrap().contains("two_row"));
+        assert_eq!(
+            state.row_mode,
+            RowMode::Auto,
+            "false was only the old default"
+        );
+        assert!(!serde_json::to_string(&prefs_of(&state))
+            .unwrap()
+            .contains("two_row"));
     }
 
     #[test]
@@ -6866,7 +7074,10 @@ mod tests {
         let mut state = new(true, None, None);
         let _ = update(&mut state, Message::WindowSize(1500.0, 900.0));
         assert_eq!(state.window_width, 1500.0, "the layout width follows");
-        assert!(!state.prefs_dirty, "a resize step does not rewrite the file");
+        assert!(
+            !state.prefs_dirty,
+            "a resize step does not rewrite the file"
+        );
         assert_eq!(prefs_of(&state).window_size, Some((1500.0, 900.0)));
         let _ = update(&mut state, Message::SaveNow);
         assert!(!state.prefs_dirty, "flushed at close");
@@ -6876,13 +7087,20 @@ mod tests {
     fn auto_buffer_size_names_the_period_the_card_really_runs() {
         use super::auto_quantum_label;
         use tuxmix_core::pw_clock::CardStream;
-        let card = CardStream { rate: 48_000, period: 256, buffer: 768 };
+        let card = CardStream {
+            rate: 48_000,
+            period: 256,
+            buffer: 768,
+        };
         assert_eq!(auto_quantum_label(0, Some(card)), "Auto (256)");
         // Idle: nothing true to show.
         assert_eq!(auto_quantum_label(0, None), "Auto");
         // A forced size: the card's period is that size, not what Auto
         // would give back.
-        let forced = CardStream { period: 128, ..card };
+        let forced = CardStream {
+            period: 128,
+            ..card
+        };
         assert_eq!(auto_quantum_label(128, Some(forced)), "Auto");
     }
 
@@ -6970,8 +7188,14 @@ mod tests {
         let mut state = new(true, None, None);
         state.active_snapshot = Some(1);
         for col in 0..4 {
-            let _ = update(&mut state, Message::MatrixHover(ChannelId::Input(0), col, true));
-            let _ = update(&mut state, Message::MatrixHover(ChannelId::Input(0), col, false));
+            let _ = update(
+                &mut state,
+                Message::MatrixHover(ChannelId::Input(0), col, true),
+            );
+            let _ = update(
+                &mut state,
+                Message::MatrixHover(ChannelId::Input(0), col, false),
+            );
         }
         assert!(state.undo_stack.is_empty());
         assert!(!state.snapshot_dirty);
@@ -7011,8 +7235,14 @@ mod tests {
     #[test]
     fn a_different_control_starts_a_new_step() {
         let mut state = new(true, None, None);
-        let _ = update(&mut state, Message::VolumeChanged(ChannelId::Input(4), 0, 0.5));
-        let _ = update(&mut state, Message::VolumeChanged(ChannelId::Input(5), 0, 0.5));
+        let _ = update(
+            &mut state,
+            Message::VolumeChanged(ChannelId::Input(4), 0, 0.5),
+        );
+        let _ = update(
+            &mut state,
+            Message::VolumeChanged(ChannelId::Input(5), 0, 0.5),
+        );
         let _ = update(&mut state, Message::Mute(ChannelId::Input(0), true));
         assert_eq!(state.undo_stack.len(), 3);
     }
@@ -7020,13 +7250,19 @@ mod tests {
     #[test]
     fn a_simulated_session_keeps_its_snapshots_in_memory() {
         let mut state = new(true, None, None);
-        assert_eq!(state.stored_snapshots, [false; 8], "never reads the real slots");
+        assert_eq!(
+            state.stored_snapshots, [false; 8],
+            "never reads the real slots"
+        );
         let cid = ChannelId::Input(4);
         let _ = update(&mut state, Message::SnapshotClicked(3));
         let _ = update(&mut state, Message::VolumeChanged(cid, 0, 0.5));
         let _ = update(&mut state, Message::SnapshotStore);
         assert!(state.stored_snapshots[2]);
-        assert!(state.mock_snapshots[2].is_some(), "stored in memory, not on disk");
+        assert!(
+            state.mock_snapshots[2].is_some(),
+            "stored in memory, not on disk"
+        );
         let _ = update(&mut state, Message::VolumeChanged(cid, 0, 0.1));
         let _ = update(&mut state, Message::SnapshotClicked(3));
         assert!((state.device.inputs()[4].volumes[0] - 0.5).abs() < 1e-6);
@@ -7078,10 +7314,21 @@ mod tests {
     #[test]
     fn quick_strips_fill_a_tall_view_within_bounds() {
         use super::{quick_fit, QUICK_SCALE_MAX, QUICK_SCALE_MULT};
-        assert_eq!(quick_fit(500.0), QUICK_SCALE_MULT, "a short view keeps the floor");
-        assert_eq!(quick_fit(5000.0), QUICK_SCALE_MAX, "a huge one stops at the cap");
+        assert_eq!(
+            quick_fit(500.0),
+            QUICK_SCALE_MULT,
+            "a short view keeps the floor"
+        );
+        assert_eq!(
+            quick_fit(5000.0),
+            QUICK_SCALE_MAX,
+            "a huge one stops at the cap"
+        );
         let f = quick_fit(1000.0);
-        assert!(f > QUICK_SCALE_MULT && f < QUICK_SCALE_MAX, "1080p grows: {f}");
+        assert!(
+            f > QUICK_SCALE_MULT && f < QUICK_SCALE_MAX,
+            "1080p grows: {f}"
+        );
     }
 
     #[test]
@@ -7099,15 +7346,30 @@ mod tests {
         let mut state = new(true, None, None);
         apply_prefs(&mut state, crate::prefs::Prefs::default());
         assert!(state.initial_zoom_pending, "nothing saved: ask the monitor");
-        let _ = update(&mut state, Message::MonitorSize(Some(iced::Size::new(2560.0, 1440.0))));
+        let _ = update(
+            &mut state,
+            Message::MonitorSize(Some(iced::Size::new(2560.0, 1440.0))),
+        );
         assert_eq!(state.ui_scale, 1.25);
         assert!(!state.initial_zoom_pending && state.prefs_dirty);
-        let _ = update(&mut state, Message::MonitorSize(Some(iced::Size::new(3840.0, 2160.0))));
+        let _ = update(
+            &mut state,
+            Message::MonitorSize(Some(iced::Size::new(3840.0, 2160.0))),
+        );
         assert_eq!(state.ui_scale, 1.25, "asked once only");
 
         let mut saved = new(true, None, None);
-        apply_prefs(&mut saved, crate::prefs::Prefs { ui_scale: Some(1.0), ..Default::default() });
-        assert!(!saved.initial_zoom_pending, "a saved zoom is never overridden");
+        apply_prefs(
+            &mut saved,
+            crate::prefs::Prefs {
+                ui_scale: Some(1.0),
+                ..Default::default()
+            },
+        );
+        assert!(
+            !saved.initial_zoom_pending,
+            "a saved zoom is never overridden"
+        );
     }
 
     #[test]
@@ -7152,11 +7414,18 @@ mod tests {
         use super::{tick_interval, TICK_ACTIVE, TICK_IDLE};
         let mut state = new(true, None, None);
         state.last_activity = Instant::now() - Duration::from_secs(10);
-        assert_eq!(tick_interval(&state), TICK_IDLE, "nothing happened for a while");
+        assert_eq!(
+            tick_interval(&state),
+            TICK_IDLE,
+            "nothing happened for a while"
+        );
 
         // The user doing anything wakes it, even a message that changes
         // nothing visible (it costs one fast second).
-        let _ = update(&mut state, Message::ToggleSidebarPanel(sidebar::Panel::Groups));
+        let _ = update(
+            &mut state,
+            Message::ToggleSidebarPanel(sidebar::Panel::Groups),
+        );
         assert_eq!(tick_interval(&state), TICK_ACTIVE);
 
         // Background polls do not count as activity.
@@ -7216,8 +7485,15 @@ mod tests {
         // Idle: the rate and the clock, never a period (the graph's quantum
         // is not what the card runs, and the capture stream may be our own
         // meter's).
-        assert_eq!(crate::sidebar::clock_line(&state, "Internal"), "48 kHz \u{00b7} Internal");
-        state.card_stream = Some(CardStream { rate: 48_000, period: 256, buffer: 768 });
+        assert_eq!(
+            crate::sidebar::clock_line(&state, "Internal"),
+            "48 kHz \u{00b7} Internal"
+        );
+        state.card_stream = Some(CardStream {
+            rate: 48_000,
+            period: 256,
+            buffer: 768,
+        });
         assert_eq!(
             crate::sidebar::clock_line(&state, "Internal"),
             "48 kHz \u{00b7} 256 smp \u{00b7} Internal"
