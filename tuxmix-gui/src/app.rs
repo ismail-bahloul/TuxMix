@@ -24,7 +24,7 @@ use tuxmix_core::pw_meter;
 use crate::scenes::{load_scene_file, save_scene_file};
 use crate::sidebar::{self, Group};
 use crate::theme;
-use crate::widgets::eq_plot::{eq_plot, EqPlotActions};
+use crate::widgets::eq_plot::{self, eq_plot, EqPlotActions};
 use crate::widgets::fader;
 use crate::widgets::knob::{knob, Knob};
 use crate::widgets::strip::{self, hint};
@@ -3605,6 +3605,7 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                 knob_cell(
                     "Pitch",
                     knob(Knob {
+                        tint: None,
                         value: settings.pitch_percent,
                         range: (-5.0, 5.0),
                         label: format!("{:+.1}%", settings.pitch_percent),
@@ -3620,6 +3621,7 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                 knob_cell(
                     "Width",
                     knob(Knob {
+                        tint: None,
                         value: settings.width,
                         range: (-1.0, 1.0),
                         label: format!("{:+.2}", settings.width),
@@ -4676,6 +4678,7 @@ fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> E
                     .size(theme::TEXT_SM * scale)
                     .color(theme::TEXT_SEC),
                 container(knob(Knob {
+                    tint: None,
                     value: p.gain as f32,
                     range: (0.0, gain_max as f32),
                     // Gain is tracked in dB (0-65 Mic / 0-18 Instr),
@@ -4774,6 +4777,7 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Eleme
     let col = column![
         text("Trim").size(theme::TEXT_SM * scale).color(theme::TEXT_SEC),
         container(knob(Knob {
+            tint: None,
             value: trim,
             range: (-65.0, 6.0),
             label: format!("{trim:+.1}"),
@@ -4791,6 +4795,17 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Eleme
     .spacing(theme::SPACE_SM * scale);
 
     flyout_card(col, width, scale)
+}
+
+/// A band's color on its knobs, dimmed while the band is off: the same
+/// red, green and azure as its curve in the plot and its type button.
+fn eq_band_tint(band_type: EqBandType, band: usize) -> Color {
+    let c = theme::EQ_BAND[band];
+    if band_type == EqBandType::Off {
+        Color { a: 0.45, ..c }
+    } else {
+        c
+    }
 }
 
 /// The EQ flyout's content: the interactive response plot, then a
@@ -4820,21 +4835,28 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
 
     let mut col = column![].spacing(gap);
 
-    col = col.push(
-        row![
-            button(text("EQ").size(theme::TEXT_XS * scale))
-                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
-                .style(theme::toggle_button(eq.enabled, theme::ACCENT))
-                .on_press(Message::EqEnabled(idx, !eq.enabled)),
-            text(if eq.enabled { "enabled" } else { "bypassed" })
-                .size(theme::TEXT_XS * scale)
-                .color(theme::TEXT_SEC),
-        ]
-        .spacing(theme::SPACE_SM * scale)
-        .align_y(iced::Alignment::Center),
-    );
-
-    col = col.push(eq_plot(
+    // The on/off button sits in the corner of the plot, like a plugin's
+    // power button, instead of on a row of its own beside the word
+    // "enabled" or "bypassed": the plot already says BYPASS when it is off,
+    // and the button is lit when it is on.
+    let eq_toggle = container(hint(
+        button(text("EQ").size(theme::TEXT_XS * scale))
+            .padding([1.0 * scale, theme::SPACE_SM * scale])
+            .style(theme::toggle_button(eq.enabled, theme::ACCENT))
+            .on_press(Message::EqEnabled(idx, !eq.enabled)),
+        if eq.enabled { "EQ on (click to bypass)" } else { "EQ bypassed (click to turn on)" },
+        scale,
+    ))
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(iced::Alignment::End)
+    .align_y(iced::Alignment::Start)
+    .padding(iced::Padding {
+        top: (eq_plot::MARGIN_TOP + 2.0) * scale,
+        right: (eq_plot::MARGIN_RIGHT + 2.0) * scale,
+        ..iced::Padding::ZERO
+    });
+    let plot = eq_plot(
         eq,
         state.device.settings().sample_rate,
         scale,
@@ -4847,7 +4869,8 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
             on_band_q: Box::new(move |band, q| Message::EqBandQ(idx, band, q)),
             on_low_cut: Box::new(move |freq| Message::EqLowCutFreq(idx, freq)),
         },
-    ));
+    );
+    col = col.push(stack![plot, eq_toggle]);
 
     let label = |content: &'static str| {
         container(
@@ -4914,6 +4937,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         gain_row = gain_row.push(
             container(hint(
                 knob(Knob {
+                    tint: Some(eq_band_tint(b.band_type, band)),
                     value: b.gain_db,
                     range: (-24.0, 24.0),
                     label: format!("{:+.1}", b.gain_db),
@@ -4944,6 +4968,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         freq_row = freq_row.push(
             container(hint(
                 knob(Knob {
+                    tint: Some(eq_band_tint(b.band_type, band)),
                     value: b.freq_hz as f32,
                     range: (20.0, 20_000.0),
                     label: format!("{}Hz", b.freq_hz),
@@ -4974,6 +4999,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         q_row = q_row.push(
             container(hint(
                 knob(Knob {
+                    tint: Some(eq_band_tint(b.band_type, band)),
                     value: b.q,
                     range: (0.05, 10.0),
                     label: format!("{:.2}", b.q),
@@ -4996,19 +5022,26 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
     }
     col = col.push(q_row);
 
-    let mut slope_row = row![].spacing(gap).width(Length::Fill);
+    // One track of four cells, like the sidebar's switches, rather than four
+    // separate squares: the slope is one choice among four.
+    let mut slope_row = row![].spacing(theme::SPACE_HAIRLINE * scale).width(Length::Fill);
     for slope in [6u8, 12, 18, 24] {
         slope_row = slope_row.push(
-            button(text(format!("{slope}")).size(theme::TEXT_XS * scale))
-                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
-                .width(Length::Fill)
-                .style(theme::toggle_button(
-                    eq.low_cut_slope_db_oct == slope,
-                    theme::ACCENT,
-                ))
-                .on_press(Message::EqLowCutSlope(idx, slope)),
+            button(
+                text(format!("{slope}"))
+                    .size(theme::TEXT_XS * scale)
+                    .center(),
+            )
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
+            .width(Length::Fill)
+            .style(theme::segment_cell(eq.low_cut_slope_db_oct == slope))
+            .on_press(Message::EqLowCutSlope(idx, slope)),
         );
     }
+    let slope_row = container(slope_row)
+        .padding(theme::SPACE_TIGHT * scale)
+        .width(Length::Fill)
+        .style(theme::segment_track);
     let slope_col = column![
         slope_row,
         text("dB/oct")
@@ -5021,6 +5054,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
 
     let freq_col = container(hint(
         knob(Knob {
+            tint: None,
             value: eq.low_cut_freq_hz as f32,
             range: (20.0, 20_000.0),
             label: format!("{}Hz", eq.low_cut_freq_hz),

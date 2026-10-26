@@ -664,6 +664,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     let is_output = matches!(cid, ChannelId::Output(_));
     let pan_knob = if is_output {
         Knob {
+            tint: None,
             value: 0.0,
             range: (-100.0, 100.0),
             label: "C".to_string(),
@@ -677,6 +678,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         }
     } else {
         Knob {
+            tint: None,
             value: p.pan as f32,
             range: (-100.0, 100.0),
             label: pan_str,

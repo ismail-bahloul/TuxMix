@@ -26,10 +26,12 @@ use super::fader::{DOUBLE_CLICK, SCROLL_IDLE};
 use crate::theme;
 
 /// Plot height at scale 1.
-const PLOT_H: f32 = 64.0;
+/// 64 until the EQ on/off button moved onto the plot (`eq_popover`): the
+/// row it freed went to the curve.
+const PLOT_H: f32 = 82.0;
 const MARGIN_LEFT: f32 = 26.0;
-const MARGIN_RIGHT: f32 = 6.0;
-const MARGIN_TOP: f32 = 6.0;
+pub(crate) const MARGIN_RIGHT: f32 = 6.0;
+pub(crate) const MARGIN_TOP: f32 = 6.0;
 const MARGIN_BOTTOM: f32 = 14.0;
 
 const DB_MIN: f32 = -24.0;
