@@ -1108,7 +1108,17 @@ impl<Message: Clone> canvas::Program<Message> for VuMeter<Message> {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let (meter_rect, ruler_rect) = meter_column(0.0, bounds.height, self.scale);
+        // The bar is centered in the card, under the name and the M/S
+        // buttons, which are; the numbers take the margin to its left. The
+        // [numbers][bar] block used to be centered instead, which left the
+        // bar itself off to the right.
+        let bar_w = METER_W * self.scale;
+        let bar_x = ((bounds.width - bar_w) / 2.0).max(0.0);
+        let meter_rect = Rectangle::new(Point::new(bar_x, 0.0), Size::new(bar_w, bounds.height));
+        let ruler_rect = Rectangle::new(
+            Point::new(0.0, 0.0),
+            Size::new((bar_x - LANE_GAP * self.scale).max(0.0), bounds.height),
+        );
         draw_meter(
             &mut frame,
             meter_rect,
@@ -1140,7 +1150,7 @@ pub fn vu_meter<'a, Message: Clone + 'a>(
         clip,
         on_clip_reset,
     })
-    .width(Length::Fixed(METER_RULER_W * scale))
+    .width(Length::Fill)
     .height(Length::Fixed(height))
     .into()
 }
