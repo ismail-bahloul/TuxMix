@@ -4867,7 +4867,9 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         return container(iced::widget::Space::new()).into();
     };
     let modifiers = state.modifiers;
-    let label_w = 42.0 * scale;
+    // Wide enough for the "low cut" switch, so every row shares one label
+    // column and the band columns line up down the panel.
+    let label_w = 46.0 * scale;
     let gap = theme::SPACE_TIGHT;
     // The EQ matrix has to fit inside one strip's height. Smaller knobs
     // here (the strip's own gain/pan knobs keep their full size) are what
@@ -4945,14 +4947,18 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         type_row = type_row.push(
             container(hint(
                 button(
-                    row![
-                        text(format!("{}", band + 1))
-                            .size(theme::TEXT_XS * scale)
-                            .color(number_color),
-                        text(short).size(theme::TEXT_XS * scale),
-                    ]
-                    .spacing(theme::SPACE_TIGHT)
-                    .align_y(iced::Alignment::Center),
+                    // Centered, like the knobs under it.
+                    container(
+                        row![
+                            text(format!("{}", band + 1))
+                                .size(theme::TEXT_XS * scale)
+                                .color(number_color),
+                            text(short).size(theme::TEXT_XS * scale),
+                        ]
+                        .spacing(theme::SPACE_TIGHT)
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .center_x(Length::Fill),
                 )
                 .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
                 .width(Length::Fill)
@@ -5093,7 +5099,8 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
             .color(theme::TEXT_SEC),
     ]
     .spacing(theme::SPACE_TIGHT)
-    .width(Length::Fill)
+    // Bands 1 and 2's columns, so the frequency knob lands under band 3.
+    .width(Length::FillPortion(2))
     .align_x(iced::Alignment::Center);
 
     let freq_col = container(hint(
@@ -5119,8 +5126,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         "Low-cut frequency",
         scale,
     ))
-    .width(Length::Fill)
-    .center_x(Length::Fill);
+    .center_x(Length::FillPortion(1));
 
     let low_cut_switch = container(hint(
         button(
@@ -5136,7 +5142,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         if low_cut_on { "Low cut on (click to switch off)" } else { "Low cut off (click to switch on)" },
         scale,
     ))
-    .width(Length::Fixed(label_w + 4.0 * scale));
+    .width(Length::Fixed(label_w));
     col = col.push(
         row![low_cut_switch, slope_col, freq_col]
             .spacing(gap)
