@@ -492,7 +492,8 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         FADER_H * scale,
         scale,
         p.meter_available,
-        p.clip || p.clip2,
+        p.clip,
+        p.meter2.map(|m| (m, p.meter2_available, p.clip2)),
         (p.clip || p.clip2).then_some(Message::ClipReset(cid, p.meter2.is_some())),
     ))
         .width(Length::Fill)

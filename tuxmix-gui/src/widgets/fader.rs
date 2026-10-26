@@ -1067,6 +1067,10 @@ struct VuMeter<Message> {
     scale: f32,
     available: bool,
     clip: bool,
+    /// The right channel of a linked pair: its level, whether it is a
+    /// real reading, and its clip LED. Splits the bar in two, as on a
+    /// full strip.
+    right: Option<(MeterFrame, bool, bool)>,
     on_clip_reset: Option<Message>,
 }
 
@@ -1091,7 +1095,9 @@ impl<Message: Clone> canvas::Program<Message> for VuMeter<Message> {
                     .map(|m| canvas::Action::publish(m).and_capture())
             }
             canvas::Event::Window(window::Event::RedrawRequested(now))
-                if INTERPOLATE_METERS && self.level.is_settling(*now) =>
+                if INTERPOLATE_METERS
+                    && (self.level.is_settling(*now)
+                        || self.right.is_some_and(|(m, _, _)| m.is_settling(*now))) =>
             {
                 Some(canvas::Action::request_redraw())
             }
@@ -1125,10 +1131,11 @@ impl<Message: Clone> canvas::Program<Message> for VuMeter<Message> {
             self.level.shown(Instant::now()),
             self.scale,
             (self.available, self.clip),
-            // Collapsed strips are a glance-only view with no room for a
-            // second bar even if this were a linked pair — out of scope
-            // for this pass, single-bar only here.
-            None,
+            // A linked pair shows both channels, the bar split in two as
+            // on a full strip: the collapsed card used to show the left
+            // one only, so a loud or clipping right channel went unseen.
+            self.right
+                .map(|(m, available, clip)| (m.shown(Instant::now()), available, clip)),
         );
         draw_ruler(&mut frame, ruler_rect, self.scale);
         vec![frame.into_geometry()]
@@ -1141,6 +1148,7 @@ pub fn vu_meter<'a, Message: Clone + 'a>(
     scale: f32,
     available: bool,
     clip: bool,
+    right: Option<(MeterFrame, bool, bool)>,
     on_clip_reset: Option<Message>,
 ) -> Element<'a, Message> {
     Canvas::new(VuMeter {
@@ -1148,6 +1156,7 @@ pub fn vu_meter<'a, Message: Clone + 'a>(
         scale,
         available,
         clip,
+        right,
         on_clip_reset,
     })
     .width(Length::Fill)
