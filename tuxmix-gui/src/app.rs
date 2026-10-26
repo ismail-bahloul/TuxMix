@@ -3873,11 +3873,13 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
     } else {
         rate_label(clock.force_rate)
     };
-    // "Auto" without a number: with nothing forced, the card runs what
-    // its active clients ask for, 256 by default from the WirePlumber rule
+    // "Auto" carries the card's own period while it plays, and no number
+    // otherwise: with nothing forced, the card runs what its active
+    // clients ask for, 256 by default from the WirePlumber rule
     // (`node.latency`), not PipeWire's global `clock.quantum`, which this
-    // label used to show. The latency line below shows what really runs.
-    let quantum_opts: Vec<String> = std::iter::once("Auto".to_string())
+    // label used to show. See `auto_quantum_label`.
+    let quantum_opts: Vec<String> =
+        std::iter::once(auto_quantum_label(clock.force_quantum, state.card_stream))
         .chain(quanta.iter().map(|q| format!("{q} samples")))
         .collect();
     let quantum_sel = if clock.force_quantum == 0 {
@@ -3921,6 +3923,19 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
     .into()
 }
 
+/// The buffer-size menu's "Auto" entry, like the sample rate's "Auto
+/// (48 kHz)": with the card playing and nothing forced, the period it
+/// really runs (read from its stream, not from PipeWire's quantum, which
+/// the card does not have to follow). Idle there is nothing true to show,
+/// and with a size forced the card's period is that size, which "Auto"
+/// would not give back.
+fn auto_quantum_label(force_quantum: u32, card: Option<CardStream>) -> String {
+    match card {
+        Some(card) if force_quantum == 0 => format!("Auto ({})", card.period),
+        _ => "Auto".to_string(),
+    }
+}
+
 /// The latency line, from the card's own stream when it is playing: the
 /// quantum is only the graph's, and the sound server may open the card with
 /// a fixed hardware period of its own (WirePlumber's `api.alsa.period-size`
@@ -3953,19 +3968,13 @@ fn latency_readout(state: &TuxMix, clock: PwClock) -> Element<'_, Message> {
             }
             col.into()
         }
-        None if state.device.is_mock() => line(
-            format!(
-                "{:.1} ms per buffer at {}",
-                clock.latency_ms(),
-                rate_label(clock.effective_rate())
-            ),
-            theme::TEXT_PRIMARY,
-        )
-        .into(),
+        // The card is idle (or simulated): the graph's own buffer, in the
+        // same shape as the playing line above.
         None => line(
             format!(
-                "{:.1} ms per buffer at {}",
+                "{:.1} ms \u{00b7} {} samples at {}",
                 clock.latency_ms(),
+                clock.effective_quantum(),
                 rate_label(clock.effective_rate())
             ),
             theme::TEXT_PRIMARY,
@@ -6681,6 +6690,20 @@ mod tests {
         assert_eq!(prefs_of(&state).window_size, Some((1500.0, 900.0)));
         let _ = update(&mut state, Message::SaveNow);
         assert!(!state.prefs_dirty, "flushed at close");
+    }
+
+    #[test]
+    fn auto_buffer_size_names_the_period_the_card_really_runs() {
+        use super::auto_quantum_label;
+        use tuxmix_core::pw_clock::CardStream;
+        let card = CardStream { rate: 48_000, period: 256, buffer: 768 };
+        assert_eq!(auto_quantum_label(0, Some(card)), "Auto (256)");
+        // Idle: nothing true to show.
+        assert_eq!(auto_quantum_label(0, None), "Auto");
+        // A forced size: the card's period is that size, not what Auto
+        // would give back.
+        let forced = CardStream { period: 128, ..card };
+        assert_eq!(auto_quantum_label(128, Some(forced)), "Auto");
     }
 
     #[test]
