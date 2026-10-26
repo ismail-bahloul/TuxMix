@@ -1,7 +1,11 @@
-//! Real-time input level metering for the ALSA/kernel-driver backend,
-//! by opening the card's own capture PCM directly and computing peaks
-//! host-side from the actual audio — the driver exposes no meter
-//! register at all (see `RmeDevice::meters`'s own doc comment /
+//! Fallback for real-time input level metering when PipeWire is not
+//! running: open the card's own capture PCM directly and compute peaks
+//! host-side from the actual audio. The normal path is `pw_meter`'s input
+//! tap, which leaves the PCM to the graph; holding it here removes the
+//! input node from the graph and pins the card to this file's period.
+//!
+//! The rest of this doc applies to both paths. The driver exposes no
+//! meter register at all (see `RmeDevice::meters`'s own doc comment /
 //! `PROTOCOL.md`'s "VU meters: conclusion"), so this is the only way
 //! to get a real reading, same idea as the USB backend's
 //! `input_peaks()` (`tuxmix-usb`), just a different audio source (ALSA

@@ -163,10 +163,10 @@ pub fn parse_hw_params(text: &str) -> Option<CardStream> {
 }
 
 /// The open *playback* stream of the ALSA card whose `id` is `card_id`.
-/// `None` when no such card exists or nothing is playing. Playback only: the
-/// capture side is held open by TuxMix's own input meter
-/// (`capture_meter`), so reading it would report the app's own stream
-/// (it once showed the meter's period as the card's).
+/// `None` when no such card exists or nothing is playing. Playback only:
+/// the capture side belongs to PipeWire's own source now (TuxMix meters
+/// through `pw_meter`), so reading it would report the graph's capture
+/// stream rather than the card's playback stream.
 pub fn card_stream(card_id: &str) -> Option<CardStream> {
     let cards = std::fs::read_dir("/proc/asound").ok()?;
     for entry in cards.flatten() {

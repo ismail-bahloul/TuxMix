@@ -25,6 +25,10 @@
   backend: the unit is the source of truth for levels and gains, so only
   the channel names are restored. A crosspoint at the 50% position now
   reads as 0 dB instead of being rewritten to -6 dB.
+- Input meters no longer open the card's capture PCM directly: they read
+  PipeWire's own source when it is running, so the capture node stays in
+  the graph and the card no longer reports the meter's 1024-frame period.
+  A system without PipeWire keeps the direct capture as a fallback.
 
 ## 0.3.2 (2026-10-23)
 
