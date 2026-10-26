@@ -1902,6 +1902,10 @@ fn set_collapsed(state: &mut TuxMix, cid: ChannelId, target: bool) {
     );
     if target {
         state.collapsed.insert(cid);
+        // A collapsed strip has no gear, EQ, trim or bus button left, so
+        // a panel it had open would have no way to be closed again, and
+        // hung off a 44 px card it was squeezed to that width.
+        state.flyout_open.retain(|&(c, _)| c != cid);
     } else {
         state.collapsed.remove(&cid);
     }
@@ -5185,7 +5189,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // a dropdown list of bus names and a settings panel of
                 // knobs/buttons don't need to match each other's width,
                 // just their own strip's.
-                let panel_w = item_width;
+                let panel_w = strip::full_width(cid) * state.ui_scale;
                 input_strips = input_strips.push(
                     row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
                         .spacing(theme::SPACE_MD),
@@ -5259,7 +5263,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             let strip_widget = strip::strip(finish_params(state, params));
             let mut item_width = rendered_strip_width(state, cid);
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
-                let panel_w = item_width;
+                let panel_w = strip::full_width(cid) * state.ui_scale;
                 pb_strips = pb_strips.push(
                     row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
                         .spacing(theme::SPACE_MD),
@@ -5312,7 +5316,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             let strip_widget = strip::strip(finish_params(state, params));
             let mut item_width = rendered_strip_width(state, cid);
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
-                let panel_w = item_width;
+                let panel_w = strip::full_width(cid) * state.ui_scale;
                 out_strips = out_strips.push(
                     row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
                         .spacing(theme::SPACE_MD),
@@ -6452,6 +6456,25 @@ mod tests {
         let _ = update(&mut state, Message::PointerPressed);
         let _ = update(&mut state, Message::PointerReleased);
         assert!(!route_popover_open(&state));
+    }
+
+    #[test]
+    fn collapsing_a_strip_closes_its_own_panels_only() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(2);
+        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Settings));
+        let _ = update(&mut state, Message::ToggleFlyout(b, strip::FlyoutKind::Eq));
+        let _ = update(&mut state, Message::ToggleCollapse(a));
+        assert!(state.collapsed.contains(&a));
+        assert!(!state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
+        assert!(
+            state.flyout_open.contains(&(b, strip::FlyoutKind::Eq)),
+            "another strip's panel stays"
+        );
+        // Expanding does not bring it back.
+        let _ = update(&mut state, Message::ToggleCollapse(a));
+        assert!(!state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
     }
 
     #[test]
