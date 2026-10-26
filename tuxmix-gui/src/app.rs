@@ -656,6 +656,9 @@ pub enum Message {
     /// Double-click on a band handle: back to 1 kHz, Q 0.7, 0 dB.
     EqBandReset(usize, usize),
     EqLowCutFreq(usize, u16),
+    /// The low cut's on/off switch: off is a frequency of 0 (see
+    /// `InputEq::low_cut_freq_hz`), on brings back the frequency it had.
+    EqLowCutEnabled(usize, bool),
     EqLowCutSlope(usize, u8),
 
     /// Output-channel index (not the submix pair — converted in the
@@ -901,6 +904,10 @@ pub struct TuxMix {
     /// the set means collapsed. This is the *target* state; the strip may
     /// still be mid-transition, tracked separately in `collapse_anim`.
     pub collapsed: HashSet<ChannelId>,
+    /// The low-cut frequency each input had when it was switched off, so
+    /// switching it on again brings it back: off is the frequency 0, which
+    /// keeps nothing to bring back.
+    pub eq_low_cut_memory: HashMap<usize, u16>,
     /// In-flight collapse/expand width animations, keyed by strip — only
     /// holds an entry while a strip is actually transitioning; pruned once
     /// settled (see `Message::CollapseTick`), which also lets the extra
@@ -1350,6 +1357,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         playback_tap_channels: 0,
         output_meters: vec![MeterAnim::new(); n_outputs],
         collapsed: HashSet::new(),
+        eq_low_cut_memory: HashMap::new(),
         collapse_anim: HashMap::new(),
         flyout_open: HashSet::new(),
         ui_scale: theme::SCALE_DEFAULT,
@@ -2572,6 +2580,35 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::EqLowCutFreq(idx, freq) => {
             if let Err(e) = state.device.set_eq_low_cut_freq(idx, freq) {
                 fail(state, "set_eq_low_cut_freq", &e);
+            }
+        }
+        Message::EqLowCutEnabled(idx, on) => {
+            let current = state
+                .device
+                .inputs()
+                .get(idx)
+                .and_then(|c| c.eq)
+                .map_or(0, |e| e.low_cut_freq_hz);
+            let target = if on {
+                if current > 0 {
+                    current
+                } else {
+                    state
+                        .eq_low_cut_memory
+                        .get(&idx)
+                        .copied()
+                        .unwrap_or(LOW_CUT_ON_HZ)
+                }
+            } else {
+                if current > 0 {
+                    state.eq_low_cut_memory.insert(idx, current);
+                }
+                0
+            };
+            if target != current {
+                if let Err(e) = state.device.set_eq_low_cut_freq(idx, target) {
+                    fail(state, "set_eq_low_cut_freq", &e);
+                }
             }
         }
         Message::EqLowCutSlope(idx, slope) => {
@@ -4447,6 +4484,10 @@ fn sidebar_does_not_fit(state: &TuxMix, w: f32) -> bool {
 /// small controls, and at the strips' 175 % it was as wide as half a
 /// small window for no gain.
 const SIDEBAR_SCALE_MAX: f32 = 1.25;
+/// Where a low cut that was never on starts when it is switched on: a common
+/// rumble filter, where 20 Hz would do nothing audible and read as a switch
+/// that does not work.
+const LOW_CUT_ON_HZ: u16 = 80;
 /// Nor does it shrink below 100 %: zooming out is for fitting more
 /// strips, and at 75 % the sidebar's labels were 6 px.
 const SIDEBAR_SCALE_MIN: f32 = 1.0;
@@ -5022,6 +5063,9 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
     }
     col = col.push(q_row);
 
+    // The low cut has its own switch, as in TotalMix. Off dims the slope
+    // and the frequency and leaves them inert: they act on nothing.
+    let low_cut_on = eq.low_cut_on();
     // One track of four cells, like the sidebar's switches, rather than four
     // separate squares: the slope is one choice among four.
     let mut slope_row = row![].spacing(theme::SPACE_HAIRLINE * scale).width(Length::Fill);
@@ -5034,8 +5078,8 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
             )
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
             .width(Length::Fill)
-            .style(theme::segment_cell(eq.low_cut_slope_db_oct == slope))
-            .on_press(Message::EqLowCutSlope(idx, slope)),
+            .style(theme::segment_cell(low_cut_on && eq.low_cut_slope_db_oct == slope))
+            .on_press_maybe(low_cut_on.then_some(Message::EqLowCutSlope(idx, slope))),
         );
     }
     let slope_row = container(slope_row)
@@ -5055,11 +5099,15 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
     let freq_col = container(hint(
         knob(Knob {
             tint: None,
-            value: eq.low_cut_freq_hz as f32,
+            value: (eq.low_cut_freq_hz as f32).max(20.0),
             range: (20.0, 20_000.0),
-            label: format!("{}Hz", eq.low_cut_freq_hz),
+            label: if low_cut_on {
+                format!("{}Hz", eq.low_cut_freq_hz)
+            } else {
+                "off".to_string()
+            },
             arc_from_center: false,
-            interactive: true,
+            interactive: low_cut_on,
             log_scale: true,
             modifiers,
             scale: eq_scale,
@@ -5074,8 +5122,23 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
     .width(Length::Fill)
     .center_x(Length::Fill);
 
+    let low_cut_switch = container(hint(
+        button(
+            text("low cut")
+                .size(theme::TEXT_XS * scale)
+                .wrapping(iced::advanced::text::Wrapping::None)
+                .center(),
+        )
+        .padding([theme::SPACE_TIGHT * scale, 0.0])
+        .width(Length::Fill)
+        .style(theme::toggle_button(low_cut_on, theme::ACCENT))
+        .on_press(Message::EqLowCutEnabled(idx, !low_cut_on)),
+        if low_cut_on { "Low cut on (click to switch off)" } else { "Low cut off (click to switch on)" },
+        scale,
+    ))
+    .width(Length::Fixed(label_w + 4.0 * scale));
     col = col.push(
-        row![label("low cut"), slope_col, freq_col]
+        row![low_cut_switch, slope_col, freq_col]
             .spacing(gap)
             .align_y(iced::Alignment::Center),
     );
@@ -5794,7 +5857,7 @@ mod tests {
     use super::{
         any_channel_muted, any_channel_soloed, apply_pending_resize,
         apply_prefs, channel_is_muted, channel_is_soloed, is_undoable, new, prefs_of,
-        mute_armed, power_sum_output_meters, route_popover_open, update, zoom, ChannelId, EditField, MeterAnim, Message, RowMode, TuxMix, View, ZOOM_STEP,
+        mute_armed, power_sum_output_meters, route_popover_open, update, zoom, LOW_CUT_ON_HZ, ChannelId, EditField, MeterAnim, Message, RowMode, TuxMix, View, ZOOM_STEP,
     };
     use crate::sidebar;
     use crate::theme;
@@ -6522,6 +6585,34 @@ mod tests {
         // Expanding does not bring it back.
         let _ = update(&mut state, Message::ToggleCollapse(a));
         assert!(!state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
+    }
+
+    fn low_cut_hz(state: &TuxMix) -> u16 {
+        state.device.inputs()[0].eq.unwrap().low_cut_freq_hz
+    }
+
+    #[test]
+    fn the_low_cut_switch_turns_it_off_and_brings_its_frequency_back() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::EqLowCutFreq(0, 300));
+        assert!(state.device.inputs()[0].eq.unwrap().low_cut_on());
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, false));
+        assert_eq!(low_cut_hz(&state), 0, "off is a frequency of 0");
+        assert!(!state.device.inputs()[0].eq.unwrap().low_cut_on());
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, true));
+        assert_eq!(low_cut_hz(&state), 300, "back to where it was");
+    }
+
+    #[test]
+    fn a_low_cut_that_was_never_on_starts_at_a_useful_frequency() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::EqLowCutFreq(0, 0));
+        assert!(state.eq_low_cut_memory.is_empty());
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, true));
+        assert_eq!(low_cut_hz(&state), LOW_CUT_ON_HZ);
+        // Switching it on while it is on changes nothing.
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, true));
+        assert_eq!(low_cut_hz(&state), LOW_CUT_ON_HZ);
     }
 
     #[test]

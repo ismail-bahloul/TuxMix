@@ -1931,7 +1931,11 @@ fn render_eq(f: &mut Frame, area: Rect, dev: &DeviceHandle, idx: usize, eq_row: 
         rows.push(format!("Band {} Q         : {:.2}", i + 1, b.q));
         rows.push(format!("Band {} Gain      : {:+.1} dB", i + 1, b.gain_db));
     }
-    rows.push(format!("Low Cut Freq     : {} Hz", eq.low_cut_freq_hz));
+    rows.push(if eq.low_cut_on() {
+        format!("Low Cut Freq     : {} Hz", eq.low_cut_freq_hz)
+    } else {
+        "Low Cut Freq     : off".to_string()
+    });
     rows.push(format!(
         "Low Cut Slope    : {} dB/oct",
         eq.low_cut_slope_db_oct

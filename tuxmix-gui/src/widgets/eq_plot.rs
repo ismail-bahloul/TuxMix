@@ -146,6 +146,10 @@ impl<Message> EqPlot<Message> {
             }
         }
 
+        // A switched-off low cut has no handle to grab.
+        if !self.eq.low_cut_on() {
+            return best.map(|(_, drag)| drag);
+        }
         let point = self.low_cut_handle(plot);
         let distance = (point.x - pos.x).hypot(point.y - pos.y);
         if distance <= (LOW_CUT_HANDLE_R + 4.0) * self.scale
@@ -340,7 +344,9 @@ impl<Message> canvas::Program<Message> for EqPlot<Message> {
             );
         }
 
-        draw_low_cut(&mut frame, &self.eq, plot, scale, state.drag);
+        if self.eq.low_cut_on() {
+            draw_low_cut(&mut frame, &self.eq, plot, scale, state.drag);
+        }
 
         let points = response_points(plot, |f| response_db(&self.eq, f, rate));
         let color = if self.eq.enabled {
@@ -688,6 +694,9 @@ fn biquad_response(c: &[f32; 3], w: f32) -> (f32, f32) {
 /// Butterworth high-pass of order `slope / 6`, normalized to 0 dB well
 /// above the cutoff and -3 dB at it.
 fn low_cut_db(eq: &InputEq, f: f32) -> f32 {
+    if !eq.low_cut_on() {
+        return 0.0;
+    }
     let order = (eq.low_cut_slope_db_oct.max(6) / 6) as i32;
     let r = f / eq.low_cut_freq_hz.max(1) as f32;
     let mag = r.powi(order) / (1.0 + r.powi(2 * order)).sqrt();
@@ -726,6 +735,14 @@ mod tests {
         let eq = InputEq::default();
         let db = response_db(&eq, 1_000.0, 48_000.0);
         assert!(db.abs() < 0.01, "default EQ read {db} dB at 1 kHz");
+    }
+
+    #[test]
+    fn a_switched_off_low_cut_does_not_touch_the_response() {
+        let mut eq = InputEq::default();
+        eq.low_cut_freq_hz = 0;
+        assert_eq!(low_cut_db(&eq, 20.0), 0.0);
+        assert_eq!(low_cut_db(&eq, 5_000.0), 0.0);
     }
 
     #[test]
