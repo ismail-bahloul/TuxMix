@@ -134,16 +134,16 @@ fn cc_dest_name(out: usize, right: bool) -> Option<&'static str> {
 fn input_crosspoint_slot(idx: usize) -> Option<(usize, SelemChannelId, bool)> {
     use SelemChannelId::{FrontLeft as L, FrontRight as R};
     Some(match idx {
-        0 => (0, L, true),  // AN1 (Mic 1)
-        1 => (1, L, true),  // AN2 (Mic 2)
-        2 => (2, L, true),  // IN3 -> hardware source "AN3"
-        3 => (3, L, true),  // IN4 -> hardware source "AN4"
-        4 => (4, L, false), // AS1
-        5 => (4, R, false), // AS2
-        6 => (5, L, false), // ADAT3
-        7 => (5, R, false), // ADAT4
-        8 => (6, L, false), // ADAT5
-        9 => (6, R, false), // ADAT6
+        0 => (0, L, true),   // AN1 (Mic 1)
+        1 => (1, L, true),   // AN2 (Mic 2)
+        2 => (2, L, true),   // IN3 -> hardware source "AN3"
+        3 => (3, L, true),   // IN4 -> hardware source "AN4"
+        4 => (4, L, false),  // AS1
+        5 => (4, R, false),  // AS2
+        6 => (5, L, false),  // ADAT3
+        7 => (5, R, false),  // ADAT4
+        8 => (6, L, false),  // ADAT5
+        9 => (6, R, false),  // ADAT6
         10 => (7, L, false), // ADAT7
         11 => (7, R, false), // ADAT8
         _ => return None,
@@ -314,6 +314,12 @@ fn encode_volume_pan(volume: f32, pan: i8, max: f32) -> (i64, i64) {
 /// catches what the events themselves did not carry.
 const RESYNC_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// The panel changes a preamp through a different register than the host,
+/// and its ALSA notification has proven unreliable, so the four gains are
+/// also re-read on this cadence. Four integer reads, cheap next to the
+/// meters.
+const GAIN_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Largest difference between the model and the card that still counts as
 /// "the same value": the model keeps the float the UI asked for, the card
 /// the integer it was rounded to, so a re-read must not nudge a fader the
@@ -389,6 +395,8 @@ pub struct BabyfacePro {
     /// When to re-read the card once more after a burst of ALSA events,
     /// see [`RESYNC_SETTLE`].
     resync_at: Option<std::time::Instant>,
+    /// Next due re-read of the preamp gains, see [`GAIN_POLL`].
+    gain_poll_at: Option<std::time::Instant>,
 }
 
 impl BabyfacePro {
@@ -405,9 +413,30 @@ impl BabyfacePro {
     /// after a stream error (a PipeWire profile change, a re-probe).
     /// Diagnostic only; the meter recovers on its own.
     pub fn meter_reconnects(&self) -> usize {
-        self.capture_meter
-            .as_ref()
-            .map_or(0, |cm| cm.reconnects())
+        self.capture_meter.as_ref().map_or(0, |cm| cm.reconnects())
+    }
+
+    /// Re-read the four preamp gains. Kept separate from
+    /// `attach_mixer_elements` because `poll_events` also calls it on its
+    /// own cadence, not only when the mixer reports an event.
+    fn refresh_preamp_gains(&mut self) {
+        let mono = SelemChannelId::mono();
+        for i in 0..4 {
+            let read = self.preamp_gain_selem(i).and_then(|s| {
+                let v = s.get_capture_volume(mono).ok()?;
+                Some((v as u32, s.get_capture_volume_range().1 as u32))
+            });
+            let Some(inp) = self.inputs.get_mut(i) else {
+                continue;
+            };
+            if let Some((v, max)) = read {
+                if inp.gain != Some(v) {
+                    log::debug!("gain[{i}]: {:?} -> {v}", inp.gain);
+                }
+                inp.gain = Some(v);
+                inp.gain_max = Some(max);
+            }
+        }
     }
 
     /// Look up a crosspoint's ALSA element: `BF_SOURCES[src]` at
@@ -447,7 +476,8 @@ impl BabyfacePro {
             };
             let mono = SelemChannelId::mono();
             if is_mono {
-                let (Some(dl), Some(dr)) = (cc_dest_name(output, false), cc_dest_name(output, true))
+                let (Some(dl), Some(dr)) =
+                    (cc_dest_name(output, false), cc_dest_name(output, true))
                 else {
                     return Ok(());
                 };
@@ -793,7 +823,9 @@ impl BabyfacePro {
         // named control per mic (`babyface-pro-linux`'s own "<name>
         // Phase" Switch, added 2026-09-06).
         for i in 0..4.min(self.inputs.len()) {
-            if let Some(selem) = self.mixer.find_selem(&format!("{} Phase", BF_SOURCES[i]), i as u32)
+            if let Some(selem) = self
+                .mixer
+                .find_selem(&format!("{} Phase", BF_SOURCES[i]), i as u32)
             {
                 if let Ok(v) = selem.get_playback_switch(mono) {
                     self.inputs[i].phase = v != 0;
@@ -805,7 +837,9 @@ impl BabyfacePro {
         // (`babyface-pro-linux`'s own "<name> Trim Volume", added
         // 2026-09-06).
         for i in 0..4.min(self.inputs.len()) {
-            if let Some(selem) = self.mixer.find_selem(&format!("{} Trim", BF_SOURCES[i]), i as u32)
+            if let Some(selem) = self
+                .mixer
+                .find_selem(&format!("{} Trim", BF_SOURCES[i]), i as u32)
             {
                 if let Ok(v) = selem.get_playback_volume(mono) {
                     self.inputs[i].trim = v as f32;
@@ -835,20 +869,9 @@ impl BabyfacePro {
 
         // ── Preamp gain — inputs[0..4] (Mic1, Mic2, Instr3, Instr4) map
         // 1:1 to ALSA index 0..4 of "Mic 1" (a *capture* volume, not
-        // playback — `mixer.c:1313-1326`).
-        for i in 0..4 {
-            let read = self.preamp_gain_selem(i).and_then(|s| {
-                let v = s.get_capture_volume(mono).ok()?;
-                Some((v as u32, s.get_capture_volume_range().1 as u32))
-            });
-            let Some(inp) = self.inputs.get_mut(i) else {
-                continue;
-            };
-            if let Some((v, max)) = read {
-                inp.gain = Some(v);
-                inp.gain_max = Some(max);
-            }
-        }
+        // playback — `mixer.c:1313-1326`). Re-read on its own cadence too,
+        // see `GAIN_POLL`.
+        self.refresh_preamp_gains();
 
         // ── Crosspoint volume (+ pan for the 4 true-mono sources) ──
         let any_solo = self.inputs.iter().any(|c| c.solo) || self.playbacks.iter().any(|c| c.solo);
@@ -938,7 +961,9 @@ impl BabyfacePro {
                     };
                     (v as f32 / max, None)
                 } else {
-                    let Some(selem) = self.mixer.find_selem(PAIR_LABELS[pair_idx], pair_idx as u32)
+                    let Some(selem) = self
+                        .mixer
+                        .find_selem(PAIR_LABELS[pair_idx], pair_idx as u32)
                     else {
                         continue;
                     };
@@ -953,8 +978,15 @@ impl BabyfacePro {
                     // When the model's value is what the card holds after
                     // rounding, keep the model's: the check below then
                     // leaves the fader alone, and the mute still syncs.
-                    let model = self.outputs.get(pair_idx * 2 + side).map_or(0.0, |o| o.volume);
-                    let v = if resync && tlv_matches(&selem, ch, model) { model } else { v };
+                    let model = self
+                        .outputs
+                        .get(pair_idx * 2 + side)
+                        .map_or(0.0, |o| o.volume);
+                    let v = if resync && tlv_matches(&selem, ch, model) {
+                        model
+                    } else {
+                        v
+                    };
                     // The mute switch is shared by both channels
                     // (`mixer.c`'s `bf_mute_get` mirrors one value).
                     let muted = selem
@@ -1021,7 +1053,11 @@ impl BabyfacePro {
         }
         if let Some(selem) = self.mixer.find_selem("FX Send", 0) {
             if let Ok(v) = selem.get_playback_volume(mono) {
-                self.settings.fx_send_db = Some(if v <= 0 { -65.0 } else { fader_raw_to_db(v as u16) });
+                self.settings.fx_send_db = Some(if v <= 0 {
+                    -65.0
+                } else {
+                    fader_raw_to_db(v as u16)
+                });
             }
         }
         if let Some(selem) = self.mixer.find_selem("Varispeed Pitch", 0) {
@@ -1078,12 +1114,18 @@ impl BabyfacePro {
                     }
                 }
             }
-            if let Some(selem) = self.mixer.find_selem(&format!("{strip} EQ Low Cut Freq"), 0) {
+            if let Some(selem) = self
+                .mixer
+                .find_selem(&format!("{strip} EQ Low Cut Freq"), 0)
+            {
                 if let Ok(v) = selem.get_playback_volume(mono) {
                     eq.low_cut_freq_hz = v.clamp(0, 20_000) as u16;
                 }
             }
-            if let Some(selem) = self.mixer.find_selem(&format!("{strip} EQ Low Cut Slope"), 0) {
+            if let Some(selem) = self
+                .mixer
+                .find_selem(&format!("{strip} EQ Low Cut Slope"), 0)
+            {
                 if let Ok(v) = selem.get_enum_item(mono) {
                     eq.low_cut_slope_db_oct = eq_slope_from_enum(v);
                 }
@@ -1263,10 +1305,11 @@ impl RmeDevice for BabyfacePro {
         // `capture_meter::INPUT_FOR_CAPTURE` therefore maps them straight
         // onto the input strips. See `capture_meter`'s module doc comment
         // for the live mapping.
-        let capture_meter =
-            crate::capture_meter::CaptureMeter::start(mixer.card_name(), 48_000);
+        let capture_meter = crate::capture_meter::CaptureMeter::start(mixer.card_name(), 48_000);
         if capture_meter.is_none() {
-            log::warn!("Could not open the capture PCM for input level metering; meters will read N/A");
+            log::warn!(
+                "Could not open the capture PCM for input level metering; meters will read N/A"
+            );
         }
         let mut device = Self {
             card_devnum: AlsaMixer::card_devnum(mixer.card_name()),
@@ -1301,6 +1344,7 @@ impl RmeDevice for BabyfacePro {
             dim_press_count: None,
             panel: None,
             resync_at: None,
+            gain_poll_at: None,
         };
         device.attach_mixer_elements(false);
         Ok(device)
@@ -1362,8 +1406,10 @@ impl RmeDevice for BabyfacePro {
                 if let Some(dest) = cc_dest_name(idx / 2, idx % 2 == 1) {
                     if let Some(selem) = self.mixer.find_selem(&format!("Main-Out {dest}"), 0) {
                         let max = selem.get_playback_volume_range().1 as f32;
-                        selem
-                            .set_playback_volume(SelemChannelId::mono(), (vol_clamped * max) as i64)?;
+                        selem.set_playback_volume(
+                            SelemChannelId::mono(),
+                            (vol_clamped * max) as i64,
+                        )?;
                     }
                 }
                 out.volume = vol_clamped;
@@ -1397,7 +1443,11 @@ impl RmeDevice for BabyfacePro {
         // is really two independent ALSA channels, so writing volume
         // alone must re-encode with the cached pan rather than
         // flattening it to center.
-        let pan = if let ChannelId::Input(idx) = channel { self.inputs[idx].pans[output] } else { 0 };
+        let pan = if let ChannelId::Input(idx) = channel {
+            self.inputs[idx].pans[output]
+        } else {
+            0
+        };
         // The driver's crosspoints reach +6 dB, the model's 2.0.
         let vol = if self.grammar == ControlGrammar::ClassCompliant {
             vol_clamped
@@ -1465,14 +1515,13 @@ impl RmeDevice for BabyfacePro {
             }
             ChannelId::Playback(_) => {
                 return Err(Error::InvalidChannel(
-                    "Playback channels are linked stereo pairs and have no independent pan"
-                        .into(),
+                    "Playback channels are linked stereo pairs and have no independent pan".into(),
                 ));
             }
             ChannelId::Output(_) => return Err(Error::InvalidChannel("Output has no pan".into())),
         };
-        let (src, _ch, is_mono) =
-            input_crosspoint_slot(idx).ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
+        let (src, _ch, is_mono) = input_crosspoint_slot(idx)
+            .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
         if !is_mono {
             return Err(Error::InvalidChannel(format!(
                 "Input {} is a linked stereo source and has no independent pan",
@@ -1569,7 +1618,11 @@ impl RmeDevice for BabyfacePro {
                 let (src, ch, is_mono) = input_crosspoint_slot(idx)
                     .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
                 for out in 0..n_outputs {
-                    let level = if mute { 0.0 } else { self.inputs[idx].volumes[out] };
+                    let level = if mute {
+                        0.0
+                    } else {
+                        self.inputs[idx].volumes[out]
+                    };
                     let pan = self.inputs[idx].pans[out];
                     self.write_crosspoint(src, ch, is_mono, out, level, pan)?;
                 }
@@ -1578,7 +1631,11 @@ impl RmeDevice for BabyfacePro {
                 let (src, ch) = playback_crosspoint_slot(idx)
                     .ok_or_else(|| Error::InvalidChannel(format!("Playback {}", idx)))?;
                 for out in 0..n_outputs {
-                    let level = if mute { 0.0 } else { self.playbacks[idx].volumes[out] };
+                    let level = if mute {
+                        0.0
+                    } else {
+                        self.playbacks[idx].volumes[out]
+                    };
                     self.write_crosspoint(src, ch, false, out, level, 0)?;
                 }
             }
@@ -1618,8 +1675,12 @@ impl RmeDevice for BabyfacePro {
         // the partner's flag and zero its sends, so a soloed linked pair
         // played one side only and its strip (which shows the left
         // channel) never lit.
-        let partner_i = solo_i.filter(|i| self.input_pair_linked(i / 2)).map(|i| i ^ 1);
-        let partner_c = solo_c.filter(|c| self.playback_linked(c / 2)).map(|c| c ^ 1);
+        let partner_i = solo_i
+            .filter(|i| self.input_pair_linked(i / 2))
+            .map(|i| i ^ 1);
+        let partner_c = solo_c
+            .filter(|c| self.playback_linked(c / 2))
+            .map(|c| c ^ 1);
         match channel {
             ChannelId::Input(i) => self.inputs[i].solo = solo,
             ChannelId::Playback(c) => self.playbacks[c].solo = solo,
@@ -1639,7 +1700,11 @@ impl RmeDevice for BabyfacePro {
             };
             let muted = self.inputs[j].mute;
             for out in 0..n_outputs {
-                let level = if solo || muted { 0.0 } else { self.inputs[j].volumes[out] };
+                let level = if solo || muted {
+                    0.0
+                } else {
+                    self.inputs[j].volumes[out]
+                };
                 let pan = self.inputs[j].pans[out];
                 self.write_crosspoint(src, ch, is_mono, out, level, pan)?;
             }
@@ -1656,7 +1721,11 @@ impl RmeDevice for BabyfacePro {
             };
             let muted = self.playbacks[j].mute;
             for out in 0..n_outputs {
-                let level = if solo || muted { 0.0 } else { self.playbacks[j].volumes[out] };
+                let level = if solo || muted {
+                    0.0
+                } else {
+                    self.playbacks[j].volumes[out]
+                };
                 self.write_crosspoint(src, ch, false, out, level, 0)?;
             }
         }
@@ -1845,7 +1914,10 @@ impl RmeDevice for BabyfacePro {
             .inputs
             .get_mut(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
-        if let Some(selem) = self.mixer.find_selem(&format!("{strip} EQ Low Cut Freq"), 0) {
+        if let Some(selem) = self
+            .mixer
+            .find_selem(&format!("{strip} EQ Low Cut Freq"), 0)
+        {
             selem.set_playback_volume(SelemChannelId::mono(), clamped as i64)?;
         }
         inp.eq.get_or_insert_with(InputEq::default).low_cut_freq_hz = clamped;
@@ -1866,7 +1938,9 @@ impl RmeDevice for BabyfacePro {
         {
             selem.set_enum_item(SelemChannelId::mono(), eq_slope_to_enum(slope_db_oct))?;
         }
-        inp.eq.get_or_insert_with(InputEq::default).low_cut_slope_db_oct = slope_db_oct;
+        inp.eq
+            .get_or_insert_with(InputEq::default)
+            .low_cut_slope_db_oct = slope_db_oct;
         Ok(())
     }
 
@@ -1902,8 +1976,9 @@ impl RmeDevice for BabyfacePro {
             // "Instrument Ref Level" enumerates ["+4dBu", "-10dBV",
             // "Boost"]. Resolve the item by *name* rather than by index
             // so the order can never bite us again.
-            let base = Self::cc_preamp_base(idx)
-                .ok_or_else(|| Error::InvalidChannel(format!("Input {idx} has no Sens. control")))?;
+            let base = Self::cc_preamp_base(idx).ok_or_else(|| {
+                Error::InvalidChannel(format!("Input {idx} has no Sens. control"))
+            })?;
             let selem = self
                 .mixer
                 .find_selem(&format!("{base} Sens."), 0)
@@ -1942,7 +2017,6 @@ impl RmeDevice for BabyfacePro {
         }
         Ok(())
     }
-
 
     fn set_pitch(&mut self, pitch_percent: f32) -> Result<(), Error> {
         self.require_proprietary("Varispeed pitch")?;
@@ -2114,8 +2188,6 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
-
-
     fn set_optical_out_format(&mut self, spdif: bool) -> Result<(), Error> {
         self.require_proprietary("optical out format")?;
         let wanted = if spdif { "S/PDIF" } else { "ADAT" };
@@ -2238,6 +2310,10 @@ impl RmeDevice for BabyfacePro {
             self.resync_at = None;
             self.attach_mixer_elements(true);
         }
+        if self.gain_poll_at.map_or(true, |t| now >= t) {
+            self.gain_poll_at = Some(now + GAIN_POLL);
+            self.refresh_preamp_gains();
+        }
         Ok(())
     }
 
@@ -2256,10 +2332,7 @@ impl RmeDevice for BabyfacePro {
         let peaks = cm.drain();
         crate::capture_meter::CaptureMeter::debug_log(&peaks);
         let mut levels = vec![0.0; self.inputs.len()];
-        for (cap, input) in peaks
-            .iter()
-            .zip(crate::capture_meter::INPUT_FOR_CAPTURE)
-        {
+        for (cap, input) in peaks.iter().zip(crate::capture_meter::INPUT_FOR_CAPTURE) {
             if let Some(i) = input {
                 if let Some(slot) = levels.get_mut(i) {
                     *slot = *cap;
@@ -2447,7 +2520,10 @@ mod tests {
 
         dev.set_sensitivity(idx, Sensitivity::Minus10dBV).unwrap();
         let dev2 = BabyfacePro::open().expect("real device attached");
-        assert_eq!(dev2.inputs()[idx].sensitivity, Some(Sensitivity::Minus10dBV));
+        assert_eq!(
+            dev2.inputs()[idx].sensitivity,
+            Some(Sensitivity::Minus10dBV)
+        );
         // Mirrored across both Instrument channels — there's only one
         // real switch (IN4 = idx 3).
         assert_eq!(dev2.inputs()[3].sensitivity, Some(Sensitivity::Minus10dBV));
@@ -2519,13 +2595,19 @@ mod tests {
         dev.set_input_phantom(0, false).unwrap();
         let dev2 = BabyfacePro::open().expect("real device attached");
         assert!(!dev2.inputs()[0].phantom);
-        assert!(!dev2.inputs()[1].phantom, "48V off must mirror to AN2 when linked");
+        assert!(
+            !dev2.inputs()[1].phantom,
+            "48V off must mirror to AN2 when linked"
+        );
         drop(dev2);
 
         dev.set_input_phantom(0, true).unwrap();
         let dev3 = BabyfacePro::open().expect("real device attached");
         assert!(dev3.inputs()[0].phantom);
-        assert!(dev3.inputs()[1].phantom, "48V on must mirror to AN2 when linked");
+        assert!(
+            dev3.inputs()[1].phantom,
+            "48V on must mirror to AN2 when linked"
+        );
         drop(dev3);
 
         dev.set_phantom(0, orig0).unwrap();
@@ -2544,7 +2626,10 @@ mod tests {
         dev.set_stereo_split(pb, true).unwrap();
         let dev2 = BabyfacePro::open().expect("real device attached");
         assert!(dev2.playbacks()[0].split);
-        assert!(dev2.playbacks()[1].split, "split mirrors across both channels of the pair");
+        assert!(
+            dev2.playbacks()[1].split,
+            "split mirrors across both channels of the pair"
+        );
         drop(dev2);
 
         dev.set_stereo_split(pb, false).unwrap();
@@ -2645,7 +2730,8 @@ mod tests {
         modified.inputs[1].mute = true; // AN2, verified silent (0%) before running this
         modified.outputs[0].loopback = true; // AN1/2 pair
 
-        dev.apply_scene(&modified).expect("apply_scene should succeed");
+        dev.apply_scene(&modified)
+            .expect("apply_scene should succeed");
 
         let dev2 = BabyfacePro::open().expect("real device attached");
         assert!(
@@ -2710,7 +2796,15 @@ mod tests {
         // A paired source writes only its own side of the output pair.
         let orig = dev.volume(ChannelId::Input(4), 1).unwrap();
         dev.set_volume(ChannelId::Input(4), 1, 0.42).unwrap();
-        assert!((BabyfacePro::open().unwrap().volume(ChannelId::Input(4), 1).unwrap() - 0.42).abs() < 0.01);
+        assert!(
+            (BabyfacePro::open()
+                .unwrap()
+                .volume(ChannelId::Input(4), 1)
+                .unwrap()
+                - 0.42)
+                .abs()
+                < 0.01
+        );
         dev.set_volume(ChannelId::Input(4), 1, orig).unwrap();
 
         // A mono source's pan is two separate controls in this grammar.
@@ -2720,7 +2814,15 @@ mod tests {
         );
         dev.set_volume(ChannelId::Input(0), 0, 0.8).unwrap();
         dev.set_pan(ChannelId::Input(0), 0, -50).unwrap();
-        assert!((BabyfacePro::open().unwrap().pan(ChannelId::Input(0), 0).unwrap() + 50).abs() <= 2);
+        assert!(
+            (BabyfacePro::open()
+                .unwrap()
+                .pan(ChannelId::Input(0), 0)
+                .unwrap()
+                + 50)
+                .abs()
+                <= 2
+        );
         dev.set_volume(ChannelId::Input(0), 0, ov).unwrap();
         dev.set_pan(ChannelId::Input(0), 0, op).unwrap();
 
@@ -2735,7 +2837,11 @@ mod tests {
         dev.set_sensitivity(2, other).unwrap();
         let f = BabyfacePro::open().unwrap();
         assert_eq!(f.inputs()[2].sensitivity, Some(other), "IN3 must change");
-        assert_eq!(f.inputs()[3].sensitivity, Some(orig_s), "IN4 must NOT mirror");
+        assert_eq!(
+            f.inputs()[3].sensitivity,
+            Some(orig_s),
+            "IN4 must NOT mirror"
+        );
         drop(f);
         dev.set_sensitivity(2, orig_s).unwrap();
     }

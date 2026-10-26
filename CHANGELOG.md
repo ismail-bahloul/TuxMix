@@ -16,6 +16,8 @@
 - A full-state snapshot no longer loses its tail: the outbound queue held
   100 messages and `try_send` silently dropped the rest, which hid every
   output channel on refresh.
+- A preamp gain changed on the unit now reaches the UI: the ALSA backend
+  re-reads the four gains on a 250 ms poll, not only on an ALSA event.
 
 ## 0.3.2 (2026-10-23)
 
