@@ -5092,16 +5092,28 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         .padding(theme::SPACE_TIGHT * scale)
         .width(Length::Fill)
         .style(theme::segment_track);
-    let slope_col = column![
-        slope_row,
-        text("dB/oct")
-            .size(theme::TEXT_MICRO * scale)
-            .color(theme::TEXT_SEC),
+    // The row is as tall as the frequency knob; the slope track is centered
+    // in that height, on the same line as the switch and the knob, and the
+    // unit hangs at the bottom. With the unit stacked under the track in a
+    // column, the column was centered instead and the track rode above the
+    // other two.
+    let low_cut_h = crate::widgets::knob::BOX_SIZE * eq_scale;
+    let slope_col = iced::widget::stack![
+        container(slope_row)
+            .width(Length::Fill)
+            .center_y(Length::Fixed(low_cut_h)),
+        container(
+            text("dB/oct")
+                .size(theme::TEXT_MICRO * scale)
+                .color(theme::TEXT_SEC),
+        )
+        .width(Length::Fill)
+        .center_x(Length::Fill)
+        .align_bottom(Length::Fixed(low_cut_h)),
     ]
-    .spacing(theme::SPACE_TIGHT)
     // Bands 1 and 2's columns, so the frequency knob lands under band 3.
     .width(Length::FillPortion(2))
-    .align_x(iced::Alignment::Center);
+    .height(Length::Fixed(low_cut_h));
 
     let freq_col = container(hint(
         knob(Knob {
@@ -5133,6 +5145,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
             text("low cut")
                 .size(theme::TEXT_XS * scale)
                 .wrapping(iced::advanced::text::Wrapping::None)
+                .width(Length::Fill)
                 .center(),
         )
         .padding([theme::SPACE_TIGHT * scale, 0.0])
