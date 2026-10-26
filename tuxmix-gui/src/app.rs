@@ -904,7 +904,7 @@ pub struct TuxMix {
     pub playback_meters: Vec<MeterAnim>,
     /// Host-side playback tap from PipeWire's sink monitor. Disabled in
     /// mock mode, where the mock's own levels are authoritative.
-    pub playback_tap: pw_meter::PlaybackTap,
+    pub playback_tap: pw_meter::Tap,
     /// Monitor channel count the tap currently has (0 = not running):
     /// 2 in the stereo profile (PB1 only), 12 in Pro Audio (all pairs).
     pub playback_tap_channels: usize,
@@ -1348,9 +1348,9 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
     // Mock generates its own playback levels; a real backend gets them
     // from PipeWire's sink monitor (see `pw_meter`).
     let playback_tap = if device.is_mock() {
-        pw_meter::PlaybackTap::disabled()
+        pw_meter::Tap::disabled()
     } else {
-        pw_meter::PlaybackTap::start()
+        pw_meter::Tap::start_playback()
     };
 
     TuxMix {

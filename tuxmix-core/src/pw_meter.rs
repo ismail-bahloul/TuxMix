@@ -1,4 +1,10 @@
-//! Per-playback meters from PipeWire's sink monitor.
+//! Per-channel meters from PipeWire: the sink monitor for playback, the
+//! card's own source for the inputs.
+//!
+//! Capturing the input source instead of opening the card's capture PCM
+//! directly matters: holding that PCM removes the input node from the
+//! graph, and its fixed period is what made the card report 1024 frames
+//! instead of the graph's quantum.
 //!
 //! The device exposes no playback-meter registers, and the kernel
 //! driver's capture stream only carries a mixed-down playback tap (one
@@ -41,20 +47,29 @@ const PERIOD_FRAMES: usize = 1024;
 /// or after the capture child exits (profile switch, unplug, etc.).
 const RETRY: Duration = Duration::from_secs(2);
 
-/// A captured PipeWire sink: its Pulse name and index (the index is the
-/// `pw-record` target), plus the monitor's rate and channel count.
+/// Which PipeWire endpoint to capture: a sink's monitor (playback) or a
+/// real source (the card's own inputs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapKind {
+    Sink,
+    Source,
+}
+
+/// A captured PipeWire endpoint: its Pulse name and index (the index is
+/// the `pw-record` target), plus its rate and channel count.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Monitor {
     name: String,
     index: u32,
     rate: u32,
     channels: usize,
+    kind: TapKind,
 }
 
 /// Owns the capture child and its reader thread. `drain()` is the only
 /// thing the UI touches; the rest (discovery, restart, cleanup) happens
 /// on the worker thread.
-pub struct PlaybackTap {
+pub struct Tap {
     levels: Arc<Mutex<[f32; MAX_CHANNELS]>>,
     channels: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
@@ -63,11 +78,11 @@ pub struct PlaybackTap {
     watch: Option<JoinHandle<()>>,
 }
 
-impl PlaybackTap {
-    /// Start discovering and capturing the Babyface sink monitor. Cheap:
-    /// the actual work runs on a background thread, and a missing
+impl Tap {
+    /// Start discovering and capturing a Babyface endpoint. Cheap: the
+    /// actual work runs on a background thread, and a missing
     /// `pactl`/`pw-record` just leaves the meters at zero channels.
-    pub fn start() -> Self {
+    pub fn start(kind: TapKind) -> Self {
         let levels = Arc::new(Mutex::new([0.0; MAX_CHANNELS]));
         let channels = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
@@ -86,7 +101,7 @@ impl PlaybackTap {
             let stop = Arc::clone(&stop);
             let child = Arc::clone(&child);
             let wanted = Arc::clone(&wanted);
-            std::thread::spawn(move || watch_monitor(wanted, child, stop))
+            std::thread::spawn(move || watch_monitor(wanted, child, stop, kind))
         };
 
         Self {
@@ -97,6 +112,23 @@ impl PlaybackTap {
             handle: Some(handle),
             watch: Some(watch),
         }
+    }
+
+    /// The playback side: the sink's monitor.
+    pub fn start_playback() -> Self {
+        Self::start(TapKind::Sink)
+    }
+
+    /// The input side: the card's own source, so the app never holds the
+    /// capture PCM itself.
+    pub fn start_input() -> Self {
+        Self::start(TapKind::Source)
+    }
+
+    /// How many channels the current endpoint has, 0 while none is being
+    /// captured.
+    pub fn channels(&self) -> usize {
+        self.channels.load(Ordering::Relaxed)
     }
 
     /// A tap that never runs: mock mode, where the mock's own playback
@@ -126,7 +158,7 @@ impl PlaybackTap {
     }
 }
 
-impl Drop for PlaybackTap {
+impl Drop for Tap {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         // Killing the child closes its stdout, which unblocks the reader
@@ -216,9 +248,10 @@ fn watch_monitor(
     wanted: Arc<Mutex<Option<Monitor>>>,
     slot: Arc<Mutex<Option<Child>>>,
     stop: Arc<AtomicBool>,
+    kind: TapKind,
 ) {
     loop {
-        let discovered = discover_monitor();
+        let discovered = discover_monitor(kind);
         let changed = {
             let Ok(mut wanted) = wanted.lock() else {
                 return;
@@ -246,13 +279,17 @@ fn watch_monitor(
     }
 }
 
-/// Ask Pulse/PipeWire for its sources and pick the widest Babyface
-/// monitor. `pactl` prints one JSON object per source; the monitor name
-/// carries the card and profile, and `sample_specification` is a string
-/// like `"s32le 12ch 48000Hz"`.
-fn discover_monitor() -> Option<Monitor> {
+/// Ask Pulse/PipeWire for its sinks or sources and pick the widest
+/// Babyface endpoint. `pactl` prints one JSON object per endpoint; the
+/// name carries the card and profile, and `sample_specification` is a
+/// string like `"s32le 12ch 48000Hz"`.
+fn discover_monitor(kind: TapKind) -> Option<Monitor> {
+    let list = match kind {
+        TapKind::Sink => "sinks",
+        TapKind::Source => "sources",
+    };
     let output = Command::new("pactl")
-        .args(["--format=json", "list", "sinks"])
+        .args(["--format=json", "list", list])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -260,10 +297,10 @@ fn discover_monitor() -> Option<Monitor> {
     if !output.status.success() {
         return None;
     }
-    parse_monitor(&output.stdout)
+    parse_monitor(&output.stdout, kind)
 }
 
-fn parse_monitor(json: &[u8]) -> Option<Monitor> {
+fn parse_monitor(json: &[u8], kind: TapKind) -> Option<Monitor> {
     let sinks: serde_json::Value = serde_json::from_slice(json).ok()?;
     let sinks = sinks.as_array()?;
     let mut best: Option<Monitor> = None;
@@ -272,6 +309,11 @@ fn parse_monitor(json: &[u8]) -> Option<Monitor> {
             continue;
         };
         if !name.contains("Babyface") {
+            continue;
+        }
+        // A source list also carries every sink's monitor; the input
+        // side wants the real capture node, not the playback tap.
+        if kind == TapKind::Source && name.ends_with(".monitor") {
             continue;
         }
         let Some(spec) = sink.get("sample_specification").and_then(|v| v.as_str()) else {
@@ -291,6 +333,7 @@ fn parse_monitor(json: &[u8]) -> Option<Monitor> {
             index: index as u32,
             rate,
             channels,
+            kind,
         };
         if best
             .as_ref()
@@ -318,17 +361,18 @@ fn parse_spec(spec: &str) -> Option<(u32, usize)> {
 }
 
 fn spawn_record(monitor: &Monitor) -> Option<Child> {
-    Command::new("pw-record")
-        .arg("--target")
+    let mut cmd = Command::new("pw-record");
+    cmd.arg("--target")
         // The index (PipeWire's Pulse object serial) is the reliable
-        // target while the sink is suspended; a name falls back to the
-        // default sink, which may be an entirely different card.
-        .arg(monitor.index.to_string())
+        // target while the endpoint is suspended; a name falls back to
+        // the default endpoint, which may be an entirely different card.
+        .arg(monitor.index.to_string());
+    if monitor.kind == TapKind::Sink {
         // Without this, the target would still record a source; the
         // property is what links the stream to the sink's monitor ports.
-        .arg("--properties")
-        .arg("stream.capture.sink=true")
-        .arg("--format")
+        cmd.arg("--properties").arg("stream.capture.sink=true");
+    }
+    cmd.arg("--format")
         .arg("s32")
         .arg("--rate")
         .arg(monitor.rate.to_string())
@@ -431,7 +475,7 @@ fn sleep_interruptible(stop: &AtomicBool, total: Duration) {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_peaks, parse_monitor, parse_spec, MAX_CHANNELS};
+    use super::{add_peaks, parse_monitor, parse_spec, TapKind, MAX_CHANNELS};
 
     #[test]
     fn picks_the_widest_babyface_sink() {
@@ -443,7 +487,7 @@ mod tests {
             {"index":2629,"name":"alsa_output.usb-RME_Babyface_Pro__x.pro-output-0",
              "sample_specification":"s32le 12ch 48000Hz"}
         ]"#;
-        let monitor = parse_monitor(json).expect("a Babyface sink");
+        let monitor = parse_monitor(json, TapKind::Sink).expect("a Babyface sink");
         assert_eq!(monitor.index, 2629);
         assert_eq!(monitor.channels, 12);
         assert_eq!(monitor.rate, 48_000);
@@ -458,7 +502,23 @@ mod tests {
             {"index":12,"name":"alsa_output.usb-Other",
              "sample_specification":"s32le 12ch 48000Hz"}
         ]"#;
-        assert!(parse_monitor(json).is_none());
+        assert!(parse_monitor(json, TapKind::Sink).is_none());
+    }
+
+    #[test]
+    fn picks_the_babyface_input_source_and_skips_monitors() {
+        let json = br#"[
+            {"index":11,"name":"alsa_input.pci-0.HiFi__Mic1__source",
+             "sample_specification":"s32le 2ch 48000Hz"},
+            {"index":234,"name":"alsa_output.usb-RME_Babyface_Pro__x.pro-output-0.monitor",
+             "sample_specification":"s32le 12ch 48000Hz"},
+            {"index":235,"name":"alsa_input.usb-RME_Babyface_Pro__x.pro-input-0",
+             "sample_specification":"s32le 12ch 48000Hz"}
+        ]"#;
+        let source = parse_monitor(json, TapKind::Source).expect("a Babyface source");
+        assert_eq!(source.index, 235);
+        assert_eq!(source.channels, 12);
+        assert_eq!(source.kind, TapKind::Source);
     }
 
     #[test]

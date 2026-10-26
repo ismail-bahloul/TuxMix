@@ -377,10 +377,15 @@ pub struct BabyfacePro {
     /// which also keeps this outside `DeviceSettings` (no getter exists
     /// in [`RmeDevice`] for it, only `set_input_link`).
     linked: bool,
-    /// Real-time input level metering for every hardware input — `None`
-    /// if the capture PCM couldn't be opened (metering is a nice-to-have,
-    /// not something that should keep the rest of the device from
-    /// working). See `capture_meter`'s module doc comment.
+    /// Input metering through PipeWire's own source, so the app never
+    /// holds the card's capture PCM: holding it removes the input node
+    /// from the graph and pins the card to the meter's own period. See
+    /// `pw_meter`'s module doc comment.
+    input_tap: Option<crate::pw_meter::Tap>,
+    /// Direct ALSA capture, used only when PipeWire is not running.
+    /// `None` if the capture PCM couldn't be opened; metering is a
+    /// nice-to-have, not something that should keep the rest of the
+    /// device from working.
     capture_meter: Option<crate::capture_meter::CaptureMeter>,
     /// The driver's "DIM Button Press Count" as last seen, `None` when the
     /// control does not exist (an older driver that applied DIM itself,
@@ -406,7 +411,7 @@ impl BabyfacePro {
     /// we meter anything", so a failed PCM open does not read as a bank
     /// of silent-but-live inputs.
     pub fn meters_available(&self) -> bool {
-        self.capture_meter.is_some()
+        self.input_tap.is_some() || self.capture_meter.is_some()
     }
 
     /// How many times the input capture meter has reopened its PCM
@@ -1299,23 +1304,32 @@ impl RmeDevice for BabyfacePro {
         };
         info!("ALSA control grammar: {grammar:?}");
 
-        // Request all 12 capture channels. The kernel driver's capture
-        // map is the identity in v7 (2026-10-23): capture channel i is the
-        // i-th word, in the device's own order AN1-4, AS1/2, ADAT3-8.
-        // `capture_meter::INPUT_FOR_CAPTURE` therefore maps them straight
-        // onto the input strips. See `capture_meter`'s module doc comment
-        // for the live mapping.
-        let capture_meter = crate::capture_meter::CaptureMeter::start(mixer.card_name(), 48_000);
-        if capture_meter.is_none() {
+        // Meter the inputs through PipeWire's own source when it is
+        // running. Opening the capture PCM directly removes the input
+        // node from the graph and pins the card to this meter's period,
+        // which is what made a fresh session lose its capture device and
+        // report 1024 frames. The direct capture stays as the fallback
+        // for a system without PipeWire.
+        let pipewire = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(|dir| std::path::Path::new(&dir).join("pipewire-0").exists())
+            .unwrap_or(false);
+        let (input_tap, capture_meter) = if pipewire {
+            (Some(crate::pw_meter::Tap::start_input()), None)
+        } else {
+            (
+                None,
+                crate::capture_meter::CaptureMeter::start(mixer.card_name(), 48_000),
+            )
+        };
+        if input_tap.is_none() && capture_meter.is_none() {
             log::warn!(
-                "Could not open the capture PCM for input level metering; meters will read N/A"
+                "Could not open input metering (PipeWire source or capture PCM); meters will read N/A"
             );
         }
         let mut device = Self {
             card_devnum: AlsaMixer::card_devnum(mixer.card_name()),
             mixer,
             grammar,
-            capture_meter,
             profile,
             inputs: profile.build_inputs(),
             playbacks: profile.build_playbacks(),
@@ -1340,6 +1354,8 @@ impl RmeDevice for BabyfacePro {
                 output_link: Vec::new(),
                 input_pair_link: Vec::new(),
             },
+            input_tap,
+            capture_meter,
             linked: true,
             dim_press_count: None,
             panel: None,
@@ -2343,12 +2359,21 @@ impl RmeDevice for BabyfacePro {
     /// trait's own contract. See `capture_meter`'s module doc comment for
     /// the live mapping behind `INPUT_FOR_CAPTURE`.
     fn meters(&self) -> Option<Vec<f32>> {
-        let cm = self.capture_meter.as_ref()?;
-        if !cm.is_connected() {
-            return None;
-        }
-        let peaks = cm.drain();
-        crate::capture_meter::CaptureMeter::debug_log(&peaks);
+        let peaks = if let Some(tap) = &self.input_tap {
+            let (peaks, channels) = tap.drain();
+            if channels == 0 {
+                return None;
+            }
+            peaks
+        } else {
+            let cm = self.capture_meter.as_ref()?;
+            if !cm.is_connected() {
+                return None;
+            }
+            let peaks = cm.drain();
+            crate::capture_meter::CaptureMeter::debug_log(&peaks);
+            peaks
+        };
         let mut levels = vec![0.0; self.inputs.len()];
         for (cap, input) in peaks.iter().zip(crate::capture_meter::INPUT_FOR_CAPTURE) {
             if let Some(i) = input {

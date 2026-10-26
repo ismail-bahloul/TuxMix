@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 #[cfg(feature = "alsa")]
 use tuxmix_core::BabyfacePro;
 use tuxmix_core::channel::{ChannelType, EqBandType};
-use tuxmix_core::pw_meter::PlaybackTap;
+use tuxmix_core::pw_meter::Tap;
 use tuxmix_core::{BabyfaceProUsb, ChannelId, MockBabyfacePro, RmeDevice};
 
 enum DeviceHandle {
@@ -678,9 +678,9 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
     // Mock has its own generated playback levels; a real backend gets
     // them from PipeWire's sink monitor (the same tap as the GUI).
     let playback_tap = if dev.is_mock() {
-        PlaybackTap::disabled()
+        Tap::disabled()
     } else {
-        PlaybackTap::start()
+        Tap::start_playback()
     };
     loop {
         let _ = dev.poll_events();
