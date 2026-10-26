@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 (2026-10-26)
 
 ### Added
 - `--osc-dialect rme` makes the OSC bridge speak RME's documented
