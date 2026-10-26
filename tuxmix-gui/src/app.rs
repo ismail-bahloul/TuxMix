@@ -4581,6 +4581,23 @@ fn route_popover(state: &TuxMix, width: f32, scale: f32) -> Element<'_, Message>
         .into()
 }
 
+/// A strip with its Settings, EQ or Trim panel beside it, as one row item.
+/// The panel is as tall as the strip (`flyout_card`, `Length::Fill`), and a
+/// `Row` holding a `Fill` child becomes `Fill` itself, as does every row
+/// around it. Inside a row that scrolls sideways, in a page that scrolls
+/// down, nothing bounds that height, and the page came out endlessly tall
+/// with the sections below the row out of reach. Stated `Shrink`, the item
+/// is measured by the strip and the panel is stretched to it.
+fn strip_with_panel<'a>(
+    strip: Element<'a, Message>,
+    panel: Element<'a, Message>,
+) -> Element<'a, Message> {
+    row![strip, panel]
+        .spacing(theme::SPACE_MD)
+        .height(Length::Shrink)
+        .into()
+}
+
 /// The card a strip's settings / trim / EQ panel sits in: the strip's own
 /// card style, so the panel reads as the strip opened up rather than as
 /// loose controls on the page. These used to take the top bar's flat fill
@@ -5191,8 +5208,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // just their own strip's.
                 let panel_w = strip::full_width(cid) * state.ui_scale;
                 input_strips = input_strips.push(
-                    row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
-                        .spacing(theme::SPACE_MD),
+                    strip_with_panel(strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)),
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else if state.flyout_open.contains(&(cid, strip::FlyoutKind::Eq)) {
@@ -5202,7 +5218,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // manual zoom scales the panel with its contents.
                 let panel_w = strip::EQ_FLYOUT_W * state.ui_scale;
                 input_strips = input_strips.push(
-                    row![strip_widget, eq_popover(state, cid, panel_w, state.ui_scale)].spacing(theme::SPACE_MD),
+                    strip_with_panel(strip_widget, eq_popover(state, cid, panel_w, state.ui_scale)),
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else if state.flyout_open.contains(&(cid, strip::FlyoutKind::Trim)) {
@@ -5212,8 +5228,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // no strip-width-scaling content (no button rows) to fit.
                 let panel_w = strip::FLYOUT_W;
                 input_strips = input_strips.push(
-                    row![strip_widget, trim_popover(state, cid, panel_w, state.ui_scale)]
-                        .spacing(theme::SPACE_MD),
+                    strip_with_panel(strip_widget, trim_popover(state, cid, panel_w, state.ui_scale)),
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else {
@@ -5265,8 +5280,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
                 let panel_w = strip::full_width(cid) * state.ui_scale;
                 pb_strips = pb_strips.push(
-                    row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
-                        .spacing(theme::SPACE_MD),
+                    strip_with_panel(strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)),
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else {
@@ -5318,8 +5332,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
                 let panel_w = strip::full_width(cid) * state.ui_scale;
                 out_strips = out_strips.push(
-                    row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
-                        .spacing(theme::SPACE_MD),
+                    strip_with_panel(strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)),
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else {
