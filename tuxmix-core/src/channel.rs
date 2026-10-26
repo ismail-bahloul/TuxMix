@@ -118,10 +118,19 @@ impl Default for EqBand {
 pub struct InputEq {
     pub enabled: bool,
     pub bands: [EqBand; 3],
-    /// 20 – 20000 Hz.
+    /// 20 – 20000 Hz, or 0 for a low cut that is switched off: the
+    /// kernel driver's `EQ Low Cut Freq` takes 0 as "off" (there is no
+    /// separate enable), and the protocol has a distinct off state.
     pub low_cut_freq_hz: u16,
     /// 6, 12, 18, or 24 dB/octave.
     pub low_cut_slope_db_oct: u8,
+}
+
+impl InputEq {
+    /// Whether the low cut filters at all.
+    pub fn low_cut_on(&self) -> bool {
+        self.low_cut_freq_hz > 0
+    }
 }
 
 impl Default for InputEq {

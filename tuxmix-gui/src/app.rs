@@ -24,12 +24,12 @@ use tuxmix_core::pw_meter;
 use crate::scenes::{load_scene_file, save_scene_file};
 use crate::sidebar::{self, Group};
 use crate::theme;
-use crate::widgets::eq_plot::{eq_plot, EqPlotActions};
+use crate::widgets::eq_plot::{self, eq_plot, EqPlotActions};
 use crate::widgets::fader;
 use crate::widgets::knob::{knob, Knob};
 use crate::widgets::strip::{self, hint};
 
-pub const OUT_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "A3/A4", "A5/A6", "A7/A8"];
+pub const OUT_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "ADAT3/4", "ADAT5/6", "ADAT7/8"];
 
 /// Strips redundant prefixes baked into a channel's stored name before it's
 /// shown in a strip header — "PCM " for playback channels, "OUT " for
@@ -656,6 +656,9 @@ pub enum Message {
     /// Double-click on a band handle: back to 1 kHz, Q 0.7, 0 dB.
     EqBandReset(usize, usize),
     EqLowCutFreq(usize, u16),
+    /// The low cut's on/off switch: off is a frequency of 0 (see
+    /// `InputEq::low_cut_freq_hz`), on brings back the frequency it had.
+    EqLowCutEnabled(usize, bool),
     EqLowCutSlope(usize, u8),
 
     /// Output-channel index (not the submix pair — converted in the
@@ -807,6 +810,14 @@ pub enum Message {
     /// While a text field is open, it asks the field whether it still has
     /// focus, see `Message::FieldFocus`.
     PointerPressed,
+    /// The release of that press. A click that did not land on a bus
+    /// control closes an open bus popover here, after the clicked widget's
+    /// own message (see `route_click_consumed`).
+    PointerReleased,
+    /// A click on a strip's meter while its clip LED is lit: clears the
+    /// LED of `cid`'s channel, and of the next one too when the strip is a
+    /// linked pair showing both (`true`).
+    ClipReset(ChannelId, bool),
     /// The answer to that question: `false` means the click landed outside
     /// the field (iced unfocuses a text input then), so its text is
     /// accepted, the way a click away commits an edit in any desktop app.
@@ -893,6 +904,10 @@ pub struct TuxMix {
     /// the set means collapsed. This is the *target* state; the strip may
     /// still be mid-transition, tracked separately in `collapse_anim`.
     pub collapsed: HashSet<ChannelId>,
+    /// The low-cut frequency each input had when it was switched off, so
+    /// switching it on again brings it back: off is the frequency 0, which
+    /// keeps nothing to bring back.
+    pub eq_low_cut_memory: HashMap<usize, u16>,
     /// In-flight collapse/expand width animations, keyed by strip — only
     /// holds an entry while a strip is actually transitioning; pruned once
     /// settled (see `Message::CollapseTick`), which also lets the extra
@@ -1106,6 +1121,14 @@ pub struct TuxMix {
     /// widget's own message; this makes that one press not count as a
     /// click away.
     pub field_opening: bool,
+    /// The current click landed on a bus control (a strip's bus button or
+    /// a bus in a popover). Without it, the release closes an open bus
+    /// popover, so a click anywhere else (the sidebar, the top bar,
+    /// another row) dismisses it and still does what it clicked. A flag
+    /// set by the widget's message, not a state read at the press: iced
+    /// can deliver a quick click's widget message before the press itself,
+    /// but always before the release.
+    pub route_click_consumed: bool,
     /// PipeWire's graph clock (rate, buffer), when the sound server owns
     /// it (`rate_follows_sound_server`); simulated for the mock, which
     /// never touches the real PipeWire; `None` for the USB backend.
@@ -1213,7 +1236,15 @@ pub struct MeterAnim {
     /// the release ease-out curve. Clamped at `METER_RELEASE_MS`, meaning
     /// "fully settled into the tail rate".
     release_elapsed_ms: f32,
+    /// The channel touched full scale (`CLIP_LEVEL`) since its clip LED
+    /// was last cleared. Set from the raw reading, not the smoothed
+    /// `value`, which would ride over a clip of a few milliseconds.
+    pub clipped: bool,
 }
+
+/// A raw reading at or above this is a clip: 0 dBFS, give or take the
+/// float rounding of a full-scale sample.
+const CLIP_LEVEL: f32 = 0.999;
 
 impl MeterAnim {
     fn new() -> Self {
@@ -1222,6 +1253,7 @@ impl MeterAnim {
             value: 0.0,
             last_step_at: Instant::now(),
             release_elapsed_ms: METER_RELEASE_MS,
+            clipped: false,
         }
     }
 
@@ -1251,6 +1283,9 @@ impl MeterAnim {
     }
 
     fn step_for(&mut self, target: f32, dt_ms: f32) {
+        if target >= CLIP_LEVEL {
+            self.clipped = true;
+        }
         self.prev_value = self.value;
         let ratio = dt_ms / METER_TICK_MS;
         let eff = |alpha: f32| 1.0 - (1.0 - alpha).powf(ratio);
@@ -1322,6 +1357,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         playback_tap_channels: 0,
         output_meters: vec![MeterAnim::new(); n_outputs],
         collapsed: HashSet::new(),
+        eq_low_cut_memory: HashMap::new(),
         collapse_anim: HashMap::new(),
         flyout_open: HashSet::new(),
         ui_scale: theme::SCALE_DEFAULT,
@@ -1388,6 +1424,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         matrix_hover: None,
         undo_gesture: None,
         field_opening: false,
+        route_click_consumed: false,
         engine: simulated.then_some(SIMULATED_ENGINE),
         engine_force_rate: 0,
         engine_force_quantum: 0,
@@ -1873,6 +1910,10 @@ fn set_collapsed(state: &mut TuxMix, cid: ChannelId, target: bool) {
     );
     if target {
         state.collapsed.insert(cid);
+        // A collapsed strip has no gear, EQ, trim or bus button left, so
+        // a panel it had open would have no way to be closed again, and
+        // hung off a 44 px card it was squeezed to that width.
+        state.flyout_open.retain(|&(c, _)| c != cid);
     } else {
         state.collapsed.remove(&cid);
     }
@@ -1897,6 +1938,14 @@ fn open_flyout(state: &mut TuxMix, cid: ChannelId, kind: strip::FlyoutKind) {
             .retain(|&(c, k)| !(c == cid && k != strip::FlyoutKind::Route));
     }
     state.flyout_open.insert((cid, kind));
+}
+
+/// Whether a strip's bus popover (`FlyoutKind::Route`) is showing.
+fn route_popover_open(state: &TuxMix) -> bool {
+    state
+        .flyout_open
+        .iter()
+        .any(|&(_, k)| k == strip::FlyoutKind::Route)
 }
 
 /// Closes every currently-open `Route` flyout — the only kind
@@ -1988,6 +2037,8 @@ fn is_undoable(message: &Message) -> bool {
             | Message::DimToggle
             | Message::MatrixHover(..)
             | Message::PointerPressed
+            | Message::PointerReleased
+            | Message::ClipReset(..)
             | Message::FieldFocus(..)
             | Message::EngineRate(_)
             | Message::EngineQuantum(_)
@@ -2160,11 +2211,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             // CHANGES on the panel, so a GUI click on the submix picker
             // keeps winning until the user touches OUT. Panel OUT
             // selection (0=Ch1/2, 1=Phones, 2=Opt) → submix pair index
-            // (OUT_LABELS: AN1/2=0, PH3/4=1, … A7/A8=5).
+            // (OUT_LABELS: AN1/2=0, PH3/4=1, … ADAT7/8=5).
             if let Some((_, _, out_sel)) = state.device.panel_selection() {
                 let out = match out_sel {
                     1 => 1,
-                    2 => 5, // Opt = the optical output (A7/A8)
+                    2 => 5, // Opt = the optical output (ADAT7/8)
                     _ => 0,
                 };
                 if state.last_panel_out != Some(out_sel) {
@@ -2348,6 +2399,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             // job. Doesn't touch any other (Settings/Eq/Trim) flyout
             // that happens to be open elsewhere.
             close_route_flyout(state);
+            state.route_click_consumed = true;
         }
         Message::ModifiersChanged(m) => state.modifiers = m,
         Message::WindowSize(w, h) => {
@@ -2385,6 +2437,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 state.show_device_panel = false;
             } else if state.show_settings {
                 state.show_settings = false;
+            } else if route_popover_open(state) {
+                // The bus popover is an overlay like the panels above;
+                // Settings/Eq/Trim are inline and keep their own toggle.
+                close_route_flyout(state);
             } else if state.renaming.is_some() {
                 state.renaming = None;
                 state.rename_buf.clear();
@@ -2526,6 +2582,35 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 fail(state, "set_eq_low_cut_freq", &e);
             }
         }
+        Message::EqLowCutEnabled(idx, on) => {
+            let current = state
+                .device
+                .inputs()
+                .get(idx)
+                .and_then(|c| c.eq)
+                .map_or(0, |e| e.low_cut_freq_hz);
+            let target = if on {
+                if current > 0 {
+                    current
+                } else {
+                    state
+                        .eq_low_cut_memory
+                        .get(&idx)
+                        .copied()
+                        .unwrap_or(LOW_CUT_ON_HZ)
+                }
+            } else {
+                if current > 0 {
+                    state.eq_low_cut_memory.insert(idx, current);
+                }
+                0
+            };
+            if target != current {
+                if let Err(e) = state.device.set_eq_low_cut_freq(idx, target) {
+                    fail(state, "set_eq_low_cut_freq", &e);
+                }
+            }
+        }
         Message::EqLowCutSlope(idx, slope) => {
             if let Err(e) = state.device.set_eq_low_cut_slope(idx, slope) {
                 fail(state, "set_eq_low_cut_slope", &e);
@@ -2663,6 +2748,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::ToggleFlyout(cid, kind) => {
+            if kind == strip::FlyoutKind::Route {
+                state.route_click_consumed = true;
+            }
             if state.flyout_open.contains(&(cid, kind)) {
                 state.flyout_open.remove(&(cid, kind));
             } else {
@@ -2913,6 +3001,22 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             if state.device.rate_follows_sound_server() {
                 state.engine = clock;
                 state.card_stream = stream;
+            }
+        }
+        Message::ClipReset(cid, pair) => {
+            let (meters, i) = match cid {
+                ChannelId::Input(i) => (&mut state.input_meters, i),
+                ChannelId::Playback(i) => (&mut state.playback_meters, i),
+                ChannelId::Output(i) => (&mut state.output_meters, i),
+            };
+            let n = if pair { 2 } else { 1 };
+            for m in meters.iter_mut().skip(i).take(n) {
+                m.clipped = false;
+            }
+        }
+        Message::PointerReleased => {
+            if !std::mem::take(&mut state.route_click_consumed) {
+                close_route_flyout(state);
             }
         }
         Message::PointerPressed => {
@@ -3209,6 +3313,9 @@ fn handle_global_event(
         }
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)) => {
             Some(Message::PointerPressed)
+        }
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+            Some(Message::PointerReleased)
         }
         iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta, .. }) => {
             // Reported every wheel tick; `update` decides whether it's a
@@ -3535,6 +3642,7 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                 knob_cell(
                     "Pitch",
                     knob(Knob {
+                        tint: None,
                         value: settings.pitch_percent,
                         range: (-5.0, 5.0),
                         label: format!("{:+.1}%", settings.pitch_percent),
@@ -3550,6 +3658,7 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                 knob_cell(
                     "Width",
                     knob(Knob {
+                        tint: None,
                         value: settings.width,
                         range: (-1.0, 1.0),
                         label: format!("{:+.2}", settings.width),
@@ -3807,11 +3916,13 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
     } else {
         rate_label(clock.force_rate)
     };
-    // "Auto" without a number: with nothing forced, the card runs what
-    // its active clients ask for, 256 by default from the WirePlumber rule
+    // "Auto" carries the card's own period while it plays, and no number
+    // otherwise: with nothing forced, the card runs what its active
+    // clients ask for, 256 by default from the WirePlumber rule
     // (`node.latency`), not PipeWire's global `clock.quantum`, which this
-    // label used to show. The latency line below shows what really runs.
-    let quantum_opts: Vec<String> = std::iter::once("Auto".to_string())
+    // label used to show. See `auto_quantum_label`.
+    let quantum_opts: Vec<String> =
+        std::iter::once(auto_quantum_label(clock.force_quantum, state.card_stream))
         .chain(quanta.iter().map(|q| format!("{q} samples")))
         .collect();
     let quantum_sel = if clock.force_quantum == 0 {
@@ -3855,6 +3966,19 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
     .into()
 }
 
+/// The buffer-size menu's "Auto" entry, like the sample rate's "Auto
+/// (48 kHz)": with the card playing and nothing forced, the period it
+/// really runs (read from its stream, not from PipeWire's quantum, which
+/// the card does not have to follow). Idle there is nothing true to show,
+/// and with a size forced the card's period is that size, which "Auto"
+/// would not give back.
+fn auto_quantum_label(force_quantum: u32, card: Option<CardStream>) -> String {
+    match card {
+        Some(card) if force_quantum == 0 => format!("Auto ({})", card.period),
+        _ => "Auto".to_string(),
+    }
+}
+
 /// The latency line, from the card's own stream when it is playing: the
 /// quantum is only the graph's, and the sound server may open the card with
 /// a fixed hardware period of its own (WirePlumber's `api.alsa.period-size`
@@ -3887,19 +4011,13 @@ fn latency_readout(state: &TuxMix, clock: PwClock) -> Element<'_, Message> {
             }
             col.into()
         }
-        None if state.device.is_mock() => line(
-            format!(
-                "{:.1} ms per buffer at {}",
-                clock.latency_ms(),
-                rate_label(clock.effective_rate())
-            ),
-            theme::TEXT_PRIMARY,
-        )
-        .into(),
+        // The card is idle (or simulated): the graph's own buffer, in the
+        // same shape as the playing line above.
         None => line(
             format!(
-                "{:.1} ms per buffer at {}",
+                "{:.1} ms \u{00b7} {} samples at {}",
                 clock.latency_ms(),
+                clock.effective_quantum(),
                 rate_label(clock.effective_rate())
             ),
             theme::TEXT_PRIMARY,
@@ -4171,6 +4289,8 @@ fn strip_params<'a>(
         meter_available: false,
         meter2: None,
         meter2_available: false,
+        clip: false,
+        clip2: false,
         has_48v: false,
         has_pad: false,
         phantom: false,
@@ -4208,6 +4328,7 @@ fn strip_params<'a>(
         modifiers: state.modifiers,
         collapsed: state.collapsed.contains(&cid),
         collapse_anim: state.collapse_anim.get(&cid).copied(),
+        can_collapse: true,
         scale: state.ui_scale,
         selected: state.selected.contains(&cid),
         hovered: state.hovered_strip == Some(cid),
@@ -4228,6 +4349,7 @@ fn strip_params<'a>(
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
                 meter_available: state.device.has_input_meter(i),
+                clip: state.input_meters.get(i).is_some_and(|m| m.clipped),
                 has_48v,
                 has_pad: has_48v,
                 phantom: ch.phantom,
@@ -4263,6 +4385,7 @@ fn strip_params<'a>(
                     .map(MeterAnim::frame)
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
                 meter_available: playback_meter_available(state, i),
+                clip: state.playback_meters.get(i).is_some_and(|m| m.clipped),
                 stereo_linked: state.device.playback_linked(i / 2),
                 mute: ch.mute,
                 solo: ch.solo,
@@ -4286,6 +4409,7 @@ fn strip_params<'a>(
                 // when every nonzero crosspoint feeding this pair has
                 // a real meter (see `output_meter_available`).
                 meter_available: output_meter_available(state, i),
+                clip: state.output_meters.get(i).is_some_and(|m| m.clipped),
                 loopback: ch.loopback,
                 stereo_linked: state.device.output_linked(i / 2),
                 mute: ch.mute,
@@ -4360,6 +4484,13 @@ fn sidebar_does_not_fit(state: &TuxMix, w: f32) -> bool {
 /// small controls, and at the strips' 175 % it was as wide as half a
 /// small window for no gain.
 const SIDEBAR_SCALE_MAX: f32 = 1.25;
+/// Where a low cut that was never on starts when it is switched on: a common
+/// rumble filter, where 20 Hz would do nothing audible and read as a switch
+/// that does not work.
+const LOW_CUT_ON_HZ: u16 = 80;
+/// Nor does it shrink below 100 %: zooming out is for fitting more
+/// strips, and at 75 % the sidebar's labels were 6 px.
+const SIDEBAR_SCALE_MIN: f32 = 1.0;
 /// A starting zoom for a monitor of `height` logical pixels (the OS scale
 /// factor is already in it): 100 % at 1080p and below, more on bigger
 /// screens, where the 10-13 px text is small. Only used at the first
@@ -4376,9 +4507,10 @@ pub(crate) fn initial_zoom_for(height: f32) -> f32 {
     }
 }
 
-/// The scale the sidebar draws at: the zoom, capped (`SIDEBAR_SCALE_MAX`).
+/// The scale the sidebar draws at: the zoom, held between
+/// `SIDEBAR_SCALE_MIN` and `SIDEBAR_SCALE_MAX`.
 pub(crate) fn sidebar_scale(state: &TuxMix) -> f32 {
-    state.ui_scale.min(SIDEBAR_SCALE_MAX)
+    state.ui_scale.clamp(SIDEBAR_SCALE_MIN, SIDEBAR_SCALE_MAX)
 }
 
 /// One strip's width at scale 1 (collapsed or full).
@@ -4492,6 +4624,23 @@ fn route_popover(state: &TuxMix, width: f32, scale: f32) -> Element<'_, Message>
         .into()
 }
 
+/// A strip with its Settings, EQ or Trim panel beside it, as one row item.
+/// The panel is as tall as the strip (`flyout_card`, `Length::Fill`), and a
+/// `Row` holding a `Fill` child becomes `Fill` itself, as does every row
+/// around it. Inside a row that scrolls sideways, in a page that scrolls
+/// down, nothing bounds that height, and the page came out endlessly tall
+/// with the sections below the row out of reach. Stated `Shrink`, the item
+/// is measured by the strip and the panel is stretched to it.
+fn strip_with_panel<'a>(
+    strip: Element<'a, Message>,
+    panel: Element<'a, Message>,
+) -> Element<'a, Message> {
+    row![strip, panel]
+        .spacing(theme::SPACE_MD)
+        .height(Length::Shrink)
+        .into()
+}
+
 /// The card a strip's settings / trim / EQ panel sits in: the strip's own
 /// card style, so the panel reads as the strip opened up rather than as
 /// loose controls on the page. These used to take the top bar's flat fill
@@ -4570,6 +4719,7 @@ fn settings_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> E
                     .size(theme::TEXT_SM * scale)
                     .color(theme::TEXT_SEC),
                 container(knob(Knob {
+                    tint: None,
                     value: p.gain as f32,
                     range: (0.0, gain_max as f32),
                     // Gain is tracked in dB (0-65 Mic / 0-18 Instr),
@@ -4668,6 +4818,7 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Eleme
     let col = column![
         text("Trim").size(theme::TEXT_SM * scale).color(theme::TEXT_SEC),
         container(knob(Knob {
+            tint: None,
             value: trim,
             range: (-65.0, 6.0),
             label: format!("{trim:+.1}"),
@@ -4685,6 +4836,17 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Eleme
     .spacing(theme::SPACE_SM * scale);
 
     flyout_card(col, width, scale)
+}
+
+/// A band's color on its knobs, dimmed while the band is off: the same
+/// red, green and azure as its curve in the plot and its type button.
+fn eq_band_tint(band_type: EqBandType, band: usize) -> Color {
+    let c = theme::EQ_BAND[band];
+    if band_type == EqBandType::Off {
+        Color { a: 0.45, ..c }
+    } else {
+        c
+    }
 }
 
 /// The EQ flyout's content: the interactive response plot, then a
@@ -4705,7 +4867,9 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         return container(iced::widget::Space::new()).into();
     };
     let modifiers = state.modifiers;
-    let label_w = 42.0 * scale;
+    // Wide enough for the "low cut" switch, so every row shares one label
+    // column and the band columns line up down the panel.
+    let label_w = 46.0 * scale;
     let gap = theme::SPACE_TIGHT;
     // The EQ matrix has to fit inside one strip's height. Smaller knobs
     // here (the strip's own gain/pan knobs keep their full size) are what
@@ -4714,21 +4878,28 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
 
     let mut col = column![].spacing(gap);
 
-    col = col.push(
-        row![
-            button(text("EQ").size(theme::TEXT_XS * scale))
-                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
-                .style(theme::toggle_button(eq.enabled, theme::ACCENT))
-                .on_press(Message::EqEnabled(idx, !eq.enabled)),
-            text(if eq.enabled { "enabled" } else { "bypassed" })
-                .size(theme::TEXT_XS * scale)
-                .color(theme::TEXT_SEC),
-        ]
-        .spacing(theme::SPACE_SM * scale)
-        .align_y(iced::Alignment::Center),
-    );
-
-    col = col.push(eq_plot(
+    // The on/off button sits in the corner of the plot, like a plugin's
+    // power button, instead of on a row of its own beside the word
+    // "enabled" or "bypassed": the plot already says BYPASS when it is off,
+    // and the button is lit when it is on.
+    let eq_toggle = container(hint(
+        button(text("EQ").size(theme::TEXT_XS * scale))
+            .padding([1.0 * scale, theme::SPACE_SM * scale])
+            .style(theme::toggle_button(eq.enabled, theme::ACCENT))
+            .on_press(Message::EqEnabled(idx, !eq.enabled)),
+        if eq.enabled { "EQ on (click to bypass)" } else { "EQ bypassed (click to turn on)" },
+        scale,
+    ))
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(iced::Alignment::End)
+    .align_y(iced::Alignment::Start)
+    .padding(iced::Padding {
+        top: (eq_plot::MARGIN_TOP + 2.0) * scale,
+        right: (eq_plot::MARGIN_RIGHT + 2.0) * scale,
+        ..iced::Padding::ZERO
+    });
+    let plot = eq_plot(
         eq,
         state.device.settings().sample_rate,
         scale,
@@ -4741,7 +4912,8 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
             on_band_q: Box::new(move |band, q| Message::EqBandQ(idx, band, q)),
             on_low_cut: Box::new(move |freq| Message::EqLowCutFreq(idx, freq)),
         },
-    ));
+    );
+    col = col.push(stack![plot, eq_toggle]);
 
     let label = |content: &'static str| {
         container(
@@ -4775,14 +4947,18 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         type_row = type_row.push(
             container(hint(
                 button(
-                    row![
-                        text(format!("{}", band + 1))
-                            .size(theme::TEXT_XS * scale)
-                            .color(number_color),
-                        text(short).size(theme::TEXT_XS * scale),
-                    ]
-                    .spacing(theme::SPACE_TIGHT)
-                    .align_y(iced::Alignment::Center),
+                    // Centered, like the knobs under it.
+                    container(
+                        row![
+                            text(format!("{}", band + 1))
+                                .size(theme::TEXT_XS * scale)
+                                .color(number_color),
+                            text(short).size(theme::TEXT_XS * scale),
+                        ]
+                        .spacing(theme::SPACE_TIGHT)
+                        .align_y(iced::Alignment::Center),
+                    )
+                    .center_x(Length::Fill),
                 )
                 .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
                 .width(Length::Fill)
@@ -4808,6 +4984,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         gain_row = gain_row.push(
             container(hint(
                 knob(Knob {
+                    tint: Some(eq_band_tint(b.band_type, band)),
                     value: b.gain_db,
                     range: (-24.0, 24.0),
                     label: format!("{:+.1}", b.gain_db),
@@ -4838,6 +5015,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         freq_row = freq_row.push(
             container(hint(
                 knob(Knob {
+                    tint: Some(eq_band_tint(b.band_type, band)),
                     value: b.freq_hz as f32,
                     range: (20.0, 20_000.0),
                     label: format!("{}Hz", b.freq_hz),
@@ -4868,6 +5046,7 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         q_row = q_row.push(
             container(hint(
                 knob(Knob {
+                    tint: Some(eq_band_tint(b.band_type, band)),
                     value: b.q,
                     range: (0.05, 10.0),
                     label: format!("{:.2}", b.q),
@@ -4890,36 +5069,64 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
     }
     col = col.push(q_row);
 
-    let mut slope_row = row![].spacing(gap).width(Length::Fill);
+    // The low cut has its own switch, as in TotalMix. Off dims the slope
+    // and the frequency and leaves them inert: they act on nothing.
+    let low_cut_on = eq.low_cut_on();
+    // One track of four cells, like the sidebar's switches, rather than four
+    // separate squares: the slope is one choice among four.
+    let mut slope_row = row![].spacing(theme::SPACE_HAIRLINE * scale).width(Length::Fill);
     for slope in [6u8, 12, 18, 24] {
         slope_row = slope_row.push(
-            button(text(format!("{slope}")).size(theme::TEXT_XS * scale))
-                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
-                .width(Length::Fill)
-                .style(theme::toggle_button(
-                    eq.low_cut_slope_db_oct == slope,
-                    theme::ACCENT,
-                ))
-                .on_press(Message::EqLowCutSlope(idx, slope)),
+            button(
+                text(format!("{slope}"))
+                    .size(theme::TEXT_XS * scale)
+                    .center(),
+            )
+            .padding([theme::SPACE_TIGHT * scale, theme::SPACE_TIGHT * scale])
+            .width(Length::Fill)
+            .style(theme::segment_cell(low_cut_on && eq.low_cut_slope_db_oct == slope))
+            .on_press_maybe(low_cut_on.then_some(Message::EqLowCutSlope(idx, slope))),
         );
     }
-    let slope_col = column![
-        slope_row,
-        text("dB/oct")
-            .size(theme::TEXT_MICRO * scale)
-            .color(theme::TEXT_SEC),
+    let slope_row = container(slope_row)
+        .padding(theme::SPACE_TIGHT * scale)
+        .width(Length::Fill)
+        .style(theme::segment_track);
+    // The row is as tall as the frequency knob; the slope track is centered
+    // in that height, on the same line as the switch and the knob, and the
+    // unit hangs at the bottom. With the unit stacked under the track in a
+    // column, the column was centered instead and the track rode above the
+    // other two.
+    let low_cut_h = crate::widgets::knob::BOX_SIZE * eq_scale;
+    let slope_col = iced::widget::stack![
+        container(slope_row)
+            .width(Length::Fill)
+            .center_y(Length::Fixed(low_cut_h)),
+        container(
+            text("dB/oct")
+                .size(theme::TEXT_MICRO * scale)
+                .color(theme::TEXT_SEC),
+        )
+        .width(Length::Fill)
+        .center_x(Length::Fill)
+        .align_bottom(Length::Fixed(low_cut_h)),
     ]
-    .spacing(theme::SPACE_TIGHT)
-    .width(Length::Fill)
-    .align_x(iced::Alignment::Center);
+    // Bands 1 and 2's columns, so the frequency knob lands under band 3.
+    .width(Length::FillPortion(2))
+    .height(Length::Fixed(low_cut_h));
 
     let freq_col = container(hint(
         knob(Knob {
-            value: eq.low_cut_freq_hz as f32,
+            tint: None,
+            value: (eq.low_cut_freq_hz as f32).max(20.0),
             range: (20.0, 20_000.0),
-            label: format!("{}Hz", eq.low_cut_freq_hz),
+            label: if low_cut_on {
+                format!("{}Hz", eq.low_cut_freq_hz)
+            } else {
+                "off".to_string()
+            },
             arc_from_center: false,
-            interactive: true,
+            interactive: low_cut_on,
             log_scale: true,
             modifiers,
             scale: eq_scale,
@@ -4931,11 +5138,26 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
         "Low-cut frequency",
         scale,
     ))
-    .width(Length::Fill)
-    .center_x(Length::Fill);
+    .center_x(Length::FillPortion(1));
 
+    let low_cut_switch = container(hint(
+        button(
+            text("low cut")
+                .size(theme::TEXT_XS * scale)
+                .wrapping(iced::advanced::text::Wrapping::None)
+                .width(Length::Fill)
+                .center(),
+        )
+        .padding([theme::SPACE_TIGHT * scale, 0.0])
+        .width(Length::Fill)
+        .style(theme::toggle_button(low_cut_on, theme::ACCENT))
+        .on_press(Message::EqLowCutEnabled(idx, !low_cut_on)),
+        if low_cut_on { "Low cut on (click to switch off)" } else { "Low cut off (click to switch on)" },
+        scale,
+    ))
+    .width(Length::Fixed(label_w));
     col = col.push(
-        row![label("low cut"), slope_col, freq_col]
+        row![low_cut_switch, slope_col, freq_col]
             .spacing(gap)
             .align_y(iced::Alignment::Center),
     );
@@ -4970,16 +5192,24 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
 /// Settings flyout is open, which naturally pushes every strip after it
 /// over — ordinary layout, no `Stack`/`opaque` overlay machinery needed.
 ///
-/// Positioning assumes the row isn't horizontally scrolled — a known v1
-/// gap (no per-row scroll-offset tracking yet); the panel can land at a
-/// slightly wrong x if it is.
+/// `open` is the open strip's right edge and width within the row, and
+/// `room` the width the popover has to fit in: the row's own width when it
+/// scrolls sideways (the layer sits inside the scroller, so it scrolls with
+/// the strips), the visible width otherwise. A popover that would overrun
+/// it opens on the strip's left instead.
 fn with_flyout<'a>(
     state: &'a TuxMix,
     row_element: Element<'a, Message>,
-    open_x: Option<f32>,
+    open: Option<(f32, f32)>,
+    room: f32,
 ) -> Element<'a, Message> {
-    let Some(x) = open_x else {
+    let Some((right, strip_w)) = open else {
         return row_element;
+    };
+    let x = if right + strip::FLYOUT_W > room {
+        (right - strip_w - strip::FLYOUT_W).max(0.0)
+    } else {
+        right
     };
     if !state
         .flyout_open
@@ -5018,8 +5248,13 @@ fn with_flyout<'a>(
             .align_bottom(Length::Fill)
             .into(),
     ])
-    .width(Length::Fill)
-    .height(Length::Fill)
+    .width(Length::Fixed(room))
+    // As tall as the strip row (the stack's base layer), and so are the
+    // catcher and the popover's positioning layer. A `Fill` stack inside
+    // the "2 Row" sideways scroller, itself in the vertical page, had no
+    // height bound: the popover went to the bottom of an endless layer,
+    // out of sight, and pushed the outputs row off the page.
+    .height(Length::Shrink)
     .into()
 }
 
@@ -5042,7 +5277,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
     let mut input_strips = row![].spacing(theme::SPACE_MD);
     let mut input_width = 0.0f32;
     let mut input_item_count = 0usize;
-    let mut input_open_x: Option<f32> = None;
+    let mut input_open_x: Option<(f32, f32)> = None;
     let n_input_pairs = state.device.inputs().len() / 2;
     for pair in 0..n_input_pairs {
         let l = pair * 2;
@@ -5070,6 +5305,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // right channel's own real level was captured but never
                 // displayed at all while linked (found 2026-09-07).
                 params.meter2 = state.input_meters.get(l + 1).map(MeterAnim::frame);
+                params.clip2 = state.input_meters.get(l + 1).is_some_and(|m| m.clipped);
                 params.meter2_available = state.device.has_input_meter(l + 1);
             }
             let strip_widget = strip::strip(finish_params(state, params));
@@ -5086,10 +5322,9 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // a dropdown list of bus names and a settings panel of
                 // knobs/buttons don't need to match each other's width,
                 // just their own strip's.
-                let panel_w = item_width;
+                let panel_w = strip::full_width(cid) * state.ui_scale;
                 input_strips = input_strips.push(
-                    row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
-                        .spacing(theme::SPACE_MD),
+                    strip_with_panel(strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)),
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else if state.flyout_open.contains(&(cid, strip::FlyoutKind::Eq)) {
@@ -5099,7 +5334,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // manual zoom scales the panel with its contents.
                 let panel_w = strip::EQ_FLYOUT_W * state.ui_scale;
                 input_strips = input_strips.push(
-                    row![strip_widget, eq_popover(state, cid, panel_w, state.ui_scale)].spacing(theme::SPACE_MD),
+                    strip_with_panel(strip_widget, eq_popover(state, cid, panel_w, state.ui_scale)),
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else if state.flyout_open.contains(&(cid, strip::FlyoutKind::Trim)) {
@@ -5109,8 +5344,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // no strip-width-scaling content (no button rows) to fit.
                 let panel_w = strip::FLYOUT_W;
                 input_strips = input_strips.push(
-                    row![strip_widget, trim_popover(state, cid, panel_w, state.ui_scale)]
-                        .spacing(theme::SPACE_MD),
+                    strip_with_panel(strip_widget, trim_popover(state, cid, panel_w, state.ui_scale)),
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else {
@@ -5122,7 +5356,10 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // Gaps placed so far (`item_count - 1`, spacing is between
                 // items) plus the content accumulated up to and including this
                 // strip is exactly its right edge on screen.
-                input_open_x = Some(input_width + (input_item_count - 1) as f32 * theme::SPACE_MD);
+                input_open_x = Some((
+                    input_width + (input_item_count - 1) as f32 * theme::SPACE_MD,
+                    item_width,
+                ));
             }
         }
     }
@@ -5132,7 +5369,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
     let mut pb_strips = row![].spacing(theme::SPACE_MD);
     let mut pb_width = 0.0f32;
     let mut pb_item_count = 0usize;
-    let mut pb_open_x: Option<f32> = None;
+    let mut pb_open_x: Option<(f32, f32)> = None;
     let n_pb_pairs = state.device.playbacks().len() / 2;
     for pair in 0..n_pb_pairs {
         let l = pair * 2;
@@ -5151,15 +5388,15 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                     params.name = pair_bus_label(&params.name, &right.name);
                 }
                 params.meter2 = state.playback_meters.get(l + 1).map(MeterAnim::frame);
+                params.clip2 = state.playback_meters.get(l + 1).is_some_and(|m| m.clipped);
                 params.meter2_available = playback_meter_available(state, l + 1);
             }
             let strip_widget = strip::strip(finish_params(state, params));
             let mut item_width = rendered_strip_width(state, cid);
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
-                let panel_w = item_width;
+                let panel_w = strip::full_width(cid) * state.ui_scale;
                 pb_strips = pb_strips.push(
-                    row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
-                        .spacing(theme::SPACE_MD),
+                    strip_with_panel(strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)),
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else {
@@ -5168,7 +5405,10 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             pb_width += item_width;
             pb_item_count += 1;
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Route)) {
-                pb_open_x = Some(pb_width + (pb_item_count - 1) as f32 * theme::SPACE_MD);
+                pb_open_x = Some((
+                    pb_width + (pb_item_count - 1) as f32 * theme::SPACE_MD,
+                    item_width,
+                ));
             }
         }
     }
@@ -5200,15 +5440,15 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                     params.name = pair_bus_label(&params.name, &right.name);
                 }
                 params.meter2 = state.output_meters.get(l + 1).map(MeterAnim::frame);
+                params.clip2 = state.output_meters.get(l + 1).is_some_and(|m| m.clipped);
                 params.meter2_available = output_meter_available(state, l + 1);
             }
             let strip_widget = strip::strip(finish_params(state, params));
             let mut item_width = rendered_strip_width(state, cid);
             if state.flyout_open.contains(&(cid, strip::FlyoutKind::Settings)) {
-                let panel_w = item_width;
+                let panel_w = strip::full_width(cid) * state.ui_scale;
                 out_strips = out_strips.push(
-                    row![strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)]
-                        .spacing(theme::SPACE_MD),
+                    strip_with_panel(strip_widget, settings_popover(state, cid, panel_w, state.ui_scale)),
                 );
                 item_width += panel_w + theme::SPACE_MD;
             } else {
@@ -5257,7 +5497,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
             column![
                 section_header("HARDWARE INPUTS", scale),
                 submix_hint(),
-                with_flyout(state, input_strips.into(), input_open_x),
+                with_flyout(state, input_strips.into(), input_open_x, input_width),
             ]
             .spacing(theme::SPACE_LG)
             .width(Length::Fixed(input_width)),
@@ -5266,7 +5506,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 // Keeps the playback strips level with the input strips,
                 // which have the submix hint above them.
                 text(" ").size(theme::TEXT_XS * scale),
-                with_flyout(state, pb_strips.into(), pb_open_x),
+                with_flyout(state, pb_strips.into(), pb_open_x, pb_width),
             ]
             .spacing(theme::SPACE_LG)
             .width(Length::Fixed(pb_width)),
@@ -5277,16 +5517,26 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
         column![
             section_header("HARDWARE INPUTS", scale),
             submix_hint(),
-            with_flyout(
-                state,
-                responsive_row(input_strips.into(), input_width, available_width),
-                input_open_x,
+            responsive_row(
+                with_flyout(
+                    state,
+                    input_strips.into(),
+                    input_open_x,
+                    input_width.max(available_width),
+                ),
+                input_width,
+                available_width,
             ),
             section_header("SOFTWARE PLAYBACK", scale),
-            with_flyout(
-                state,
-                responsive_row(pb_strips.into(), pb_width, available_width),
-                pb_open_x,
+            responsive_row(
+                with_flyout(
+                    state,
+                    pb_strips.into(),
+                    pb_open_x,
+                    pb_width.max(available_width),
+                ),
+                pb_width,
+                available_width,
             ),
         ]
         .spacing(theme::SPACE_LG)
@@ -5515,6 +5765,14 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
         source_params.scale = big_scale;
         let mut dest_params = strip_params(state, dest_cid, sel_out);
         dest_params.scale = big_scale;
+        // Always drawn full here: the two strips are the whole view, and a
+        // strip collapsed in the Mixer (the state is shared) came in as a
+        // narrow card under a full-width picker, off the layout's grid.
+        for p in [&mut source_params, &mut dest_params] {
+            p.collapsed = false;
+            p.collapse_anim = None;
+            p.can_collapse = false;
+        }
         // Named and metered as the Mixer's output strip is: a linked pair
         // is one "AN1/2" bus with both channels' meters, not its left half.
         if state.device.output_linked(sel_out) {
@@ -5523,6 +5781,7 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
                 dest_params.name = pair_bus_label(&dest_params.name, &right.name);
             }
             dest_params.meter2 = state.output_meters.get(l + 1).map(MeterAnim::frame);
+            dest_params.clip2 = state.output_meters.get(l + 1).is_some_and(|m| m.clipped);
             dest_params.meter2_available = output_meter_available(state, l + 1);
         }
 
@@ -5617,7 +5876,7 @@ mod tests {
     use super::{
         any_channel_muted, any_channel_soloed, apply_pending_resize,
         apply_prefs, channel_is_muted, channel_is_soloed, is_undoable, new, prefs_of,
-        mute_armed, power_sum_output_meters, update, zoom, ChannelId, EditField, MeterAnim, Message, RowMode, View, ZOOM_STEP,
+        mute_armed, power_sum_output_meters, route_popover_open, update, zoom, LOW_CUT_ON_HZ, ChannelId, EditField, MeterAnim, Message, RowMode, TuxMix, View, ZOOM_STEP,
     };
     use crate::sidebar;
     use crate::theme;
@@ -6235,6 +6494,158 @@ mod tests {
         );
     }
 
+    /// One click as iced delivers it: the press, then the clicked
+    /// widget's message (`None` for empty space or a widget that sends
+    /// nothing), then the release.
+    fn click(state: &mut TuxMix, widget: Option<Message>) {
+        let _ = update(state, Message::PointerPressed);
+        if let Some(m) = widget {
+            let _ = update(state, m);
+        }
+        let _ = update(state, Message::PointerReleased);
+    }
+
+    #[test]
+    fn a_click_elsewhere_closes_the_bus_popover_and_still_acts() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        click(&mut state, Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)));
+        click(&mut state, Some(Message::DimToggle));
+        assert!(!route_popover_open(&state));
+        assert!(state.device.settings().dim, "the click itself still lands");
+
+        click(&mut state, Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)));
+        click(&mut state, None);
+        assert!(!route_popover_open(&state));
+    }
+
+    #[test]
+    fn bus_clicks_keep_working_with_the_popover_open() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(2);
+        click(&mut state, Some(Message::ToggleFlyout(a, strip::FlyoutKind::Route)));
+        // Another strip's bus button moves the popover there.
+        click(&mut state, Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)));
+        assert!(state.flyout_open.contains(&(b, strip::FlyoutKind::Route)));
+        // Picking a bus selects it and closes the popover.
+        click(&mut state, Some(Message::SelectOutput(3)));
+        assert_eq!(state.sel_out, 3);
+        assert!(!route_popover_open(&state));
+        // The same bus button opens it, then closes it again.
+        click(&mut state, Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)));
+        assert!(route_popover_open(&state));
+        click(&mut state, Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)));
+        assert!(!route_popover_open(&state));
+    }
+
+    #[test]
+    fn a_clip_holds_until_it_is_cleared() {
+        let mut m = MeterAnim::new();
+        m.step(0.9);
+        assert!(!m.clipped, "loud is not a clip");
+        m.step(1.0);
+        m.step(0.1);
+        m.step(0.0);
+        assert!(m.clipped, "the LED holds after the level falls");
+    }
+
+    #[test]
+    fn clip_reset_clears_one_channel_or_a_pair() {
+        let mut state = new(true, None, None);
+        for m in state.input_meters.iter_mut().take(4) {
+            m.step(1.0);
+        }
+        let _ = update(&mut state, Message::ClipReset(ChannelId::Input(0), false));
+        assert!(!state.input_meters[0].clipped);
+        assert!(state.input_meters[1].clipped);
+        let _ = update(&mut state, Message::ClipReset(ChannelId::Input(2), true));
+        assert!(!state.input_meters[2].clipped && !state.input_meters[3].clipped);
+        assert!(state.undo_stack.is_empty(), "clearing a LED is not an edit");
+    }
+
+    #[test]
+    fn a_click_with_no_popover_open_is_not_an_undo_step() {
+        let mut state = new(true, None, None);
+        click(&mut state, None);
+        assert!(state.undo_stack.is_empty());
+    }
+
+    #[test]
+    fn a_quick_click_delivered_out_of_order_still_opens_the_popover() {
+        // A fast click can arrive as one batch: the button's message, then
+        // the press, then the release.
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Route));
+        let _ = update(&mut state, Message::PointerPressed);
+        let _ = update(&mut state, Message::PointerReleased);
+        assert!(route_popover_open(&state));
+        let _ = update(&mut state, Message::DimToggle);
+        let _ = update(&mut state, Message::PointerPressed);
+        let _ = update(&mut state, Message::PointerReleased);
+        assert!(!route_popover_open(&state));
+    }
+
+    #[test]
+    fn collapsing_a_strip_closes_its_own_panels_only() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(2);
+        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Settings));
+        let _ = update(&mut state, Message::ToggleFlyout(b, strip::FlyoutKind::Eq));
+        let _ = update(&mut state, Message::ToggleCollapse(a));
+        assert!(state.collapsed.contains(&a));
+        assert!(!state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
+        assert!(
+            state.flyout_open.contains(&(b, strip::FlyoutKind::Eq)),
+            "another strip's panel stays"
+        );
+        // Expanding does not bring it back.
+        let _ = update(&mut state, Message::ToggleCollapse(a));
+        assert!(!state.flyout_open.contains(&(a, strip::FlyoutKind::Settings)));
+    }
+
+    fn low_cut_hz(state: &TuxMix) -> u16 {
+        state.device.inputs()[0].eq.unwrap().low_cut_freq_hz
+    }
+
+    #[test]
+    fn the_low_cut_switch_turns_it_off_and_brings_its_frequency_back() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::EqLowCutFreq(0, 300));
+        assert!(state.device.inputs()[0].eq.unwrap().low_cut_on());
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, false));
+        assert_eq!(low_cut_hz(&state), 0, "off is a frequency of 0");
+        assert!(!state.device.inputs()[0].eq.unwrap().low_cut_on());
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, true));
+        assert_eq!(low_cut_hz(&state), 300, "back to where it was");
+    }
+
+    #[test]
+    fn a_low_cut_that_was_never_on_starts_at_a_useful_frequency() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::EqLowCutFreq(0, 0));
+        assert!(state.eq_low_cut_memory.is_empty());
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, true));
+        assert_eq!(low_cut_hz(&state), LOW_CUT_ON_HZ);
+        // Switching it on while it is on changes nothing.
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, true));
+        assert_eq!(low_cut_hz(&state), LOW_CUT_ON_HZ);
+    }
+
+    #[test]
+    fn escape_closes_the_bus_popover_but_not_inline_panels() {
+        let mut state = new(true, None, None);
+        let a = ChannelId::Input(0);
+        let b = ChannelId::Input(2);
+        let _ = update(&mut state, Message::ToggleFlyout(a, strip::FlyoutKind::Eq));
+        let _ = update(&mut state, Message::ToggleFlyout(b, strip::FlyoutKind::Route));
+        let _ = update(&mut state, Message::EscapePressed);
+        assert!(!state.flyout_open.contains(&(b, strip::FlyoutKind::Route)));
+        assert!(state.flyout_open.contains(&(a, strip::FlyoutKind::Eq)));
+    }
+
     #[test]
     fn channels_held_by_the_mute_master_show_as_armed() {
         let mut state = new(true, None, None);
@@ -6462,6 +6873,36 @@ mod tests {
     }
 
     #[test]
+    fn auto_buffer_size_names_the_period_the_card_really_runs() {
+        use super::auto_quantum_label;
+        use tuxmix_core::pw_clock::CardStream;
+        let card = CardStream { rate: 48_000, period: 256, buffer: 768 };
+        assert_eq!(auto_quantum_label(0, Some(card)), "Auto (256)");
+        // Idle: nothing true to show.
+        assert_eq!(auto_quantum_label(0, None), "Auto");
+        // A forced size: the card's period is that size, not what Auto
+        // would give back.
+        let forced = CardStream { period: 128, ..card };
+        assert_eq!(auto_quantum_label(128, Some(forced)), "Auto");
+    }
+
+    #[test]
+    fn a_saved_sidebar_width_below_the_floor_is_raised() {
+        // The floor was 170, where the Options segments overlap; a width
+        // saved back then must not bring the overlap back.
+        let mut state = new(true, None, None);
+        apply_prefs(
+            &mut state,
+            crate::prefs::Prefs {
+                sidebar_width: Some(170.0),
+                ..Default::default()
+            },
+        );
+        assert_eq!(state.sidebar_width, sidebar::MIN_WIDTH);
+        assert!(sidebar::MIN_WIDTH <= sidebar::DEFAULT_WIDTH);
+    }
+
+    #[test]
     fn hand_edited_prefs_are_clamped_to_reachable_values() {
         let mut state = new(true, None, None);
         apply_prefs(
@@ -6509,6 +6950,7 @@ mod tests {
     fn matrix_drag_then_toggle_undoes_step_by_step() {
         let mut state = new(true, None, None);
         let cid = ChannelId::Input(4);
+        let start = state.device.inputs()[4].volumes[1];
         for v in [0.9, 0.7, 0.5] {
             let _ = update(&mut state, Message::VolumeChanged(cid, 1, v));
         }
@@ -6518,7 +6960,7 @@ mod tests {
         let _ = update(&mut state, Message::Undo);
         assert!((state.device.inputs()[4].volumes[1] - 0.5).abs() < 1e-6);
         let _ = update(&mut state, Message::Undo);
-        assert!((state.device.inputs()[4].volumes[1] - 1.0).abs() < 1e-3);
+        assert!((state.device.inputs()[4].volumes[1] - start).abs() < 1e-3);
     }
 
     #[test]
@@ -6700,6 +7142,8 @@ mod tests {
         state.ui_scale = 1.75;
         assert_eq!(super::sidebar_scale(&state), 1.25);
         state.ui_scale = 1.0;
+        assert_eq!(super::sidebar_scale(&state), 1.0);
+        state.ui_scale = 0.75;
         assert_eq!(super::sidebar_scale(&state), 1.0);
     }
 

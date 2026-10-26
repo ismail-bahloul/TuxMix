@@ -43,14 +43,13 @@ use crate::theme;
 /// self-contained readout, so this is a starting point rather than
 /// something the layout negotiates with the mixer.
 pub const DEFAULT_WIDTH: f32 = 210.0;
-/// Bounds on `TuxMix::sidebar_width`. The floor is set by the same
-/// measurement as `DEFAULT_WIDTH`: below roughly 200 the Options rows'
-/// two segments stop fitting their labels, and iced wraps the text onto a
-/// second line (a taller row, not a broken one) — allowed down to this
-/// because reclaiming mixer space is the point of a resize, and the drag
-/// is trivially reversible. The ceiling is where the mixer's own strips
-/// stop having room to spare on a 1920px window.
-pub const MIN_WIDTH: f32 = 170.0;
+/// Bounds on `TuxMix::sidebar_width`. The floor is where the Options
+/// rows still fit: measured, "custom" and "original" overlap at 170, just
+/// fit at 190 with "original" touching its edge, and are comfortable from
+/// 200. The floor used to be 170, which let a drag (or a saved width)
+/// leave the segments printed over each other. The ceiling is where the
+/// mixer's own strips stop having room to spare on a 1920px window.
+pub const MIN_WIDTH: f32 = 200.0;
 pub const MAX_WIDTH: f32 = 420.0;
 /// Width of the collapsed rail: the panel toggle plus its padding, so
 /// collapsing reclaims most of the width for the mixer while the button
@@ -829,13 +828,15 @@ fn slot_grid<'a>(
         for n in first..=(first + 1).min(count) {
             let is_active = active == Some(n as usize);
             // An empty slot is still clickable (selecting it is how you
-            // pick where "store" writes), but it reads as empty.
+            // pick where "store" writes), but it reads as empty. Dimmer
+            // than a stored slot, yet clearly above the 0.4 of a disabled
+            // control, which it used to be mistaken for.
             let is_stored = stored.get((n - 1) as usize).copied().unwrap_or(false);
             let name_color = if is_stored || is_active {
                 None
             } else {
                 Some(Color {
-                    a: 0.45,
+                    a: 0.7,
                     ..theme::TEXT_SEC
                 })
             };

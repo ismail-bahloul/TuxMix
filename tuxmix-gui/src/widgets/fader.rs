@@ -197,6 +197,12 @@ pub struct Fader<Message> {
     /// strip, unaffected.
     pub meter2: Option<MeterFrame>,
     pub meter2_available: bool,
+    /// The clip LED of `meter` / `meter2` is lit: the channel touched
+    /// 0 dBFS since the LED was last cleared (it holds until then).
+    pub clip: bool,
+    pub clip2: bool,
+    /// Sent by a click on the meter column while a clip LED is lit.
+    pub on_clip_reset: Option<Message>,
     pub height: f32,
     pub show_meter: bool,
     /// Extra width (at `scale == 1.0`... no, already-scaled pixels, same
@@ -353,7 +359,7 @@ pub struct State {
     display: Option<MeterFrame>,
 }
 
-impl<Message> canvas::Program<Message> for Fader<Message> {
+impl<Message: Clone> canvas::Program<Message> for Fader<Message> {
     type State = State;
 
     fn update(
@@ -374,7 +380,12 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
             canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let pos = cursor.position_over(bounds)?;
                 if !self.is_over_track(pos.x, bounds.x, bounds.width) {
-                    return None;
+                    // The meter column: a click there clears a lit clip
+                    // LED, and otherwise falls through to the strip.
+                    return self
+                        .on_clip_reset
+                        .clone()
+                        .map(|m| canvas::Action::publish(m).and_capture());
                 }
                 let now = Instant::now();
                 let is_double = state
@@ -535,9 +546,9 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
                 meter_rect,
                 self.meter.shown(Instant::now()),
                 self.scale,
-                self.meter_available,
+                (self.meter_available, self.clip),
                 self.meter2
-                    .map(|m| (m.shown(Instant::now()), self.meter2_available)),
+                    .map(|m| (m.shown(Instant::now()), self.meter2_available, self.clip2)),
             );
         }
         if let Some(label) = &self.label {
@@ -634,13 +645,15 @@ impl<Message> canvas::Program<Message> for Fader<Message> {
     }
 }
 
-/// Splits the meter/ruler column starting at `x` into the bar itself and
-/// the lane the dB numbers sit in, right of it (next to the fader track).
+/// Splits the meter/ruler column starting at `x` into the lane the dB
+/// numbers sit in and the bar itself, right of it: the bar runs beside the
+/// fader rail, as TotalMix puts its level next to the fader, instead of at
+/// the card's left edge with the numbers between it and the rail.
 fn meter_column(x: f32, height: f32, scale: f32) -> (Rectangle, Rectangle) {
-    let meter = Rectangle::new(Point::new(x, 0.0), Size::new(METER_W * scale, height));
-    let ruler = Rectangle::new(
-        Point::new(x + (METER_W + LANE_GAP) * scale, 0.0),
-        Size::new(RULER_LANE_W * scale, height),
+    let ruler = Rectangle::new(Point::new(x, 0.0), Size::new(RULER_LANE_W * scale, height));
+    let meter = Rectangle::new(
+        Point::new(x + (RULER_LANE_W + LANE_GAP) * scale, 0.0),
+        Size::new(METER_W * scale, height),
     );
     (meter, ruler)
 }
@@ -710,11 +723,11 @@ fn draw_meter(
     r: Rectangle,
     level: f32,
     scale: f32,
-    available: bool,
-    right: Option<(f32, bool)>,
+    (available, clip): (bool, bool),
+    right: Option<(f32, bool, bool)>,
 ) {
-    let Some((level2, available2)) = right else {
-        draw_meter_bar(frame, r, level, scale, available);
+    let Some((level2, available2, clip2)) = right else {
+        draw_meter_bar(frame, r, level, scale, available, clip);
         return;
     };
     let gap = 1.0 * scale;
@@ -724,11 +737,18 @@ fn draw_meter(
         Point::new(r.x + half_w + gap, r.y),
         Size::new(half_w, r.height),
     );
-    draw_meter_bar(frame, left_rect, level, scale, available);
-    draw_meter_bar(frame, right_rect, level2, scale, available2);
+    draw_meter_bar(frame, left_rect, level, scale, available, clip);
+    draw_meter_bar(frame, right_rect, level2, scale, available2, clip2);
 }
 
-fn draw_meter_bar(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, available: bool) {
+fn draw_meter_bar(
+    frame: &mut Frame,
+    r: Rectangle,
+    level: f32,
+    scale: f32,
+    available: bool,
+    clipping: bool,
+) {
     let l = level.clamp(0.0, 1.0);
     let fill_w = r.width;
     let radius = METER_RADIUS * scale;
@@ -809,9 +829,21 @@ fn draw_meter_bar(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, avail
         }
     }
 
-    // Clip LED — a fixed indicator above the track, dim until triggered.
+    // Clip LED: the meter's top segment, as wide as the bar and with the
+    // bar's own corners, split from the fill by a hairline of the well's
+    // dark. It used to be a fully rounded pill on a square-cornered bar,
+    // which read as a dot stuck on top rather than part of the meter.
+    frame.fill(
+        &Path::rectangle(
+            Point::new(r.x, r.y + clip_h),
+            Size::new(fill_w, 1.0 * scale),
+        ),
+        Color::from_rgb8(0x08, 0x08, 0x0a),
+    );
+    // Lit while the channel's clip is held (`clipping`), not while the
+    // smoothed level shown here is high: a clip lasts a few milliseconds
+    // and the smoothed level would miss it.
     let clip_rect = Rectangle::new(Point::new(r.x, r.y), Size::new(fill_w, clip_h));
-    let clipping = l >= 0.95;
     let clip_color = if clipping {
         Color {
             a: FILL_ALPHA,
@@ -827,11 +859,7 @@ fn draw_meter_bar(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, avail
         );
         frame.fill(
             &Path::new(|b| {
-                b.rounded_rectangle(
-                    glow.position(),
-                    glow.size(),
-                    (clip_h / 2.0 + 2.0 * scale).into(),
-                )
+                b.rounded_rectangle(glow.position(), glow.size(), (radius + 2.0 * scale).into())
             }),
             Color {
                 a: 0.35,
@@ -841,11 +869,7 @@ fn draw_meter_bar(frame: &mut Frame, r: Rectangle, level: f32, scale: f32, avail
     }
     frame.fill(
         &Path::new(|b| {
-            b.rounded_rectangle(
-                clip_rect.position(),
-                clip_rect.size(),
-                (clip_h / 2.0).into(),
-            )
+            b.rounded_rectangle(clip_rect.position(), clip_rect.size(), radius.into())
         }),
         clip_color,
     );
@@ -977,7 +1001,14 @@ fn draw_ruler(frame: &mut Frame, r: Rectangle, scale: f32) {
     // Measured against the *full* height, matching `draw_track`'s own
     // `pos_of` (the fader cap) and `draw_meter`'s fill: all three agree on
     // where a given dB value sits.
+    // -6 and -10 sit about one text height apart at every zoom; below
+    // ~7 px the two numbers run into each other, so zoomed out only -10
+    // is labelled there.
+    let crowded = theme::TEXT_MICRO * scale < 7.0;
     for db in TICKS {
+        if crowded && db == -6.0 {
+            continue;
+        }
         let t = db_to_t(db);
         let y = r.y + r.height - r.height * t;
         let y = safe_clamp(y, r.y + 4.0 * scale, r.y + r.height - 4.0 * scale);
@@ -1031,26 +1062,42 @@ where
 /// The meter+ruler column on its own, with no track/cap and no mouse
 /// interaction at all — for a collapsed strip, which trades every control
 /// (fader, mute/solo, pan) for a glance-only level readout.
-struct VuMeter {
+struct VuMeter<Message> {
     level: MeterFrame,
     scale: f32,
     available: bool,
+    clip: bool,
+    /// The right channel of a linked pair: its level, whether it is a
+    /// real reading, and its clip LED. Splits the bar in two, as on a
+    /// full strip.
+    right: Option<(MeterFrame, bool, bool)>,
+    on_clip_reset: Option<Message>,
 }
 
-impl<Message> canvas::Program<Message> for VuMeter {
+impl<Message: Clone> canvas::Program<Message> for VuMeter<Message> {
     type State = ();
 
     fn update(
         &self,
         _state: &mut (),
         event: &canvas::Event,
-        _bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         // See `Fader`'s identical arm.
         match event {
+            // A click clears a lit clip LED (see `Fader::on_clip_reset`).
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if cursor.is_over(bounds) =>
+            {
+                self.on_clip_reset
+                    .clone()
+                    .map(|m| canvas::Action::publish(m).and_capture())
+            }
             canvas::Event::Window(window::Event::RedrawRequested(now))
-                if INTERPOLATE_METERS && self.level.is_settling(*now) =>
+                if INTERPOLATE_METERS
+                    && (self.level.is_settling(*now)
+                        || self.right.is_some_and(|(m, _, _)| m.is_settling(*now))) =>
             {
                 Some(canvas::Action::request_redraw())
             }
@@ -1067,35 +1114,52 @@ impl<Message> canvas::Program<Message> for VuMeter {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let (meter_rect, ruler_rect) = meter_column(0.0, bounds.height, self.scale);
+        // The bar is centered in the card, under the name and the M/S
+        // buttons, which are; the numbers take the margin to its left. The
+        // [numbers][bar] block used to be centered instead, which left the
+        // bar itself off to the right.
+        let bar_w = METER_W * self.scale;
+        let bar_x = ((bounds.width - bar_w) / 2.0).max(0.0);
+        let meter_rect = Rectangle::new(Point::new(bar_x, 0.0), Size::new(bar_w, bounds.height));
+        let ruler_rect = Rectangle::new(
+            Point::new(0.0, 0.0),
+            Size::new((bar_x - LANE_GAP * self.scale).max(0.0), bounds.height),
+        );
         draw_meter(
             &mut frame,
             meter_rect,
             self.level.shown(Instant::now()),
             self.scale,
-            self.available,
-            // Collapsed strips are a glance-only view with no room for a
-            // second bar even if this were a linked pair — out of scope
-            // for this pass, single-bar only here.
-            None,
+            (self.available, self.clip),
+            // A linked pair shows both channels, the bar split in two as
+            // on a full strip: the collapsed card used to show the left
+            // one only, so a loud or clipping right channel went unseen.
+            self.right
+                .map(|(m, available, clip)| (m.shown(Instant::now()), available, clip)),
         );
         draw_ruler(&mut frame, ruler_rect, self.scale);
         vec![frame.into_geometry()]
     }
 }
 
-pub fn vu_meter<'a, Message: 'a>(
+pub fn vu_meter<'a, Message: Clone + 'a>(
     level: MeterFrame,
     height: f32,
     scale: f32,
     available: bool,
+    clip: bool,
+    right: Option<(MeterFrame, bool, bool)>,
+    on_clip_reset: Option<Message>,
 ) -> Element<'a, Message> {
     Canvas::new(VuMeter {
         level,
         scale,
         available,
+        clip,
+        right,
+        on_clip_reset,
     })
-    .width(Length::Fixed(METER_RULER_W * scale))
+    .width(Length::Fill)
     .height(Length::Fixed(height))
     .into()
 }

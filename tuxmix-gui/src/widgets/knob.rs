@@ -81,6 +81,10 @@ pub struct Knob<Message> {
     /// ends; falls back to linear otherwise rather than taking `ln`
     /// of a non-positive number.
     pub log_scale: bool,
+    /// Colors the rim, the tick and the arc: the EQ's band color, so a
+    /// knob reads as belonging to its band and to its curve in the plot,
+    /// as in TotalMix. `None` is the usual neutral knob.
+    pub tint: Option<Color>,
     pub modifiers: Modifiers,
     pub scale: f32,
     pub on_change: Box<dyn Fn(f32) -> Message>,
@@ -280,6 +284,9 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
             self.label.hash(&mut h);
             self.scale.to_bits().hash(&mut h);
             (state.dragging, self.interactive, self.arc_from_center).hash(&mut h);
+            self.tint
+                .map(|c| [c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()])
+                .hash(&mut h);
             (bounds.width.to_bits(), bounds.height.to_bits()).hash(&mut h);
             h.finish()
         };
@@ -315,11 +322,13 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
                 theme::SURFACE
             };
             frame.fill(&Path::circle(center, radius.max(1.0)), face_color);
+            let rim = match self.tint {
+                Some(c) => Color { a: c.a * dim, ..c },
+                None => Color { a: dim, ..theme::BORDER },
+            };
             frame.stroke(
                 &Path::circle(center, radius.max(1.0)),
-                Stroke::default()
-                    .with_color(Color { a: dim, ..theme::BORDER })
-                    .with_width(border_w),
+                Stroke::default().with_color(rim).with_width(border_w),
             );
 
             // Orange arc from the centered (t=0.5) position round to the
@@ -345,7 +354,9 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
                             end_angle: Radians(end_angle),
                         })
                     }),
-                    Stroke::default().with_color(theme::ACCENT).with_width(2.5 * self.scale),
+                    Stroke::default()
+                        .with_color(self.tint.unwrap_or(theme::ACCENT))
+                        .with_width(2.5 * self.scale),
                 );
             }
 
@@ -363,7 +374,10 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
                     iced::Point::new(center.x + pc * (radius + tick_len), center.y + ps * (radius + tick_len)),
                 ),
                 Stroke::default()
-                    .with_color(Color { a: dim, ..theme::TEXT_SEC })
+                    .with_color(match self.tint {
+                        Some(c) => Color { a: c.a * dim, ..c },
+                        None => Color { a: dim, ..theme::TEXT_SEC },
+                    })
                     .with_width(1.5 * self.scale),
             );
 
@@ -402,7 +416,7 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
 }
 
 /// A knob's total footprint (at `scale == 1.0`).
-const BOX_SIZE: f32 = DIAMETER + MARGIN * 2.0;
+pub(crate) const BOX_SIZE: f32 = DIAMETER + MARGIN * 2.0;
 
 pub fn knob<'a, Message: 'a>(knob: Knob<Message>) -> Element<'a, Message>
 where
@@ -421,6 +435,7 @@ mod tests {
 
     fn test_knob(range: (f32, f32), log_scale: bool) -> Knob<()> {
         Knob {
+            tint: None,
             value: range.0,
             range,
             label: String::new(),

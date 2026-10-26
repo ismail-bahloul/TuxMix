@@ -65,8 +65,8 @@ fn cell(
     interactive: bool,
     muted: bool,
     phase: bool,
+    scale: f32,
 ) -> Element<'static, Message> {
-    let scale = state.ui_scale;
     let modifiers: Modifiers = state.modifiers;
     crosspoint(
         Crosspoint {
@@ -260,8 +260,8 @@ fn push_channel_rows<'a>(
     groups: &[RowGroup],
     row_prefix: &'static str,
     cid_of: impl Fn(usize) -> ChannelId,
+    scale: f32,
 ) -> iced::widget::Column<'a, Message> {
-    let scale = state.ui_scale;
     let hovered_row = state.matrix_hover.map(|(c, _)| c);
     for (gi, g) in groups.iter().enumerate() {
         if gi > 0 {
@@ -299,9 +299,9 @@ fn push_channel_rows<'a>(
                 let stored = src.volumes[pair];
                 r = r.push(match shown_gain(&src, idx, col) {
                     Some(shown) => cell(
-                        state, cid, pair, col, stored, shown, true, src.muted, src.phase,
+                        state, cid, pair, col, stored, shown, true, src.muted, src.phase, scale,
                     ),
-                    None => cell(state, cid, pair, col, 0.0, 0.0, false, false, false),
+                    None => cell(state, cid, pair, col, 0.0, 0.0, false, false, false, scale),
                 });
                 if col % 2 == 1 {
                     r = r.push(pair_gap(scale));
@@ -399,8 +399,18 @@ pub fn view(state: &TuxMix) -> Element<'_, Message> {
 /// The whole grid for a panel of `size` (see the frozen-panes note below
 /// for why the size matters).
 fn grid_view(state: &TuxMix, size: iced::Size) -> Element<'_, Message> {
-    let scale = state.ui_scale;
     let n_outputs = state.device.outputs().len();
+    let n_inputs = state.device.inputs().len();
+    let n_playbacks = state.device.playbacks().len();
+    let group_gaps = input_row_groups(state).len().saturating_sub(1)
+        + playback_row_groups(state).len().saturating_sub(1);
+    let dims = GridDims {
+        n_outputs,
+        n_rows: n_inputs + n_playbacks,
+        group_gaps,
+    };
+    let pad = theme::SPACE_LG;
+    let scale = fit_scale(state.ui_scale, &dims, size, pad);
     let hovered_col = state.matrix_hover.map(|(_, c)| c);
 
     // ── Column header: individual output channels ("Out 1".."Out 12"),
@@ -430,6 +440,7 @@ fn grid_view(state: &TuxMix, size: iced::Size) -> Element<'_, Message> {
         &input_row_groups(state),
         "In",
         ChannelId::Input,
+        scale,
     );
     sources = sources.push(iced::widget::Space::new().height(PAIR_GAP * scale));
     sources = sources.push(section_caption("Software playback", scale));
@@ -439,6 +450,7 @@ fn grid_view(state: &TuxMix, size: iced::Size) -> Element<'_, Message> {
         &playback_row_groups(state),
         "Pb",
         ChannelId::Playback,
+        scale,
     );
 
     // ── Master "Outputs" row: each output channel's own master volume,
@@ -469,6 +481,7 @@ fn grid_view(state: &TuxMix, size: iced::Size) -> Element<'_, Message> {
             true,
             out.mute,
             false,
+            scale,
         ));
         if idx % 2 == 1 {
             out_row = out_row.push(pair_gap(scale));
@@ -502,20 +515,9 @@ fn grid_view(state: &TuxMix, size: iced::Size) -> Element<'_, Message> {
     // not fit: a column lays its children out in order, so a scrollable
     // left to size itself takes all the room before the output row is
     // placed, and pushes it off the panel.
-    let n_inputs = state.device.inputs().len();
-    let n_playbacks = state.device.playbacks().len();
-    let group_gaps = input_row_groups(state).len().saturating_sub(1)
-        + playback_row_groups(state).len().saturating_sub(1);
-    let source_elements = n_inputs + n_playbacks + 2 + group_gaps + 1;
-    let sources_h = (n_inputs + n_playbacks + 2) as f32 * CELL_H * scale
-        + (group_gaps + 1) as f32 * PAIR_GAP * scale
-        + source_elements.saturating_sub(1) as f32 * theme::SPACE_HAIRLINE;
-    let fixed_h = 3.0 * CELL_H * scale + PAIR_GAP * scale + 1.0 + 5.0 * theme::SPACE_HAIRLINE;
-    let grid_w = (GROUP_LABEL_W + IDX_LABEL_W) * scale
-        + n_outputs as f32 * CELL_W * scale
-        + (n_outputs / 2) as f32 * PAIR_GAP * scale
-        + (n_outputs + 2) as f32 * theme::SPACE_HAIRLINE;
-    let pad = theme::SPACE_LG;
+    let sources_h = dims.sources_h(scale);
+    let fixed_h = dims.fixed_h(scale);
+    let grid_w = dims.width(scale);
 
     let sideways_bar = if grid_w > size.width - 2.0 * pad {
         10.0
@@ -552,6 +554,62 @@ fn grid_view(state: &TuxMix, size: iced::Size) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+/// What the grid's size depends on, besides the scale.
+struct GridDims {
+    n_outputs: usize,
+    /// Input plus playback rows.
+    n_rows: usize,
+    /// Gaps between source row-groups, both sections together.
+    group_gaps: usize,
+}
+
+impl GridDims {
+    /// The scrolling source rows, with their two section captions.
+    fn sources_h(&self, scale: f32) -> f32 {
+        let elements = self.n_rows + 2 + self.group_gaps + 1;
+        (self.n_rows + 2) as f32 * CELL_H * scale
+            + (self.group_gaps + 1) as f32 * PAIR_GAP * scale
+            + elements.saturating_sub(1) as f32 * theme::SPACE_HAIRLINE
+    }
+
+    /// The frozen rows: header, output row and bus labels.
+    fn fixed_h(&self, scale: f32) -> f32 {
+        3.0 * CELL_H * scale + PAIR_GAP * scale + 1.0 + 5.0 * theme::SPACE_HAIRLINE
+    }
+
+    fn width(&self, scale: f32) -> f32 {
+        // A row is two label columns, the cells, and a gap after each
+        // pair, with a hairline between every two of those items.
+        let items = 2 + self.n_outputs + self.n_outputs / 2;
+        (GROUP_LABEL_W + IDX_LABEL_W) * scale
+            + self.n_outputs as f32 * CELL_W * scale
+            + (self.n_outputs / 2) as f32 * PAIR_GAP * scale
+            + (items - 1) as f32 * theme::SPACE_HAIRLINE
+    }
+}
+
+/// The scale the grid is drawn at: the largest that fits the panel whole,
+/// with no scrolling, capped at `SCALE_MAX`, and never below the manual
+/// zoom. At 1.0 the grid filled a third of a 1080p window; the Mixer keeps
+/// its fixed geometry, but a grid has no reason to stay small. Zooming in
+/// past the fit still works, and scrolls as before.
+fn fit_scale(zoom: f32, dims: &GridDims, size: iced::Size, pad: f32) -> f32 {
+    // Every size above is `a * scale + b`: solve for the scale that fills
+    // the room. The 4 px are the panel's border and a margin for layout
+    // rounding, without which an exact fit could still scroll by a pixel.
+    let room_w = size.width - 2.0 * pad - 4.0;
+    let room_h = size.height - 2.0 * pad - 4.0;
+    let (bw, aw) = (dims.width(0.0), dims.width(1.0) - dims.width(0.0));
+    let h = |s: f32| dims.sources_h(s) + dims.fixed_h(s);
+    let (bh, ah) = (h(0.0), h(1.0) - h(0.0));
+    let fit = ((room_w - bw) / aw).min((room_h - bh) / ah);
+    if fit.is_finite() {
+        zoom.max(fit.min(theme::SCALE_MAX))
+    } else {
+        zoom
+    }
 }
 
 #[cfg(test)]
