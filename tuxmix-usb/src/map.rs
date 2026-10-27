@@ -132,17 +132,18 @@ impl Output {
         }
     }
 
-    /// Crosspoint-map register block for this output.
+    /// Crosspoint-map register block for this output: the pair index, in
+    /// output order.
     ///
-    /// HARDWARE-VERIFIED 2026-08-24 (kernel driver): the crosspoint
-    /// map lists the Phones FIRST — block 0 (0x0034) feeds the output
-    /// whose MASTER is 0x03E2/0x0006 (PH3/4), block 1 (0x0068) feeds
-    /// the 0x03E0/0x0004 master (AN1/2).  The master map has AN1/2
-    /// first.  See PROTOCOL.md "Crosspoint address map".
+    /// CORRECTED 2026-10-27, from the captures in issue #31 and a per-pair
+    /// loopback matrix on a Pro FS (babyface-pro-linux #36): there is one
+    /// map, `0x34 * pair + 0x1A * side + source`, and pair 0 is AN1/2.
+    /// The earlier table put PH3/4 first and shifted every pair after it,
+    /// which is why AN1/2's writes landed in AS1/2's submix.
     fn crosspoint_block(self) -> usize {
         match self {
-            Output::An12 => 1,
-            Output::Ph34 => 0,
+            Output::An12 => 0,
+            Output::Ph34 => 1,
             Output::As12 => 2,
             Output::Adat34 => 3,
             Output::Adat56 => 4,
@@ -178,12 +179,12 @@ impl Source {
 
 /// Register address of a crosspoint (L side) in the standard map.
 pub fn crosspoint_l(out: Output, src: Source) -> usize {
-    0x0034 + 0x0034 * out.crosspoint_block() + src.index_l()
+    0x0034 * out.crosspoint_block() + src.index_l()
 }
 
 /// Register address of a crosspoint (R side) in the standard map.
 pub fn crosspoint_r(out: Output, src: Source) -> usize {
-    0x004E + 0x0034 * out.crosspoint_block() + src.index_r()
+    0x0034 * out.crosspoint_block() + 0x001A + src.index_r()
 }
 
 /// Low-map mirror of [`crosspoint_l`] (AN1/2 submix, written in sync).
@@ -233,9 +234,16 @@ mod tests {
 
     #[test]
     fn crosspoints_match_captured_addresses() {
-        // Crosspoint-map output order CORRECTED 2026-08-24 (hardware):
-        // block 0 = PH3/4 (Phones), block 1 = AN1/2.  The old cap_sweep
-        // labels ("AN1 into AN1/2 wrote 0x0034") were mis-attributed.
+        // One map, `0x34 * pair + 0x1A * side + source`, pair 0 = AN1/2
+        // (issue #31, checked on a Pro FS in babyface-pro-linux #36).
+        assert_eq!(
+            crosspoint_l(Output::An12, Source::Input(Input::An1)),
+            0x0000
+        );
+        assert_eq!(
+            crosspoint_r(Output::An12, Source::Input(Input::An1)),
+            0x001A
+        );
         assert_eq!(
             crosspoint_l(Output::Ph34, Source::Input(Input::An1)),
             0x0034
@@ -243,15 +251,6 @@ mod tests {
         assert_eq!(
             crosspoint_r(Output::Ph34, Source::Input(Input::An1)),
             0x004E
-        );
-        // AN1 into AN1/2 (block 1 = base 0x68).
-        assert_eq!(
-            crosspoint_l(Output::An12, Source::Input(Input::An1)),
-            0x0068
-        );
-        assert_eq!(
-            crosspoint_r(Output::An12, Source::Input(Input::An1)),
-            0x0082
         );
         // AS1/2 input (idx 4/5) into PH3/4: 0x0038 / 0x0053.
         assert_eq!(
@@ -262,32 +261,41 @@ mod tests {
             crosspoint_r(Output::Ph34, Source::Input(Input::As12)),
             0x0053
         );
-        // ADAT7/8 base (block 5) confirmed by the scene load: 0x0138 / 0x0152.
+        // ADAT7/8 is block 5: 0x0104 / 0x011E.
         assert_eq!(
             crosspoint_l(Output::Adat78, Source::Input(Input::An1)),
-            0x0138
+            0x0104
         );
         assert_eq!(
             crosspoint_r(Output::Adat78, Source::Input(Input::An1)),
-            0x0152
+            0x011E
         );
-        // Playbacks 3-6 into AN1/2 (block 1): 0x0078/0x0093, 0x007A/0x0095, ...
+        // Playbacks 3-6 into AN1/2 (block 0): 0x0010/0x002B, 0x0016/0x0031.
         assert_eq!(
             crosspoint_l(Output::An12, Source::Playback(Playback(3))),
-            0x0078
+            0x0010
         );
         assert_eq!(
             crosspoint_r(Output::An12, Source::Playback(Playback(3))),
-            0x0093
+            0x002B
         );
         assert_eq!(
             crosspoint_l(Output::An12, Source::Playback(Playback(6))),
-            0x007E
+            0x0016
         );
         assert_eq!(
             crosspoint_r(Output::An12, Source::Playback(Playback(6))),
-            0x0099
+            0x0031
         );
+        // AN1/2's standard map is the low map, so the two agree.
+        for src in [
+            Source::Input(Input::An1),
+            Source::Input(Input::As12),
+            Source::Playback(Playback(1)),
+        ] {
+            assert_eq!(crosspoint_l(Output::An12, src), low_map_l(src));
+            assert_eq!(crosspoint_r(Output::An12, src), low_map_r(src));
+        }
     }
 
     #[test]
