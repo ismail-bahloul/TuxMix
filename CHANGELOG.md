@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- The USB backend's crosspoint map had AN1/2 and PH3/4 swapped and every
+  pair after it shifted, so a mix into one output landed in the next
+  pair's submix. The map is now `0x34 * pair + 0x1A * side + source`,
+  matching the kernel driver's fix and the captures in #31.
+
 ## 0.3.3 (2026-10-26)
 
 ### Added

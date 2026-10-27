@@ -924,13 +924,13 @@ mod tests {
             set_crosspoint_volume(Output::An12, Source::Input(Input::An1), 0x0317, &mut flag);
         assert_eq!(reqs[0].b_request, 0x12);
         assert_eq!(reqs[0].w_value, 0x0317);
-        assert_eq!(reqs[0].w_index, 0xC068); // AN1/2 = block 1 (base 0x68) | flag 0xC000
-        assert_eq!(reqs[1].w_index, 0xC082);
+        assert_eq!(reqs[0].w_index, 0xC000); // AN1/2 = pair 0 | flag 0xC000
+        assert_eq!(reqs[1].w_index, 0xC01A);
 
         // Next write cycles the flag to 0x4000.
         let reqs =
             set_crosspoint_volume(Output::An12, Source::Input(Input::An1), 0x0317, &mut flag);
-        assert_eq!(reqs[0].w_index, 0x4068);
+        assert_eq!(reqs[0].w_index, 0x4000);
     }
 
     #[test]
@@ -1111,14 +1111,14 @@ mod tests {
         assert_eq!(reqs[1], VendorRequest::new(0x12, 0x2000, 0x001A));
         assert_eq!(reqs[2], VendorRequest::new(0x12, 0x2000, 0x0001));
         assert_eq!(reqs[3], VendorRequest::new(0x12, 0x2000, 0x001B));
-        assert_eq!(reqs[4], VendorRequest::new(0x12, 0x16A0, 0x0068));
-        assert_eq!(reqs[5], VendorRequest::new(0x12, 0x16A0, 0x0082));
-        assert_eq!(reqs[6], VendorRequest::new(0x12, 0x16A0, 0x0069));
-        assert_eq!(reqs[7], VendorRequest::new(0x12, 0x16A0, 0x0083));
+        assert_eq!(reqs[4], VendorRequest::new(0x12, 0x16A0, 0x0000));
+        assert_eq!(reqs[5], VendorRequest::new(0x12, 0x16A0, 0x001A));
+        assert_eq!(reqs[6], VendorRequest::new(0x12, 0x16A0, 0x0001));
+        assert_eq!(reqs[7], VendorRequest::new(0x12, 0x16A0, 0x001B));
         // Trim -6 dB (0x1000) + fader 0 dB → standard = fader curve at
         // -6 dB (0x0B57), NOT a fixed ratio of the low value.
         let reqs = set_trim(Source::Input(Input::An1), 0x1000, 0x0B57);
-        assert_eq!(reqs[4], VendorRequest::new(0x12, 0x0B57, 0x0068));
+        assert_eq!(reqs[4], VendorRequest::new(0x12, 0x0B57, 0x0000));
     }
 
     #[test]
@@ -1189,7 +1189,7 @@ mod tests {
             reqs,
             [
                 VendorRequest::new(0x12, 0xF15F, 0x0000),
-                VendorRequest::new(0x12, 0xF15F, 0x0068),
+                VendorRequest::new(0x12, 0xF15F, 0x0000),
             ]
         );
         let reqs = set_phase(Source::Input(Input::An1), 0x018B);
@@ -1211,16 +1211,16 @@ mod tests {
     #[test]
     fn stereo_split_rewrites_playback_crosspoints() {
         // cap_ctrl3.pcap: split-mono = 0x2000/0x0000, stereo = 0x1000
-        // each — low map (PB1 = 0x000C/0x0027) + the AN1/2 standard
-        // block (block 1: L = 0x0068+12 = 0x0074, R = 0x0082+13 = 0x008F).
+        // each. The low map is AN1/2's standard map (pair 0), so both
+        // writes carry the same registers (PB1 = 0x000C/0x0027).
         let split = set_stereo_split(Playback(1), true);
         assert_eq!(
             split,
             vec![
                 VendorRequest::new(0x12, 0x2000, 0x000C),
                 VendorRequest::new(0x12, 0x0000, 0x0027),
-                VendorRequest::new(0x12, 0x2000, 0x0074),
-                VendorRequest::new(0x12, 0x0000, 0x008F),
+                VendorRequest::new(0x12, 0x2000, 0x000C),
+                VendorRequest::new(0x12, 0x0000, 0x0027),
             ]
         );
         let stereo = set_stereo_split(Playback(1), false);
