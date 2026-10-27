@@ -1,4 +1,4 @@
-use crate::channel::{ChannelId, EqBandType, InputChannel, OutputChannel, PlaybackChannel, Sensitivity};
+use crate::channel::{ChannelId, ChannelType, EqBandType, InputChannel, OutputChannel, PlaybackChannel, Sensitivity};
 use crate::error::Error;
 use crate::scene::Scene;
 
@@ -469,25 +469,72 @@ pub trait RmeDevice {
     // pair) — this is the same pure-UI grouping `output_link` uses,
     // generalized to every input pair.
 
-    /// Whether input pair `pair` is currently a linked stereo bus —
-    /// same default-linked-if-unset semantics as [`Self::output_linked`].
+    /// Whether input pair `pair` is currently a linked stereo bus. Unset,
+    /// a pair is linked, except two microphone inputs: a linked pair goes
+    /// left and right, and a single microphone belongs in the centre.
     fn input_pair_linked(&self, pair: usize) -> bool {
         self.settings()
             .input_pair_link
             .get(pair)
             .copied()
-            .unwrap_or(true)
+            .unwrap_or_else(|| self.input_pair_linked_by_default(pair))
     }
 
-    /// Sets whether input pair `pair` is linked. Pure model state, same
-    /// as [`Self::set_output_linked`].
+    /// The link state of input pair `pair` before it is set: see
+    /// [`Self::input_pair_linked`].
+    fn input_pair_linked_by_default(&self, pair: usize) -> bool {
+        self.inputs()
+            .get(pair * 2)
+            .is_none_or(|c| c.channel_type != ChannelType::Mic)
+    }
+
+    /// Sets whether input pair `pair` is linked. Linking puts the pair's
+    /// two channels left and right in every submix, as TotalMix does
+    /// (see [`Self::set_input_pair_pan`]); unlinking leaves them there.
     fn set_input_pair_linked(&mut self, pair: usize, linked: bool) -> Result<(), Error> {
+        let defaults: Vec<bool> = (0..=pair)
+            .map(|p| self.input_pair_linked_by_default(p))
+            .collect();
         let v = &mut self.settings_mut().input_pair_link;
-        if v.len() <= pair {
-            v.resize(pair + 1, true);
+        while v.len() <= pair {
+            v.push(defaults[v.len()]);
         }
         v[pair] = linked;
+        if linked {
+            for out in 0..self.output_pair_count() {
+                let pan = self.input_pair_pan(pair, out);
+                self.set_input_pair_pan(pair, out, pan)?;
+            }
+        }
         Ok(())
+    }
+
+    /// The pan of linked input pair `pair` into submix `output`: 0 when
+    /// its left channel is hard left and its right channel hard right.
+    /// Channels that are not in that shape (both centred, as they were
+    /// before a linked pair was panned this way) read as 0.
+    fn input_pair_pan(&self, pair: usize, output: usize) -> i8 {
+        let l = self.pan(ChannelId::Input(pair * 2), output).unwrap_or(0);
+        let r = self.pan(ChannelId::Input(pair * 2 + 1), output).unwrap_or(0);
+        linked_pair_pan(l, r)
+    }
+
+    /// Pans linked input pair `pair` into submix `output`. At 0 the left
+    /// channel goes hard left and the right one hard right; panning moves
+    /// both together, so that at +100 both are hard right.  Writing the
+    /// same pan to both channels instead made the pair mono (TuxMix#23).
+    /// A source that has no pan of its own (a hardware stereo pair such
+    /// as AS1/2 or ADAT) is already left and right, and is left alone.
+    fn set_input_pair_pan(&mut self, pair: usize, output: usize, pan: i8) -> Result<(), Error> {
+        let (pl, pr) = linked_pair_pans(pan);
+        let (l, r) = (ChannelId::Input(pair * 2), ChannelId::Input(pair * 2 + 1));
+        if self.pan(l, output).ok() == Some(pl) && self.pan(r, output).ok() == Some(pr) {
+            return Ok(());
+        }
+        if self.set_pan(l, output, pl).is_err() {
+            return Ok(());
+        }
+        self.set_pan(r, output, pr)
     }
 
     /// Sets input pair `pair`'s volume (into submix `output`), respecting
@@ -503,6 +550,8 @@ pub trait RmeDevice {
     ) -> Result<(), Error> {
         let (l, r) = (pair * 2, pair * 2 + 1);
         if self.input_pair_linked(pair) {
+            let pan = self.input_pair_pan(pair, output);
+            self.set_input_pair_pan(pair, output, pan)?;
             self.set_volume(ChannelId::Input(l), output, volume)?;
             self.set_volume(ChannelId::Input(r), output, volume)?;
         } else {
@@ -775,5 +824,25 @@ pub trait RmeDevice {
     /// zeros.
     fn meters(&self) -> Option<Vec<f32>> {
         None
+    }
+}
+
+/// The two channel pans of a linked pair panned to `pan`: see
+/// [`RmeDevice::set_input_pair_pan`].
+pub fn linked_pair_pans(pan: i8) -> (i8, i8) {
+    let p = i16::from(pan.clamp(-100, 100));
+    ((p - 100).max(-100) as i8, (p + 100).min(100) as i8)
+}
+
+/// The inverse of [`linked_pair_pans`]; 0 for channel pans it cannot
+/// have produced.
+pub fn linked_pair_pan(left: i8, right: i8) -> i8 {
+    let (l, r) = (i16::from(left), i16::from(right));
+    if r - l < 100 {
+        0
+    } else if r < 100 {
+        (r - 100) as i8
+    } else {
+        (l + 100) as i8
     }
 }

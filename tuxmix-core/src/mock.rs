@@ -890,13 +890,68 @@ mod tests {
     #[test]
     fn test_input_pair_linked_by_default_and_moves_both_channels() {
         let mut dev = MockBabyfacePro::open().unwrap();
-        assert!(dev.input_pair_linked(0));
-        dev.set_input_volume(0, 0, 0, 0.5).unwrap();
-        assert!((dev.volume(ChannelId::Input(0), 0).unwrap() - 0.5).abs() < 1e-6);
-        assert!((dev.volume(ChannelId::Input(1), 0).unwrap() - 0.5).abs() < 1e-6);
-        dev.set_input_mute(0, 0, true).unwrap();
-        assert!(dev.mute(ChannelId::Input(0)).unwrap());
-        assert!(dev.mute(ChannelId::Input(1)).unwrap());
+        assert!(dev.input_pair_linked(1));
+        dev.set_input_volume(1, 0, 0, 0.5).unwrap();
+        assert!((dev.volume(ChannelId::Input(2), 0).unwrap() - 0.5).abs() < 1e-6);
+        assert!((dev.volume(ChannelId::Input(3), 0).unwrap() - 0.5).abs() < 1e-6);
+        dev.set_input_mute(1, 0, true).unwrap();
+        assert!(dev.mute(ChannelId::Input(2)).unwrap());
+        assert!(dev.mute(ChannelId::Input(3)).unwrap());
+    }
+
+    #[test]
+    fn test_microphone_pair_is_not_linked_by_default() {
+        // Linked, a pair goes left and right: two microphones start as
+        // two mono channels, in the centre.
+        let mut dev = MockBabyfacePro::open().unwrap();
+        assert!(!dev.input_pair_linked(0));
+        // Setting a later pair fills the earlier ones with their own
+        // defaults, not with "linked".
+        dev.set_input_pair_linked(2, false).unwrap();
+        assert!(!dev.input_pair_linked(0));
+        assert!(dev.input_pair_linked(1));
+    }
+
+    #[test]
+    fn test_linked_input_pair_goes_left_and_right() {
+        // TuxMix#23: a linked IN3/4 wrote its fader with each channel's
+        // own pan, both centred, so IN3 reached both sides of the bus.
+        let mut dev = MockBabyfacePro::open().unwrap();
+        assert!(dev.input_pair_linked(1));
+        dev.set_input_volume(1, 0, 0, 1.0).unwrap();
+        assert_eq!(dev.pan(ChannelId::Input(2), 0).unwrap(), -100);
+        assert_eq!(dev.pan(ChannelId::Input(3), 0).unwrap(), 100);
+        assert_eq!(dev.input_pair_pan(1, 0), 0);
+
+        dev.set_input_pair_pan(1, 0, 40).unwrap();
+        assert_eq!(dev.pan(ChannelId::Input(2), 0).unwrap(), -60);
+        assert_eq!(dev.pan(ChannelId::Input(3), 0).unwrap(), 100);
+        assert_eq!(dev.input_pair_pan(1, 0), 40);
+        // A fader move keeps the pair's pan.
+        dev.set_input_volume(1, 0, 0, 0.5).unwrap();
+        assert_eq!(dev.input_pair_pan(1, 0), 40);
+    }
+
+    #[test]
+    fn test_linked_pair_pan_round_trips() {
+        use crate::device::{linked_pair_pan, linked_pair_pans};
+        for p in -100..=100i8 {
+            let (l, r) = linked_pair_pans(p);
+            assert_eq!(linked_pair_pan(l, r), p, "pan {p}");
+        }
+        // Two centred channels, as before the fix, read as 0.
+        assert_eq!(linked_pair_pan(0, 0), 0);
+    }
+
+    #[test]
+    fn test_relinking_an_input_pair_puts_it_left_and_right() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        dev.set_input_pair_linked(1, false).unwrap();
+        dev.set_pan(ChannelId::Input(2), 0, 0).unwrap();
+        dev.set_pan(ChannelId::Input(3), 0, 0).unwrap();
+        dev.set_input_pair_linked(1, true).unwrap();
+        assert_eq!(dev.pan(ChannelId::Input(2), 0).unwrap(), -100);
+        assert_eq!(dev.pan(ChannelId::Input(3), 0).unwrap(), 100);
     }
 
     #[test]
@@ -906,7 +961,7 @@ mod tests {
         // so toggling 48V on a linked strip only ever touched its own
         // channel — found 2026-09-07.
         let mut dev = MockBabyfacePro::open().unwrap();
-        assert!(dev.input_pair_linked(0));
+        dev.set_input_pair_linked(0, true).unwrap();
         // Mock's own demo default starts both mics' phantom on (see
         // `open()`'s own comment) — normalize to off first, so setting
         // it back on below actually exercises the mirroring rather than

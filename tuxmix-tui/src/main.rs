@@ -2182,9 +2182,9 @@ mod tests {
     #[test]
     fn selected_channel_id_maps_sections_correctly() {
         let dev = DeviceHandle::Mock(MockBabyfacePro::open().unwrap());
-        // All pairs linked by default in every section — item index 3
-        // is the pair starting at physical channel 6.
-        assert_eq!(selected_channel_id(&dev, 0, 3), ChannelId::Input(6));
+        // The microphone pair is two items by default, every other pair
+        // one: input item 3 is the pair starting at physical channel 4.
+        assert_eq!(selected_channel_id(&dev, 0, 3), ChannelId::Input(4));
         assert_eq!(selected_channel_id(&dev, 1, 2), ChannelId::Playback(4));
         // Item 5 (0-indexed) is the pair starting at channel 10 (ADAT7/8).
         assert_eq!(selected_channel_id(&dev, 2, 5), ChannelId::Output(10));
@@ -2223,11 +2223,13 @@ mod tests {
     }
 
     #[test]
-    fn input_items_all_linked_by_default() {
+    fn input_items_linked_by_default_but_the_microphones() {
         let dev = DeviceHandle::Mock(MockBabyfacePro::open().unwrap());
         let items = input_items(&dev);
-        assert_eq!(items.len(), dev.inputs().len() / 2);
-        assert_eq!(items[0], PairItem::Linked(0));
+        assert_eq!(items.len(), dev.inputs().len() / 2 + 1);
+        assert_eq!(items[0], PairItem::Single(0));
+        assert_eq!(items[1], PairItem::Single(1));
+        assert_eq!(items[2], PairItem::Linked(1));
     }
 
     #[test]
