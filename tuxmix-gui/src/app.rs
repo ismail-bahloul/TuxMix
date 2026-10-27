@@ -1817,25 +1817,50 @@ fn apply_grouped_volume(state: &mut TuxMix, cid: ChannelId, out: usize, v: f32) 
 }
 
 /// Same relative-delta grouping as `apply_grouped_volume`, for pan.
+/// A strip's pan into submix `out`.  A linked input pair shows as one
+/// strip, and its pan is the pair's: see `RmeDevice::set_input_pair_pan`.
+fn strip_pan(state: &TuxMix, cid: ChannelId, out: usize) -> Option<i8> {
+    match cid {
+        ChannelId::Input(i) if state.device.input_pair_linked(i / 2) => {
+            Some(state.device.input_pair_pan(i / 2, out))
+        }
+        _ => state.device.pan(cid, out).ok(),
+    }
+}
+
+fn set_strip_pan(
+    state: &mut TuxMix,
+    cid: ChannelId,
+    out: usize,
+    pan: i8,
+) -> Result<(), tuxmix_core::Error> {
+    match cid {
+        ChannelId::Input(i) if state.device.input_pair_linked(i / 2) => {
+            state.device.set_input_pair_pan(i / 2, out, pan)
+        }
+        _ => state.device.set_pan(cid, out, pan),
+    }
+}
+
 fn apply_grouped_pan(state: &mut TuxMix, cid: ChannelId, out: usize, pan: i8) {
     let others = propagation_set(state, cid, sidebar::GroupLink::Fader);
     if others.is_empty() {
-        if let Err(e) = state.device.set_pan(cid, out, pan) {
+        if let Err(e) = set_strip_pan(state, cid, out, pan) {
             fail(state, "set_pan", &e);
         }
         notify_osc(state, OscOutbound::Pan(cid, out, pan));
         return;
     }
-    let old = i16::from(state.device.pan(cid, out).unwrap_or(pan));
+    let old = i16::from(strip_pan(state, cid, out).unwrap_or(pan));
     let delta = i16::from(pan) - old;
-    if let Err(e) = state.device.set_pan(cid, out, pan) {
+    if let Err(e) = set_strip_pan(state, cid, out, pan) {
         fail(state, "set_pan", &e);
     }
     notify_osc(state, OscOutbound::Pan(cid, out, pan));
     for sel in others {
-        let cur = i16::from(state.device.pan(sel, out).unwrap_or(0));
+        let cur = i16::from(strip_pan(state, sel, out).unwrap_or(0));
         let new = (cur + delta).clamp(-100, 100) as i8;
-        if let Err(e) = state.device.set_pan(sel, out, new) {
+        if let Err(e) = set_strip_pan(state, sel, out, new) {
             fail(state, "set_pan", &e);
         }
         notify_osc(state, OscOutbound::Pan(sel, out, new));
@@ -2783,13 +2808,13 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::PanReset(cid, out) => {
             if state.selected.len() > 1 && state.selected.contains(&cid) {
                 for sel in state.selected.clone() {
-                    if let Err(e) = state.device.set_pan(sel, out, 0) {
+                    if let Err(e) = set_strip_pan(state, sel, out, 0) {
                         fail(state, "set_pan", &e);
                     }
                     notify_osc(state, OscOutbound::Pan(sel, out, 0));
                 }
             } else {
-                if let Err(e) = state.device.set_pan(cid, out, 0) {
+                if let Err(e) = set_strip_pan(state, cid, out, 0) {
                     fail(state, "set_pan", &e);
                 }
                 notify_osc(state, OscOutbound::Pan(cid, out, 0));
@@ -4461,7 +4486,7 @@ fn strip_params<'a>(
                 name: ch.name.clone(),
                 type_tag: Some(type_tag(ch.channel_type)),
                 vol: ch.volumes[output_idx],
-                pan: ch.pans[output_idx],
+                pan: strip_pan(state, cid, output_idx).unwrap_or(ch.pans[output_idx]),
                 meter: state
                     .input_meters
                     .get(i)
@@ -6606,6 +6631,7 @@ mod tests {
         // set_phantom directly, bypassing the new pair-aware
         // set_input_phantom entirely.
         let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::StereoLinkChanged(ChannelId::Input(0), true));
         assert!(state.device.input_pair_linked(0));
         let _ = update(&mut state, Message::Phantom(0, false));
         let _ = update(&mut state, Message::Phantom(1, false));
@@ -6962,10 +6988,10 @@ mod tests {
     #[test]
     fn global_solo_toggle_soloing_a_new_channel_after_a_clear_replaces_the_restore_set() {
         let mut state = new(true, None, None);
-        // Input(0) and Input(8) are each half of a hardware-linked pair
-        // by default (see `mock.rs::test_input_pair_linked_by_default`),
-        // so soloing either one mirrors onto its sibling too — accounted
-        // for below rather than fought.
+        // Input(8) is half of a linked pair by default (see
+        // `mock.rs::test_input_pair_linked_by_default`), so soloing it
+        // mirrors onto its sibling too — accounted for below rather than
+        // fought.  Input(0), a microphone, is not linked by default.
         let a = ChannelId::Input(0);
         let c = ChannelId::Input(8);
         let _ = update(&mut state, Message::Solo(a, true));
