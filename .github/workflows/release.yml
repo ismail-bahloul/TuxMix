@@ -4,10 +4,19 @@ name: Release
 # an .rpm to a published GitHub release. Built on the oldest supported
 # Ubuntu so the binaries' glibc floor stays low enough for Debian, Fedora
 # and Arch alike. Run it by hand to rebuild the assets of an existing tag.
+# A pull request that touches the packaging builds the same files as a
+# dry run, kept as workflow artifacts instead of uploaded.
 
 on:
   release:
     types: [published]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "tools/release/**"
+      - "tools/udev/**"
+      - "tuxmix-gui/Cargo.toml"
+      - "tuxmix-gui/assets/**"
   workflow_dispatch:
     inputs:
       tag:
@@ -42,6 +51,7 @@ jobs:
             pkg-config
 
       - name: Check the tag matches the crate version
+        if: github.event_name != 'pull_request'
         run: |
           version=$(sed -n 's/^version = "\(.*\)"/\1/p' tuxmix-gui/Cargo.toml | head -1)
           [ "$TAG" = "v$version" ] || { echo "tag $TAG vs crate version $version"; exit 1; }
@@ -55,7 +65,15 @@ jobs:
       - name: Package
         run: tools/release/package.sh target/dist
 
+      - name: Keep the dry run's packages
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: target/dist/
+
       - name: Upload to the release
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
