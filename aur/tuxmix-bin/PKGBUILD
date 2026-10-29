@@ -9,7 +9,7 @@
 # When a new version is released, update pkgver and run updpkgsums.
 
 pkgname=tuxmix-bin
-pkgver=0.3.4
+pkgver=0.3.5
 pkgrel=1
 pkgdesc="Open-source TotalMix replacement for RME audio interfaces on Linux (prebuilt)"
 arch=('x86_64')
