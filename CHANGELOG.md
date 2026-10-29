@@ -2,7 +2,16 @@
 
 ## Unreleased
 
+### Changed
+- Without an interface, the GUI no longer opens the simulation: it shows
+  what is missing and what to check, waits for the card and opens it as
+  soon as it is plugged in. The simulation is still there as a demo from
+  that screen, under a banner, and `--mock` is unchanged. The TUI prints
+  the same message and waits.
+
 ### Fixed
+- Launching the GUI before plugging the card in left it in the simulation
+  until a restart.
 - The ALSA backend now re-reads the card every two seconds, and once a
   second after opening. The driver does not notify host-side writes, so
   udev's `alsactl restore` could land after TuxMix's initial read and

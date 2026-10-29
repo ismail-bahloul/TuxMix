@@ -421,6 +421,8 @@ fn panel<'a>(content: Element<'a, Message>, scale: f32) -> Element<'a, Message> 
 pub(crate) fn device_state(state: &TuxMix) -> (Color, &'static str) {
     if !state.connected {
         (theme::MRED, "Disconnected")
+    } else if state.no_device.is_some() {
+        (theme::YSIM, "Demo")
     } else if state.device.is_mock() {
         (theme::YSIM, "Simulated")
     } else if !state.device.protocol_features() {
