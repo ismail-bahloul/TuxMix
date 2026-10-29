@@ -13,10 +13,9 @@ pkgrel=1
 pkgdesc="Open-source TotalMix replacement for RME audio interfaces on Linux"
 arch=('x86_64')
 url="https://github.com/ismail-bahloul/TuxMix"
-# The application crates are MIT, but tuxmix-gui links tuxmix-usb
-# (GPL-3.0-or-later) and tuxmix-sys (GPL-3.0), so the binaries this
-# package installs are GPL-3.0 as a whole. See the repo's LICENSE.
-license=('GPL3')
+# tuxmix-gui and tuxmix-tui are GPL-3.0-only (they link tuxmix-usb and
+# tuxmix-sys); see the repo's COPYING and LICENSE.
+license=('GPL-3.0-only')
 depends=(
     'alsa-lib'
     'libgl'
@@ -65,4 +64,9 @@ package() {
 
     install -Dm644 "README.md" \
         "${pkgdir}/usr/share/doc/tuxmix/README.md"
+    install -Dm644 "COPYING" \
+        "${pkgdir}/usr/share/licenses/tuxmix/COPYING"
+    # tuxmix-core, linked in, is MIT.
+    install -Dm644 "LICENSE" \
+        "${pkgdir}/usr/share/licenses/tuxmix/LICENSE"
 }

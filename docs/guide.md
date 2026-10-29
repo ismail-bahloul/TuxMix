@@ -121,9 +121,10 @@ the same files locally from `cargo build --release --workspace`. Then bump
 
 ## License
 
-MIT for the application: `tuxmix-core`, `tuxmix-gui`, `tuxmix-tui` and the
-rest of the tree, see [`LICENSE`](../LICENSE).
+MIT for the library and the rest of the tree: `tuxmix-core`, the tools and
+the docs, see [`LICENSE`](../LICENSE).
 
-Two crates are copyleft: `tuxmix-usb` is GPL-3.0-or-later and `tuxmix-sys` is
-GPL-3.0. The built binaries link both, so as a whole they are GPL-3.0, which
-is the license the AUR package declares.
+The rest is copyleft: `tuxmix-usb` is GPL-3.0-or-later and `tuxmix-sys` is
+GPL-3.0. The applications link both, so `tuxmix-gui` and `tuxmix-tui` are
+GPL-3.0-only, see [`COPYING`](../COPYING). It is the license every package
+declares.

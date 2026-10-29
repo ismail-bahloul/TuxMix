@@ -3,7 +3,7 @@ name = "tuxmix-gui"
 version = "0.3.4"
 edition = "2021"
 description = "GUI for TuxMix — direct control of RME hardware DSP mixers on Linux"
-license = "MIT"
+license = "GPL-3.0-only"
 
 [features]
 default = ["alsa"]
@@ -23,13 +23,11 @@ png = "0.17"
 ksni = { version = "0.3.7", features = ["blocking"] }
 
 # Release packages, built by tools/release/package.sh (see release.yml).
-# The binaries link tuxmix-usb (GPL-3.0-or-later) and tuxmix-sys (GPL-3.0),
-# so the packages are GPL-3.0 as a whole, like the AUR one.
 [package.metadata.deb]
 name = "tuxmix"
 maintainer = "Ismaïl Bahloul <i.bahloul01@gmail.com>"
 copyright = "2026, Ismaïl Bahloul"
-license-file = ["../LICENSE", "0"]
+license-file = ["../COPYING", "0"]
 extended-description = "Open-source TotalMix replacement for RME audio interfaces on Linux."
 section = "sound"
 depends = "$auto"
@@ -42,6 +40,7 @@ assets = [
     ["assets/tuxmix-256.png", "usr/share/icons/hicolor/256x256/apps/tuxmix.png", "644"],
     ["../tools/udev/70-tuxmix.rules", "usr/lib/udev/rules.d/", "644"],
     ["../README.md", "usr/share/doc/tuxmix/README.md", "644"],
+    ["../LICENSE", "usr/share/doc/tuxmix/LICENSE", "644"],
 ]
 
 [package.metadata.generate-rpm]
@@ -57,5 +56,7 @@ assets = [
     { source = "assets/tuxmix-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/tuxmix.png", mode = "644" },
     { source = "../tools/udev/70-tuxmix.rules", dest = "/usr/lib/udev/rules.d/70-tuxmix.rules", mode = "644" },
     { source = "../README.md", dest = "/usr/share/doc/tuxmix/README.md", mode = "644", doc = true },
+    { source = "../COPYING", dest = "/usr/share/licenses/tuxmix/COPYING", mode = "644" },
+    { source = "../LICENSE", dest = "/usr/share/licenses/tuxmix/LICENSE", mode = "644" },
 ]
 auto-req = "auto"

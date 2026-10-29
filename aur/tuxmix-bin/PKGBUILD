@@ -14,8 +14,7 @@ pkgrel=1
 pkgdesc="Open-source TotalMix replacement for RME audio interfaces on Linux (prebuilt)"
 arch=('x86_64')
 url="https://github.com/ismail-bahloul/TuxMix"
-# See the `tuxmix` PKGBUILD: the binaries link GPL crates, GPL-3.0 as a whole.
-license=('GPL3')
+license=('GPL-3.0-only')
 depends=(
     'alsa-lib'
     'gcc-libs'

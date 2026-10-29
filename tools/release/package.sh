@@ -33,6 +33,7 @@ install -Dm644 tuxmix-gui/assets/tuxmix-128.png "$root/usr/share/icons/hicolor/1
 install -Dm644 tuxmix-gui/assets/tuxmix-256.png "$root/usr/share/icons/hicolor/256x256/apps/tuxmix.png"
 install -Dm644 tools/udev/70-tuxmix.rules "$root/usr/lib/udev/rules.d/70-tuxmix.rules"
 install -Dm644 README.md "$root/usr/share/doc/tuxmix/README.md"
+install -Dm644 COPYING "$root/usr/share/licenses/tuxmix/COPYING"
 install -Dm644 LICENSE "$root/usr/share/licenses/tuxmix/LICENSE"
 
 mkdir -p "$out"
