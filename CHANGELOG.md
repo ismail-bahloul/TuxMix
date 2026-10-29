@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.5 (2026-10-29)
+
+### Added
+- Release packages: each GitHub release gets a prebuilt binary tarball
+  (the new `tuxmix-bin` AUR package), a `.deb` and an `.rpm`.
+- A udev rule (`tools/udev/70-tuxmix.rules`), installed by every package,
+  that lets the logged-in user open the card for the USB backend.
+
+### Changed
+- `tuxmix-gui` and `tuxmix-tui` are now GPL-3.0-only, what their binaries
+  already were as a whole since they link `tuxmix-usb` and `tuxmix-sys`.
+  `COPYING` holds the GPL-3.0 text and every package installs it;
+  `tuxmix-core`, the tools and the docs stay MIT.
+
 ## 0.3.4 (2026-10-29)
 
 ### Changed

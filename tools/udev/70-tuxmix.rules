@@ -1,0 +1,7 @@
+# TuxMix: let the user at the seat open the RME Babyface Pro FS in its
+# proprietary mode (USB 2a39:3fc0), for the USB backend (libusb). The
+# kernel driver path (ALSA) does not need this rule.
+#
+# `uaccess` grants the logged-in user access through logind, without a
+# group to join. It must run before 73-seat-late.rules, hence 70-.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2a39", ATTR{idProduct}=="3fc0", TAG+="uaccess"

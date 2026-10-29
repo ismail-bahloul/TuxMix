@@ -98,13 +98,33 @@ cargo build -p tuxmix-core --no-default-features --features usb
 ```
 
 The binaries land in `target/release/`: `tuxmix-gui` (installed as `tuxmix`
-by the AUR package) and `tuxmix-tui`.
+by the packages) and `tuxmix-tui`.
+
+The USB backend opens the card through libusb, which needs access to its
+device node. The packages install `tools/udev/70-tuxmix.rules`, which gives
+it to the logged-in user; from source, copy it yourself:
+
+```sh
+sudo install -Dm644 tools/udev/70-tuxmix.rules /etc/udev/rules.d/70-tuxmix.rules
+sudo udevadm control --reload && sudo udevadm trigger
+```
+
+The kernel driver path (ALSA) does not need it.
+
+## Releasing
+
+Publishing a GitHub release for a `vX.Y.Z` tag runs
+`.github/workflows/release.yml`, which attaches the binary tarball, the
+`.deb`, the `.rpm` and their `SHA256SUMS`. `tools/release/package.sh` builds
+the same files locally from `cargo build --release --workspace`. Then bump
+`pkgver` in `aur/tuxmix` and `aur/tuxmix-bin` and run `updpkgsums` in each.
 
 ## License
 
-MIT for the application: `tuxmix-core`, `tuxmix-gui`, `tuxmix-tui` and the
-rest of the tree, see [`LICENSE`](../LICENSE).
+MIT for the library and the rest of the tree: `tuxmix-core`, the tools and
+the docs, see [`LICENSE`](../LICENSE).
 
-Two crates are copyleft: `tuxmix-usb` is GPL-3.0-or-later and `tuxmix-sys` is
-GPL-3.0. The built binaries link both, so as a whole they are GPL-3.0, which
-is the license the AUR package declares.
+The rest is copyleft: `tuxmix-usb` is GPL-3.0-or-later and `tuxmix-sys` is
+GPL-3.0. The applications link both, so `tuxmix-gui` and `tuxmix-tui` are
+GPL-3.0-only, see [`COPYING`](../COPYING). It is the license every package
+declares.

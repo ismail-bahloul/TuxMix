@@ -22,6 +22,7 @@ SOFTWARE.
 
 ---
 
-Two crates in this repository are licensed differently, and the MIT text above
-does not cover them: `tuxmix-usb` is GPL-3.0-or-later, `tuxmix-sys` is
-GPL-3.0. See the License section of README.md.
+The applications are licensed differently, and the MIT text above does not
+cover them: `tuxmix-gui` and `tuxmix-tui` are GPL-3.0-only, `tuxmix-usb` is
+GPL-3.0-or-later, `tuxmix-sys` is GPL-3.0; see COPYING. The License section of
+docs/guide.md has the details.

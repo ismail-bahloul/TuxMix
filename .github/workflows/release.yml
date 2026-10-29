@@ -1,0 +1,82 @@
+name: Release
+
+# Attaches the binary tarball (for the tuxmix-bin AUR package), a .deb and
+# an .rpm to a published GitHub release. Built on the oldest supported
+# Ubuntu so the binaries' glibc floor stays low enough for Debian, Fedora
+# and Arch alike. Run it by hand to rebuild the assets of an existing tag.
+# A pull request that touches the packaging builds the same files as a
+# dry run, kept as workflow artifacts instead of uploaded.
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "tools/release/**"
+      - "tools/udev/**"
+      - "tuxmix-gui/Cargo.toml"
+      - "tuxmix-gui/assets/**"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and upload (e.g. v0.3.5)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libgl1-mesa-dev \
+            libudev-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxkbcommon-dev \
+            pkg-config
+
+      - name: Check the tag matches the crate version
+        if: github.event_name != 'pull_request'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' tuxmix-gui/Cargo.toml | head -1)
+          [ "$TAG" = "v$version" ] || { echo "tag $TAG vs crate version $version"; exit 1; }
+
+      - name: Install the packagers
+        run: cargo install --locked cargo-deb cargo-generate-rpm
+
+      - name: Build
+        run: cargo build --release --workspace --locked
+
+      - name: Package
+        run: tools/release/package.sh target/dist
+
+      - name: Keep the dry run's packages
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: target/dist/
+
+      - name: Upload to the release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd target/dist
+          sha256sum * > SHA256SUMS
+          gh release upload "$TAG" * --clobber

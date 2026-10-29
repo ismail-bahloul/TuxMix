@@ -32,11 +32,13 @@ validated on real hardware.
 ## Install
 
 ```sh
-paru -S tuxmix        # Arch, CachyOS
+paru -S tuxmix-bin    # Arch, CachyOS: prebuilt
+paru -S tuxmix        # Arch, CachyOS: built from source
 ```
 
-Other distributions: `cargo build --release`, see the
-[guide](docs/guide.md#building-from-source).
+Debian, Ubuntu, Fedora: the `.deb` and `.rpm` attached to each
+[release](https://github.com/ismail-bahloul/TuxMix/releases). Elsewhere:
+`cargo build --release`, see the [guide](docs/guide.md#building-from-source).
 Try it without hardware: `tuxmix --mock`.
 
 ## Learn more
