@@ -254,7 +254,13 @@ impl DeviceHandle {
     /// auto-detect never double-opens, it just wasn't ever *said* which
     /// one won. Every path now logs that at `info` level so a failure
     /// to find the device isn't a silent "which one did it even try?".
-    fn open_real(backend: Option<&str>) -> Option<Self> {
+    /// `Err` keeps why it failed when the user can act on it: the card is
+    /// there but in a mode the ALSA backend cannot drive (`Some(message)`),
+    /// as opposed to no card at all (`None`). Quiet, so `wait_for_device`
+    /// can call it every second.
+    fn probe_real(backend: Option<&str>) -> Result<Self, Option<String>> {
+        #[cfg_attr(not(feature = "alsa"), allow(unused_mut))]
+        let mut hint = None;
         #[cfg_attr(not(feature = "alsa"), allow(unused_variables))]
         let want_alsa = !matches!(backend, Some("usb"));
         let want_usb = !matches!(backend, Some("alsa"));
@@ -264,18 +270,21 @@ impl DeviceHandle {
             match BabyfacePro::open() {
                 Ok(d) => {
                     log::info!("Device backend: ALSA (kernel driver)");
-                    return Some(DeviceHandle::Real(d));
+                    return Ok(DeviceHandle::Real(d));
+                }
+                // The card was found, it's just in a mode this backend
+                // can't drive — user-actionable, so the caller says it
+                // instead of the generic (and here simply wrong) "No
+                // device found".
+                Err(e @ tuxmix_core::Error::UnsupportedDeviceMode { .. }) => {
+                    hint = Some(e.to_string());
+                    if backend == Some("alsa") {
+                        return Err(hint);
+                    }
                 }
                 Err(e) if backend == Some("alsa") => {
                     log::warn!("--backend alsa requested but ALSA open failed: {e:?}");
-                    return None;
-                }
-                // The card was found, it's just in a mode this backend
-                // can't drive — user-actionable, so say it on stderr
-                // instead of falling through to the generic (and here
-                // simply wrong) "No device found".
-                Err(e @ tuxmix_core::Error::UnsupportedDeviceMode { .. }) => {
-                    eprintln!("{e}");
+                    return Err(None);
                 }
                 Err(_) => {}
             }
@@ -283,14 +292,14 @@ impl DeviceHandle {
         #[cfg(not(feature = "alsa"))]
         if backend == Some("alsa") {
             log::warn!("--backend alsa requested but this build has no `alsa` feature");
-            return None;
+            return Err(None);
         }
 
         if want_usb {
             match BabyfaceProUsb::open() {
                 Ok(d) => {
                     log::info!("Device backend: USB (libusb)");
-                    return Some(DeviceHandle::Usb(d));
+                    return Ok(DeviceHandle::Usb(d));
                 }
                 Err(e) if backend == Some("usb") => {
                     log::warn!("--backend usb requested but USB open failed: {e:?}");
@@ -298,7 +307,34 @@ impl DeviceHandle {
                 Err(_) => {}
             }
         }
-        None
+        Err(hint)
+    }
+    /// Without a card and without `--mock`: says what is missing and
+    /// waits for it, before the terminal goes full screen. Starting the
+    /// simulation instead looked like a working mixer that drove nothing.
+    fn wait_for_device(backend: Option<&str>) -> Self {
+        let mut said: Option<Option<String>> = None;
+        loop {
+            match Self::probe_real(backend) {
+                Ok(d) => return d,
+                Err(hint) => {
+                    if said.as_ref() != Some(&hint) {
+                        match &hint {
+                            Some(h) => eprintln!("{h}"),
+                            None => eprintln!(
+                                "No interface found. Plug in the RME Babyface Pro FS and TuxMix \
+                                 opens as soon as it is there.\n\
+                                 Check that it is powered on, and that the kernel driver is \
+                                 loaded or TuxMix may use the USB device (udev rule).\n\
+                                 Ctrl+C quits; --mock runs the simulation instead."
+                            ),
+                        }
+                        said = Some(hint);
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
     }
     fn open_mock() -> Self {
         DeviceHandle::Mock(MockBabyfacePro::open().expect("mock opens"))
@@ -606,7 +642,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mock = args.iter().any(|a| a == "--mock");
 
     // `None` = auto-detect (ALSA/kernel-driver first, USB fallback — see
-    // `DeviceHandle::open_real`). An unrecognized value falls back to
+    // `DeviceHandle::probe_real`). An unrecognized value falls back to
     // auto rather than silently opening nothing.
     let backend = args
         .iter()
@@ -623,10 +659,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut device: DeviceHandle = if mock {
         DeviceHandle::open_mock()
     } else {
-        DeviceHandle::open_real(backend).unwrap_or_else(|| {
-            eprintln!("No device found; starting in simulation (pass --mock to make that explicit).");
-            DeviceHandle::open_mock()
-        })
+        DeviceHandle::wait_for_device(backend)
     };
     let real_device = !device.is_mock();
     // Restore the shared auto-saved state (the same `auto.json` the GUI

@@ -4251,3 +4251,41 @@ par la GUI) ; la piste est un adaptateur de dialecte devant les mêmes actions,
 en commençant par volumes, mute/solo, pan et routing. En attente du header,
 des sémantiques de valeur et du sous-ensemble dont l'UI oscmix a réellement
 besoin.
+
+## No interface: a screen that waits for it (2026-10-29)
+
+Started without a card (and without `--mock`), the GUI used to fall back to
+the simulation with nothing but an `eprintln!` and the sidebar's "Simulated"
+to say so: a mixer that looks live and drives nothing. It also stayed there,
+since the mock always answers "connected" and the reconnect probe only runs
+on a disconnect: plugging the card in did nothing until a restart.
+
+Now `TuxMix::no_device` covers that case. `Waiting` replaces the whole window
+with a card: "No interface found", what to check (USB and power, kernel
+driver or udev rule, another program holding it), and, when the card is
+there in a mode the ALSA backend cannot drive, the probe's own message
+(`DeviceHandle::probe_real`, quiet so it can run every second). The Tick
+probes for the card once a second and `adopt_device` switches to it on the
+spot: auto-saved mix, PipeWire playback meters, snapshot files, audio engine,
+as `new` sets them up for real hardware. While waiting the Tick stops after
+the probe, so the screen stays at the idle rate.
+
+"Try the demo" opens the simulation as `Demo`, under an amber banner and with
+"Demo" in the sidebar chip, the title and About; "Leave the demo" goes back
+to the screen. The card still switches in when plugged. `--mock` is
+unchanged: "Simulated", no screen, no probe.
+
+The TUI has no screen to draw before it goes full screen, so it prints the
+same message once (again only when the probe's answer changes) and waits.
+
+The card sits over the mixer itself, under a scrim (`BG_DEEP` at 88 %),
+rather than on an empty window: the user sees what opens once the card is
+there, and the card lifting off it is the transition. Dark enough that the
+mixer reads as a shape and not as values, which are the simulation's and not
+the user's mix. iced 0.14 has no backdrop blur, only shadow and compositor
+window blur, so a blur would need a custom shader; the scrim does the job.
+The chip behind says "Waiting".
+
+Verified in Xvfb with no card: the screen, the demo and its banner, back to
+the screen, and the window titles; a 3 s TUI run printed the message once.
+Not verified: the switch when the card is plugged in (no card here).

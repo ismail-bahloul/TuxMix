@@ -345,6 +345,15 @@ impl DeviceHandle {
     /// one won. Every path now logs that at `info` level so a failure
     /// to find the device isn't a silent "which one did it even try?".
     pub fn open_real(backend: Option<&str>) -> Option<Self> {
+        Self::probe_real(backend).ok()
+    }
+    /// `open_real`, keeping why it failed when the user can act on it: the
+    /// card is there but in a mode the ALSA backend cannot drive (`Err`
+    /// holds that message), as opposed to no card at all (`Err(None)`).
+    /// Quiet, so the no-device screen can call it every second.
+    pub fn probe_real(backend: Option<&str>) -> Result<Self, Option<String>> {
+        #[cfg_attr(not(feature = "alsa"), allow(unused_mut))]
+        let mut hint = None;
         #[cfg_attr(not(feature = "alsa"), allow(unused_variables))]
         let want_alsa = !matches!(backend, Some("usb"));
         let want_usb = !matches!(backend, Some("alsa"));
@@ -354,18 +363,21 @@ impl DeviceHandle {
             match BabyfacePro::open() {
                 Ok(d) => {
                     log::info!("Device backend: ALSA (kernel driver)");
-                    return Some(DeviceHandle::Real(d));
+                    return Ok(DeviceHandle::Real(d));
+                }
+                // The card was found, it's just in a mode this backend
+                // can't drive — user-actionable, so the caller says it
+                // instead of the generic (and here simply wrong) "No
+                // device found".
+                Err(e @ tuxmix_core::Error::UnsupportedDeviceMode { .. }) => {
+                    hint = Some(e.to_string());
+                    if backend == Some("alsa") {
+                        return Err(hint);
+                    }
                 }
                 Err(e) if backend == Some("alsa") => {
                     log::warn!("--backend alsa requested but ALSA open failed: {e:?}");
-                    return None;
-                }
-                // The card was found, it's just in a mode this backend
-                // can't drive — user-actionable, so say it on stderr
-                // instead of falling through to the generic (and here
-                // simply wrong) "No device found".
-                Err(e @ tuxmix_core::Error::UnsupportedDeviceMode { .. }) => {
-                    eprintln!("{e}");
+                    return Err(None);
                 }
                 Err(_) => {}
             }
@@ -373,14 +385,14 @@ impl DeviceHandle {
         #[cfg(not(feature = "alsa"))]
         if backend == Some("alsa") {
             log::warn!("--backend alsa requested but this build has no `alsa` feature");
-            return None;
+            return Err(None);
         }
 
         if want_usb {
             match BabyfaceProUsb::open() {
                 Ok(d) => {
                     log::info!("Device backend: USB (libusb)");
-                    return Some(DeviceHandle::Usb(d));
+                    return Ok(DeviceHandle::Usb(d));
                 }
                 Err(e) if backend == Some("usb") => {
                     log::warn!("--backend usb requested but USB open failed: {e:?}");
@@ -388,7 +400,7 @@ impl DeviceHandle {
                 Err(_) => {}
             }
         }
-        None
+        Err(hint)
     }
     pub fn open_mock() -> Self {
         DeviceHandle::Mock(MockBabyfacePro::open().expect("mock opens"))
@@ -760,6 +772,9 @@ pub enum Message {
     ToggleDevicePanel,
     /// Toggles the About modal (version, icon, links; see `about`).
     ToggleAbout,
+    /// The no-device screen's "Try the demo" / the demo banner's "Back":
+    /// shows or leaves the simulation (see `NoDevice`).
+    SetDemo(bool),
     /// The TuxMix settings popover (the app's own, not the device's).
     ToggleSettings,
     /// Opens the repository in the desktop's browser, from the About
@@ -1049,6 +1064,13 @@ pub struct TuxMix {
     /// `--mock` was passed: never auto-reconnect, there is no hardware to
     /// come back and the mock was asked for.
     explicit_mock: bool,
+    /// Set when the app started without a card and without `--mock`: the
+    /// mock is only a placeholder then, behind the no-device screen (or
+    /// the demo the user opened from it), until the card shows up.
+    pub no_device: Option<NoDevice>,
+    /// What the last probe found wrong with a card that is there (see
+    /// `DeviceHandle::probe_real`), shown on the no-device screen.
+    pub device_hint: Option<String>,
     /// When the connection was last probed. The throttle for the Tick
     /// probe; `None` = never, so the first tick probes.
     last_conn_check: Option<Instant>,
@@ -1159,6 +1181,17 @@ pub struct TuxMix {
     /// launch: which buffer sizes the card can actually run. `None` when
     /// unknown (no kernel driver), taken as the default 32.
     pub driver_floor: Option<u32>,
+}
+
+/// See `TuxMix::no_device`. "Simulated" is a word for us: someone who
+/// launched TuxMix before plugging the card in gets a screen that says the
+/// card is missing and waits for it, and a demo only when they ask.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoDevice {
+    /// The no-device screen, in place of the whole window.
+    Waiting,
+    /// The simulation, opened from that screen, under a banner.
+    Demo,
 }
 
 /// The mock's stand-in for PipeWire's clock: what the real card runs with
@@ -1318,16 +1351,22 @@ impl MeterAnim {
 }
 
 pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -> TuxMix {
+    let mut device_hint = None;
     let mut device = if mock {
         DeviceHandle::open_mock()
     } else {
-        DeviceHandle::open_real(backend.as_deref()).unwrap_or_else(|| {
-            eprintln!(
-                "No device found; starting in simulation (pass --mock to make that explicit)."
-            );
+        DeviceHandle::probe_real(backend.as_deref()).unwrap_or_else(|hint| {
+            match &hint {
+                Some(h) => eprintln!("{h}"),
+                None => eprintln!(
+                    "No device found; waiting for it (pass --mock to run the simulation)."
+                ),
+            }
+            device_hint = hint;
             DeviceHandle::open_mock()
         })
     };
+    let no_device = (!mock && device.is_mock()).then_some(NoDevice::Waiting);
     let real_device = !device.is_mock();
     // Restore the last mixer state so the UI starts in sync with the
     // hardware — the USB backend has NO gain/volume readback (only the
@@ -1405,6 +1444,8 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         show_settings: false,
         backend,
         explicit_mock: mock,
+        no_device,
+        device_hint,
         last_conn_check: None,
         // State persistence (the device has no gain/volume readback —
         // TotalMix re-applies its saved state; this is our equivalent).
@@ -1417,12 +1458,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         layouts: std::array::from_fn(|i| crate::layouts::load_layout_file((i + 1) as u8)),
         active_layout: None,
         active_snapshot: None,
-        stored_snapshots: std::array::from_fn(|i| {
-            !simulated
-                && crate::scenes::scenes_dir()
-                    .join(format!("Mix {}.json", i + 1))
-                    .exists()
-        }),
+        stored_snapshots: stored_snapshot_slots(simulated),
         mock_snapshots: Default::default(),
         last_cleared_solos: Vec::new(),
         last_cleared_mutes: Vec::new(),
@@ -1448,6 +1484,50 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         // The mock stands for the stock driver.
         driver_floor: simulated.then_some(32),
     }
+}
+
+/// Which "Mix n" files exist; none for the mock, which keeps its own in
+/// memory (`mock_snapshots`).
+fn stored_snapshot_slots(simulated: bool) -> [bool; 8] {
+    std::array::from_fn(|i| {
+        !simulated
+            && crate::scenes::scenes_dir()
+                .join(format!("Mix {}.json", i + 1))
+                .exists()
+    })
+}
+
+/// Swaps the no-device placeholder for the card that just showed up, and
+/// sets up everything `new` sets up differently for real hardware: the
+/// auto-saved mix, the playback meters from PipeWire, the snapshot files,
+/// the audio engine. What was done in the demo goes with the mock.
+fn adopt_device(state: &mut TuxMix, device: DeviceHandle) {
+    log::info!("Device found");
+    state.device = device;
+    state.no_device = None;
+    state.device_hint = None;
+    state.connected = state.device.is_connected();
+    if let Some(scene) = tuxmix_core::scene::load_auto_scene() {
+        if let Err(e) = state.device.restore_auto_scene(&scene) {
+            fail(state, "apply_scene", &e);
+        }
+    }
+    state.input_meters = vec![MeterAnim::new(); state.device.inputs().len()];
+    state.playback_meters = vec![MeterAnim::new(); state.device.playbacks().len()];
+    state.output_meters = vec![MeterAnim::new(); state.device.outputs().len()];
+    state.playback_tap = pw_meter::Tap::start_playback();
+    state.playback_tap_channels = 0;
+    state.stored_snapshots = stored_snapshot_slots(false);
+    state.mock_snapshots = Default::default();
+    state.active_snapshot = None;
+    state.snapshot_dirty = false;
+    state.undo_stack.clear();
+    state.redo_stack.clear();
+    state.last_saved_json = None;
+    state.engine = None;
+    state.card_stream = None;
+    state.driver_floor = None;
+    restore_engine(state);
 }
 
 /// The persisted subset of `state` (see `prefs.rs`).
@@ -1621,7 +1701,11 @@ pub fn title(state: &TuxMix, _window: window::Id) -> String {
         .model_name()
         .strip_suffix(" (mock)")
         .unwrap_or_else(|| state.device.model_name());
-    if !state.connected {
+    if state.no_device == Some(NoDevice::Waiting) {
+        format!("TuxMix \u{2014} waiting for the {model}")
+    } else if state.no_device == Some(NoDevice::Demo) {
+        format!("TuxMix \u{2014} {model} (demo)")
+    } else if !state.connected {
         format!("TuxMix \u{2014} {model} (disconnected)")
     } else if state.device.is_mock() {
         format!("TuxMix \u{2014} {model} (simulated)")
@@ -2241,7 +2325,16 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             let conn_due = state.last_conn_check.map_or(true, |t| {
                 t.elapsed() >= Duration::from_millis(CONN_CHECK_MS)
             });
-            if conn_due {
+            // Started without a card: look for it, and open it the moment
+            // it is plugged in (the placeholder mock always answers
+            // "connected", so the reconnect below would never fire).
+            if conn_due && state.no_device.is_some() {
+                state.last_conn_check = Some(Instant::now());
+                match DeviceHandle::probe_real(state.backend.as_deref()) {
+                    Ok(fresh) => adopt_device(state, fresh),
+                    Err(hint) => state.device_hint = hint,
+                }
+            } else if conn_due {
                 state.last_conn_check = Some(Instant::now());
                 state.connected = state.device.is_connected();
                 if !state.connected && !state.explicit_mock {
@@ -2256,6 +2349,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                         }
                     }
                 }
+            }
+            // The no-device screen shows no meters: running the mock's
+            // generated ones would only keep the UI at the fast tick.
+            if state.no_device == Some(NoDevice::Waiting) {
+                return Task::none();
             }
             let before = panel_fingerprint(state);
             let _ = state.device.poll_events();
@@ -3008,6 +3106,15 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             state.show_device_panel = false;
         }
         Message::ToggleAbout => state.show_about = !state.show_about,
+        Message::SetDemo(on) => {
+            if state.no_device.is_some() {
+                state.no_device = Some(if on {
+                    NoDevice::Demo
+                } else {
+                    NoDevice::Waiting
+                });
+            }
+        }
         Message::OpenRepoUrl => {
             // Fire and forget: the browser is not our child process, and a
             // minimal session may have no `xdg-open` to hand it to at all.
@@ -3497,6 +3604,9 @@ pub fn view(state: &TuxMix, _window: window::Id) -> Element<'_, Message> {
     if !state.connected {
         main = main.push(disconnected_banner(state));
     }
+    if state.no_device == Some(NoDevice::Demo) {
+        main = main.push(demo_banner(state));
+    }
     main = main.push(content);
     if state.show_osc_log {
         main = main.push(osc_log_panel(state));
@@ -3506,6 +3616,15 @@ pub fn view(state: &TuxMix, _window: window::Id) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .into();
+    // The mixer stays behind the no-device card, as a silhouette of what
+    // opens once the card is there; the drawers and toasts below never
+    // open over it (the scrim takes every click).
+    if state.no_device == Some(NoDevice::Waiting) {
+        return stack(vec![base, no_device_screen(state)])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    }
     if state.show_device_panel {
         base = stack(vec![base, device_panel(state)])
             .width(Length::Fill)
@@ -3568,6 +3687,160 @@ fn disconnected_banner(state: &TuxMix) -> Element<'_, Message> {
             theme::SURFACE,
             theme::MRED,
             0.22,
+        ))),
+        ..container::Style::default()
+    })
+    .into()
+}
+
+/// Over the whole window while TuxMix was started without a card: what
+/// is missing, what to check, and that it opens on its own once the card
+/// is there (the Tick probe). Without it, a missing card used to drop the
+/// user into the simulation, a mixer that looks live and drives nothing,
+/// with "Simulated" in the sidebar as the only clue.
+fn no_device_screen(state: &TuxMix) -> Element<'_, Message> {
+    let scale = state.ui_scale;
+    let model = state
+        .device
+        .model_name()
+        .strip_suffix(" (mock)")
+        .unwrap_or_else(|| state.device.model_name())
+        .to_string();
+
+    let heading = column![
+        text("No interface found")
+            .color(theme::TEXT_PRIMARY)
+            .size(theme::TEXT_XL * scale),
+        text(format!(
+            "TuxMix drives the RME {model}. Plug it in and the mixer opens here on its own."
+        ))
+        .color(theme::TEXT_SEC)
+        .size(theme::TEXT_SM * scale),
+    ]
+    .spacing(theme::SPACE_SM * scale);
+    let heading: Element<'_, Message> = match crate::icon::mark() {
+        Some((handle, ratio)) => {
+            let mark_h = 44.0 * scale;
+            row![
+                iced::widget::image(handle)
+                    .width(mark_h * ratio)
+                    .height(mark_h)
+                    .filter_method(iced::widget::image::FilterMethod::Linear),
+                heading,
+            ]
+            .spacing(theme::SPACE_XL * scale)
+            .align_y(iced::Alignment::Center)
+            .into()
+        }
+        None => heading.into(),
+    };
+
+    let mut checks = column![text("CHECK THAT")
+        .color(theme::TEXT_SEC)
+        .size(theme::TEXT_MICRO * scale)]
+    .spacing(theme::SPACE_SM * scale);
+    for line in [
+        "The interface is plugged in over USB and powered on.",
+        "The Babyface Pro kernel driver is loaded, or TuxMix may use the USB device (udev rule).",
+        "No other program holds the interface.",
+    ] {
+        checks = checks.push(
+            row![
+                text("\u{2022}")
+                    .color(theme::TEXT_SEC)
+                    .size(theme::TEXT_SM * scale),
+                text(line)
+                    .color(theme::TEXT_PRIMARY)
+                    .size(theme::TEXT_SM * scale),
+            ]
+            .spacing(theme::SPACE_MD * scale),
+        );
+    }
+
+    let mut body = column![heading, checks].spacing(theme::SPACE_XL * scale);
+    // A card that is there but cannot be driven: the probe says why,
+    // which beats the checklist above.
+    if let Some(hint) = &state.device_hint {
+        body = body.push(
+            text(hint.clone())
+                .color(theme::YSIM)
+                .size(theme::TEXT_SM * scale),
+        );
+    }
+    body = body.push(
+        row![
+            text("\u{25CF}")
+                .size(theme::TEXT_XS * scale)
+                .color(theme::YSIM),
+            text("Waiting for the interface\u{2026}")
+                .color(theme::TEXT_SEC)
+                .size(theme::TEXT_SM * scale),
+            iced::widget::Space::new().width(Length::Fill),
+            iced::widget::button(text("Try the demo").size(theme::TEXT_SM * scale))
+                .padding([theme::SPACE_SM * scale, theme::SPACE_LG * scale])
+                .style(theme::ghost_button)
+                .on_press(Message::SetDemo(true)),
+        ]
+        .spacing(theme::SPACE_MD * scale)
+        .align_y(iced::Alignment::Center),
+    );
+
+    let card = container(body.width(Length::Fill))
+        .style(theme::dialog)
+        .padding(theme::SPACE_XXL * scale)
+        .width(Length::Fill)
+        .max_width(520.0 * scale);
+    // Dark enough that the mixer behind reads as a shape, not as values:
+    // they are the simulation's, not the user's mix, and a mixer that
+    // looks live is what this screen replaces. Opaque, so nothing behind
+    // takes a click; iced has no backdrop blur, hence a plain scrim.
+    opaque(
+        container(card)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .padding(theme::SPACE_XXL * scale)
+            .style(|_theme: &iced::Theme| container::Style {
+                background: Some(iced::Background::Color(Color {
+                    a: 0.88,
+                    ..theme::BG_DEEP
+                })),
+                ..container::Style::default()
+            }),
+    )
+}
+
+/// Above the view while the demo runs, so it never passes for the real
+/// thing: the same full-width line as `disconnected_banner`, in the amber
+/// the sidebar uses for the simulation.
+fn demo_banner(state: &TuxMix) -> Element<'_, Message> {
+    let scale = state.ui_scale;
+    container(
+        row![
+            text("\u{25CF}")
+                .size(theme::TEXT_XS * scale)
+                .color(theme::YSIM),
+            text(
+                "Demo: no interface is connected, nothing here reaches any hardware. \
+                 The mixer switches to your interface as soon as it is plugged in."
+            )
+            .size(theme::TEXT_SM * scale)
+            .color(theme::TEXT_PRIMARY),
+            iced::widget::Space::new().width(Length::Fill),
+            iced::widget::button(text("Leave the demo").size(theme::TEXT_XS * scale))
+                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+                .style(theme::ghost_button)
+                .on_press(Message::SetDemo(false)),
+        ]
+        .spacing(theme::SPACE_MD * scale)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([theme::SPACE_SM * scale, theme::SPACE_XXL * scale])
+    .width(Length::Fill)
+    .style(|_theme: &iced::Theme| container::Style {
+        background: Some(iced::Background::Color(theme::blend(
+            theme::SURFACE,
+            theme::YSIM,
+            0.18,
         ))),
         ..container::Style::default()
     })
@@ -6060,8 +6333,8 @@ mod tests {
     use super::{
         any_channel_muted, any_channel_soloed, apply_pending_resize, apply_prefs, channel_is_muted,
         channel_is_soloed, is_undoable, mute_armed, new, power_sum_output_meters, prefs_of,
-        route_popover_open, update, zoom, ChannelId, EditField, Message, MeterAnim, RowMode,
-        TuxMix, View, LOW_CUT_ON_HZ, ZOOM_STEP,
+        route_popover_open, title, update, window, zoom, ChannelId, EditField, Message, MeterAnim,
+        NoDevice, RowMode, TuxMix, View, LOW_CUT_ON_HZ, ZOOM_STEP,
     };
     use crate::sidebar;
     use crate::theme;
@@ -6469,6 +6742,34 @@ mod tests {
         state.last_conn_check = None;
         let _ = update(&mut state, Message::Tick);
         assert!(!state.connected, "explicit --mock never reconnects");
+    }
+
+    /// Started without a card (built here from the mock, as `new` does
+    /// when the probe finds nothing, without touching real hardware): the
+    /// window says it waits for the card, the demo is a choice and says it
+    /// is one, and `--mock` keeps its own words and ignores the demo.
+    #[test]
+    fn no_device_waits_and_the_demo_says_so() {
+        let mut state = new(true, None, None);
+        let id = window::Id::unique();
+        let _ = update(&mut state, Message::SetDemo(true));
+        assert_eq!(
+            state.no_device, None,
+            "explicit --mock has no demo to toggle"
+        );
+        assert!(title(&state, id).ends_with("(simulated)"));
+
+        state.no_device = Some(NoDevice::Waiting);
+        assert!(title(&state, id).contains("waiting for the"));
+        assert_eq!(crate::sidebar::device_state(&state).1, "Waiting");
+
+        let _ = update(&mut state, Message::SetDemo(true));
+        assert_eq!(state.no_device, Some(NoDevice::Demo));
+        assert_eq!(crate::sidebar::device_state(&state).1, "Demo");
+        assert!(title(&state, id).ends_with("(demo)"));
+
+        let _ = update(&mut state, Message::SetDemo(false));
+        assert_eq!(state.no_device, Some(NoDevice::Waiting));
     }
 
     #[test]

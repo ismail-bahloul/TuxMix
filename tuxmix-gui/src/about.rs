@@ -103,6 +103,8 @@ pub fn about_modal(state: &TuxMix) -> Element<'_, Message> {
         "Driving {model} ({})",
         if !state.connected {
             "disconnected"
+        } else if state.no_device.is_some() {
+            "demo"
         } else if state.device.is_mock() {
             "simulated"
         } else if !state.device.protocol_features() {
