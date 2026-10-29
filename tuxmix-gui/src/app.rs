@@ -445,23 +445,23 @@ impl DeviceHandle {
     /// Output meters, computed host-side like TotalMix from levels the
     /// caller already drained this tick: each output's level is the
     /// power sum of every routed source (inputs + playbacks) scaled by
-    /// that source's fader into the output. Passing the levels in
-    /// matters: the previous `output_meters()` called `input_meters()`/
-    /// `playback_meters()` itself, and those drain, so on USB and ALSA
-    /// the sum was computed from the near-empty second drain. See
-    /// `power_sum_output_meters`'s own doc comment for the math.
+    /// that source's level into that side of the output pair. Passing the
+    /// levels in matters: the previous `output_meters()` called
+    /// `input_meters()`/`playback_meters()` itself, and those drain, so on
+    /// USB and ALSA the sum was computed from the near-empty second drain.
+    /// See `power_sum_output_meters`'s own doc comment for the math.
     pub fn output_meters_from(&self, input_meters: &[f32], playback_meters: &[f32]) -> Vec<f32> {
         power_sum_output_meters(
             &self
                 .inputs()
                 .iter()
-                .map(|c| c.volumes.clone())
+                .map(|c| c.side_levels())
                 .collect::<Vec<_>>(),
             input_meters,
             &self
                 .playbacks()
                 .iter()
-                .map(|c| c.volumes.clone())
+                .map(|c| c.side_levels())
                 .collect::<Vec<_>>(),
             playback_meters,
             self.outputs().len(),
@@ -522,35 +522,38 @@ impl DeviceHandle {
 /// `input_meter`/`playback_meter` are randomized, so a test going
 /// through `DeviceHandle` itself could never assert an exact number.
 ///
-/// `input_volumes`/`playback_volumes` are indexed by *output pair*
+/// `input_levels`/`playback_levels` are indexed by *output pair*
 /// (`output_pair_count()` entries — one crosspoint per pair, not per
-/// individual physical channel) while `n_out` is the individual output
-/// *channel* count (2 per pair) — the pair a channel `o` belongs to is
-/// `o / 2`, the same convention `set_channel_volume` and friends use
-/// everywhere else. Indexing the volumes arrays with the raw channel
+/// individual physical channel), each entry the source's `[left, right]`
+/// level into that pair (`side_levels()`), while `n_out` is the
+/// individual output *channel* count (2 per pair) — channel `o` is side
+/// `o % 2` of pair `o / 2`, the same convention `set_channel_volume` and
+/// friends use everywhere else. Indexing the arrays with the raw channel
 /// index instead of `o / 2` used to silently read the *wrong* pair's
 /// crosspoint for every odd channel, and always read nothing at all
-/// for every channel whose pair index was past the volumes arrays'
-/// own (pair-counted) length — every output pair past the first three
+/// for every channel whose pair index was past the arrays' own
+/// (pair-counted) length — every output pair past the first three
 /// read a permanent, wrong zero level regardless of actual audio.
+/// Reading one volume per pair for both sides showed a left-only
+/// source on the right output too (issue #23).
 fn power_sum_output_meters(
-    input_volumes: &[Vec<f32>],
+    input_levels: &[Vec<[f32; 2]>],
     input_meters: &[f32],
-    playback_volumes: &[Vec<f32>],
+    playback_levels: &[Vec<[f32; 2]>],
     playback_meters: &[f32],
     n_out: usize,
 ) -> Vec<f32> {
     let mut out = vec![0.0f32; n_out];
     for (o, slot) in out.iter_mut().enumerate() {
-        let pair = o / 2;
+        let (pair, side) = (o / 2, o % 2);
         let mut p = 0.0f32;
-        for (i, vols) in input_volumes.iter().enumerate() {
-            let v = vols.get(pair).copied().unwrap_or(0.0);
+        for (i, levels) in input_levels.iter().enumerate() {
+            let v = levels.get(pair).map_or(0.0, |l| l[side]);
             let m = input_meters.get(i).copied().unwrap_or(0.0);
             p += (m * v) * (m * v);
         }
-        for (c, vols) in playback_volumes.iter().enumerate() {
-            let v = vols.get(pair).copied().unwrap_or(0.0);
+        for (c, levels) in playback_levels.iter().enumerate() {
+            let v = levels.get(pair).map_or(0.0, |l| l[side]);
             let m = playback_meters.get(c).copied().unwrap_or(0.0);
             p += (m * v) * (m * v);
         }
@@ -6074,9 +6077,9 @@ mod tests {
         // pair 2 only (and silent into pairs 0/1), reading a fixed 1.0
         // meter level — deterministic, unlike the mock backend's own
         // randomized meters.
-        let input_volumes = vec![vec![0.0, 0.0, 1.0]];
+        let input_levels = vec![vec![[0.0; 2], [0.0; 2], [1.0; 2]]];
         let input_meters = vec![1.0];
-        let out = power_sum_output_meters(&input_volumes, &input_meters, &[], &[], 6);
+        let out = power_sum_output_meters(&input_levels, &input_meters, &[], &[], 6);
 
         assert_eq!(out.len(), 6);
         assert_eq!(out[0], 0.0, "pair 0 (ch0) has no signal routed to it");
@@ -6100,15 +6103,39 @@ mod tests {
         // in practice, but the old bug's failure mode was exactly an
         // out-of-bounds pair read silently going to 0.0 instead of
         // panicking) — must stay silent-zero, not panic.
-        let input_volumes = vec![vec![1.0]]; // only 1 pair's worth of data
+        let input_levels = vec![vec![[1.0; 2]]]; // only 1 pair's worth of data
         let input_meters = vec![1.0];
-        let out = power_sum_output_meters(&input_volumes, &input_meters, &[], &[], 12);
+        let out = power_sum_output_meters(&input_levels, &input_meters, &[], &[], 12);
         assert_eq!(out.len(), 12);
         assert_eq!(out[0], 1.0);
         assert_eq!(out[1], 1.0);
         for level in &out[2..] {
             assert_eq!(*level, 0.0);
         }
+    }
+
+    #[test]
+    fn output_meters_keep_a_left_only_playback_on_the_left() {
+        // Issue #23: a tone on playback channel 1 only, at 0 dB into
+        // every pair by default, read on AN2 and PH4 as loud as on AN1
+        // and PH3.
+        let mut left = tuxmix_core::PlaybackChannel::new(0, "PCM AN1", 2);
+        let right = tuxmix_core::PlaybackChannel::new(1, "PCM AN2", 2);
+        left.volumes = vec![1.0, 0.5];
+        let playback_levels = vec![left.side_levels(), right.side_levels()];
+        let out = power_sum_output_meters(&[], &[], &playback_levels, &[1.0, 0.0], 4);
+        assert_eq!(out, vec![1.0, 0.0, 0.5, 0.0]);
+    }
+
+    #[test]
+    fn output_meters_follow_a_mono_input_pan() {
+        let mut an1 = tuxmix_core::InputChannel::new(0, "AN1", tuxmix_core::ChannelType::Mic, 1);
+        an1.pans = vec![-100];
+        let out = power_sum_output_meters(&[an1.side_levels()], &[1.0], &[], &[], 2);
+        assert_eq!(out, vec![1.0, 0.0]);
+        an1.pans = vec![0];
+        let out = power_sum_output_meters(&[an1.side_levels()], &[1.0], &[], &[], 2);
+        assert_eq!(out, vec![1.0, 1.0]);
     }
 
     #[test]

@@ -352,9 +352,9 @@ impl DeviceHandle {
     /// `power_sum_output_meters`'s own doc comment for the math.
     fn output_meters_from(&self, input_meters: &[f32], playback_meters: &[f32]) -> Vec<f32> {
         power_sum_output_meters(
-            &self.inputs().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
+            &self.inputs().iter().map(|c| c.side_levels()).collect::<Vec<_>>(),
             input_meters,
-            &self.playbacks().iter().map(|c| c.volumes.clone()).collect::<Vec<_>>(),
+            &self.playbacks().iter().map(|c| c.side_levels()).collect::<Vec<_>>(),
             playback_meters,
             self.outputs().len(),
         )
@@ -396,29 +396,31 @@ fn output_meter_available(dev: &DeviceHandle, tap_channels: usize, out_idx: usiz
 /// The actual math behind `DeviceHandle::output_meters_from` — see
 /// `tuxmix-gui`'s identical function for the full reasoning (both
 /// crates had their own independent copy of the same buggy logic:
-/// `input_volumes`/`playback_volumes` are indexed by *output pair*
+/// `input_levels`/`playback_levels` are indexed by *output pair*
 /// while the individual output *channel* count is 2 per pair, and the
 /// original code conflated the two, silently reading the wrong pair
 /// for odd channels and a permanent zero for every pair past the
-/// volumes arrays' own length).
+/// arrays' own length). Each entry is the source's `[left, right]`
+/// level into that pair, so a left-only source stays off the right
+/// output (issue #23).
 fn power_sum_output_meters(
-    input_volumes: &[Vec<f32>],
+    input_levels: &[Vec<[f32; 2]>],
     input_meters: &[f32],
-    playback_volumes: &[Vec<f32>],
+    playback_levels: &[Vec<[f32; 2]>],
     playback_meters: &[f32],
     n_out: usize,
 ) -> Vec<f32> {
     let mut out = vec![0.0f32; n_out];
     for (o, slot) in out.iter_mut().enumerate() {
-        let pair = o / 2;
+        let (pair, side) = (o / 2, o % 2);
         let mut p = 0.0f32;
-        for (i, vols) in input_volumes.iter().enumerate() {
-            let v = vols.get(pair).copied().unwrap_or(0.0);
+        for (i, levels) in input_levels.iter().enumerate() {
+            let v = levels.get(pair).map_or(0.0, |l| l[side]);
             let m = input_meters.get(i).copied().unwrap_or(0.0);
             p += (m * v) * (m * v);
         }
-        for (c, vols) in playback_volumes.iter().enumerate() {
-            let v = vols.get(pair).copied().unwrap_or(0.0);
+        for (c, levels) in playback_levels.iter().enumerate() {
+            let v = levels.get(pair).map_or(0.0, |l| l[side]);
             let m = playback_meters.get(c).copied().unwrap_or(0.0);
             p += (m * v) * (m * v);
         }
@@ -2053,9 +2055,9 @@ mod tests {
         // Same scenario as tuxmix-gui's identical test: 3 output pairs
         // (6 individual channels), one input routed at full volume into
         // pair 2 only, reading a fixed 1.0 meter level.
-        let input_volumes = vec![vec![0.0, 0.0, 1.0]];
+        let input_levels = vec![vec![[0.0; 2], [0.0; 2], [1.0; 2]]];
         let input_meters = vec![1.0];
-        let out = power_sum_output_meters(&input_volumes, &input_meters, &[], &[], 6);
+        let out = power_sum_output_meters(&input_levels, &input_meters, &[], &[], 6);
 
         assert_eq!(out.len(), 6);
         assert_eq!(out[0], 0.0, "pair 0 (ch0) has no signal routed to it");
@@ -2068,9 +2070,9 @@ mod tests {
 
     #[test]
     fn output_meters_never_goes_out_of_bounds_for_pairs_past_the_volumes_array() {
-        let input_volumes = vec![vec![1.0]]; // only 1 pair's worth of data
+        let input_levels = vec![vec![[1.0; 2]]]; // only 1 pair's worth of data
         let input_meters = vec![1.0];
-        let out = power_sum_output_meters(&input_volumes, &input_meters, &[], &[], 12);
+        let out = power_sum_output_meters(&input_levels, &input_meters, &[], &[], 12);
         assert_eq!(out.len(), 12);
         assert_eq!(out[0], 1.0);
         assert_eq!(out[1], 1.0);
