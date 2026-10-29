@@ -302,6 +302,24 @@ fn encode_volume_pan(volume: f32, pan: i8, max: f32) -> (i64, i64) {
 /// catches what the events themselves did not carry.
 const RESYNC_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 
+/// How often the backend re-reads the whole card, and how long after
+/// `open()` the first read runs.
+///
+/// The driver does not notify host-side writes: `bf_xpoint_put()` and the
+/// master put write the register, update their cache and return without
+/// `snd_ctl_notify()`. A restore or a second mixer therefore generates no
+/// ALSA event at all. The startup case is the one that bites: probe
+/// applies the factory routing (hardware inputs off) and udev's
+/// `alsactl restore` then loads the user's state *after* the card is
+/// registered - possibly after `open()` has already read the defaults. The
+/// model then shows the factory values until the user touches a control,
+/// which is issue #23 (a monitor fader read as off while the unit still
+/// passed signal). The first read is late enough to let that restore land;
+/// the slow poll also keeps the GUI on the card if another client writes
+/// later.
+const RESYNC_POLL: std::time::Duration = std::time::Duration::from_millis(2000);
+const FIRST_RESYNC: std::time::Duration = std::time::Duration::from_millis(1000);
+
 /// The panel changes a preamp through a different register than the host,
 /// and its ALSA notification has proven unreliable, so the four gains are
 /// also re-read on this cadence. Four integer reads, cheap next to the
@@ -388,6 +406,8 @@ pub struct BabyfacePro {
     /// When to re-read the card once more after a burst of ALSA events,
     /// see [`RESYNC_SETTLE`].
     resync_at: Option<std::time::Instant>,
+    /// Next periodic full re-read, see [`RESYNC_POLL`].
+    resync_poll_at: Option<std::time::Instant>,
     /// Next due re-read of the preamp gains, see [`GAIN_POLL`].
     gain_poll_at: Option<std::time::Instant>,
 }
@@ -1348,6 +1368,7 @@ impl RmeDevice for BabyfacePro {
             dim_press_count: None,
             panel: None,
             resync_at: None,
+            resync_poll_at: Some(std::time::Instant::now() + FIRST_RESYNC),
             gain_poll_at: None,
         };
         device.attach_mixer_elements(false);
@@ -2325,9 +2346,18 @@ impl RmeDevice for BabyfacePro {
 
     fn poll_events(&mut self) -> Result<(), Error> {
         let now = std::time::Instant::now();
+        // See RESYNC_POLL: host-side writes do not notify, and the first
+        // read catches udev's `alsactl restore` after the card appears.
+        let poll_due = self.resync_poll_at.is_some_and(|t| now >= t);
+        if poll_due {
+            self.resync_poll_at = Some(now + RESYNC_POLL);
+        }
         if self.mixer.handle_events()? > 0 {
             self.attach_mixer_elements(true);
             self.resync_at = Some(now + RESYNC_SETTLE);
+        } else if poll_due {
+            self.resync_at = None;
+            self.attach_mixer_elements(true);
         } else if self.resync_at.is_some_and(|t| now >= t) {
             self.resync_at = None;
             self.attach_mixer_elements(true);
@@ -2510,6 +2540,81 @@ mod tests {
     fn encode_center_pan_gives_equal_left_and_right() {
         let (l, r) = encode_volume_pan(0.75, 0, TEST_MAX);
         assert_eq!(l, r);
+    }
+
+    /// A host-side write must reach the model without an ALSA event. The
+    /// driver's `bf_xpoint_put()` does not notify, which is also what kept
+    /// udev's `alsactl restore` invisible at startup (#23); the periodic
+    /// `RESYNC_POLL` read is what picks both up.
+    ///
+    /// Writes a PB1 crosspoint into an output pair whose master is fully
+    /// down, so the change cannot be heard, and restores it before
+    /// asserting. Run it with one pair muted; otherwise it skips.
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    fn live_hardware_poll_picks_up_a_host_write() {
+        let mut dev = BabyfacePro::open().expect("real device attached");
+
+        if dev.playbacks[0].mute
+            || dev.inputs.iter().any(|c| c.solo)
+            || dev.playbacks.iter().any(|c| c.solo)
+        {
+            eprintln!("PB1 is muted or a solo is active; skipping");
+            return;
+        }
+
+        // An output pair whose master is at the mute end of its range.
+        let silent_pair = (0..dev.profile.output_pair_count()).find(|&pair| {
+            dev.mixer
+                .find_selem(PAIR_LABELS[pair], pair as u32)
+                .is_some_and(|s| {
+                    s.get_playback_volume(SelemChannelId::FrontLeft).ok() == Some(0)
+                        && s.get_playback_volume(SelemChannelId::FrontRight).ok() == Some(0)
+                })
+        });
+        let Some(pair) = silent_pair else {
+            eprintln!("no output pair is muted; mute one pair and rerun");
+            return;
+        };
+
+        // PB1 is playback channel 0: source 8, left ALSA channel.
+        const SRC: usize = 8;
+        let ch = SelemChannelId::FrontLeft;
+        let original = dev.playbacks[0].volumes[pair];
+
+        // The `Selem` borrows the mixer, so it cannot stay alive across
+        // `poll_events()`. Do the write and the read-back in one block.
+        let (orig_raw, expected) = {
+            let selem = dev.crosspoint_selem(SRC, pair).expect("PB1 crosspoint");
+            let orig_raw = selem.get_playback_volume(ch).expect("read crosspoint");
+            let target_raw = if orig_raw == 0x16a0 { 0x1000 } else { 0x16a0 };
+            selem
+                .set_playback_volume(ch, target_raw)
+                .expect("write crosspoint");
+            (
+                orig_raw,
+                tlv_volume(&selem, ch).expect("read back crosspoint"),
+            )
+        };
+        assert!(
+            resync_differs(original, expected),
+            "the target reads the same as the model, pick another"
+        );
+
+        // No event is generated by the write, so only the poll can see it.
+        std::thread::sleep(RESYNC_POLL + std::time::Duration::from_millis(500));
+        dev.poll_events().expect("poll events");
+        let observed = dev.playbacks[0].volumes[pair];
+
+        dev.crosspoint_selem(SRC, pair)
+            .expect("PB1 crosspoint")
+            .set_playback_volume(ch, orig_raw)
+            .expect("restore crosspoint");
+
+        assert!(
+            (observed - expected).abs() <= RESYNC_EPSILON,
+            "model {observed} did not follow the card {expected}"
+        );
     }
 
     #[test]
