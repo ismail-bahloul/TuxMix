@@ -7,6 +7,10 @@
   pair after it shifted, so a mix into one output landed in the next
   pair's submix. The map is now `0x34 * pair + 0x1A * side + source`,
   matching the kernel driver's fix and the captures in #31.
+- The output meters showed a left-only source on the right output too:
+  they summed each source's level into the whole output pair. They now
+  follow its side, from the pan for the analog inputs and from the
+  channel for the stereo sources and the playback channels (#23).
 
 ## 0.3.3 (2026-10-26)
 

@@ -210,6 +210,21 @@ impl InputChannel {
             trim: 0.0,
         }
     }
+
+    /// Whether this input is a mono source, panned into each output pair:
+    /// the four analog inputs.  The others are one side of a stereo pair.
+    pub fn is_mono(&self) -> bool {
+        matches!(
+            self.channel_type,
+            ChannelType::Mic | ChannelType::Instrument
+        )
+    }
+
+    /// The linear levels this input sends into the left and right channel
+    /// of every output pair, see [`side_levels`].
+    pub fn side_levels(&self) -> Vec<[f32; 2]> {
+        side_levels(self.is_mono(), self.id, &self.volumes, &self.pans)
+    }
 }
 
 impl PlaybackChannel {
@@ -224,6 +239,47 @@ impl PlaybackChannel {
             solo: false,
         }
     }
+
+    /// The linear levels this playback channel sends into the left and
+    /// right channel of every output pair, see [`side_levels`].
+    pub fn side_levels(&self) -> Vec<[f32; 2]> {
+        side_levels(false, self.id, &self.volumes, &self.pans)
+    }
+}
+
+/// The linear left and right levels of a mono source at `volume` and
+/// `pan` (-100 = left only, +100 = right only): the louder side carries the
+/// volume and the other is attenuated by the pan.
+pub fn pan_split(volume: f32, pan: i8) -> (f32, f32) {
+    let p = (pan.clamp(-100, 100) as f32) / 100.0;
+    if p <= 0.0 {
+        (volume, volume * (1.0 + p))
+    } else {
+        (volume * (1.0 - p), volume)
+    }
+}
+
+/// The linear levels a source channel sends into the left and right
+/// channel of each output pair, from its per-pair volume and pan.  A mono
+/// source is split by its pan.  A channel of a stereo pair (AS/ADAT inputs
+/// and every playback channel) feeds only its own side, as the driver's
+/// crosspoints are written: an even channel the left, an odd one the
+/// right.
+fn side_levels(mono: bool, id: usize, volumes: &[f32], pans: &[i8]) -> Vec<[f32; 2]> {
+    volumes
+        .iter()
+        .enumerate()
+        .map(|(pair, &v)| {
+            if mono {
+                let (l, r) = pan_split(v, pans.get(pair).copied().unwrap_or(0));
+                [l, r]
+            } else if id % 2 == 0 {
+                [v, 0.0]
+            } else {
+                [0.0, v]
+            }
+        })
+        .collect()
 }
 
 impl OutputChannel {

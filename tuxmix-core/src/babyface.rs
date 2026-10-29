@@ -231,18 +231,6 @@ fn decode_volume_pan(l_raw: i64, r_raw: i64, max: f32) -> (f32, i8) {
     pan_join(l_raw as f32 / max, r_raw as f32 / max)
 }
 
-/// The linear left and right levels of a mono source at `volume` and
-/// `pan` (-100 = left only, +100 = right only): the louder side carries the
-/// volume and the other is attenuated by the pan.
-fn pan_split(volume: f32, pan: i8) -> (f32, f32) {
-    let p = (pan.clamp(-100, 100) as f32) / 100.0;
-    if p <= 0.0 {
-        (volume, volume * (1.0 + p))
-    } else {
-        (volume * (1.0 - p), volume)
-    }
-}
-
 /// The inverse of [`pan_split`].
 fn pan_join(l: f32, r: f32) -> (f32, i8) {
     let volume = l.max(r);
