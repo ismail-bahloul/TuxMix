@@ -98,7 +98,26 @@ cargo build -p tuxmix-core --no-default-features --features usb
 ```
 
 The binaries land in `target/release/`: `tuxmix-gui` (installed as `tuxmix`
-by the AUR package) and `tuxmix-tui`.
+by the packages) and `tuxmix-tui`.
+
+The USB backend opens the card through libusb, which needs access to its
+device node. The packages install `tools/udev/70-tuxmix.rules`, which gives
+it to the logged-in user; from source, copy it yourself:
+
+```sh
+sudo install -Dm644 tools/udev/70-tuxmix.rules /etc/udev/rules.d/70-tuxmix.rules
+sudo udevadm control --reload && sudo udevadm trigger
+```
+
+The kernel driver path (ALSA) does not need it.
+
+## Releasing
+
+Publishing a GitHub release for a `vX.Y.Z` tag runs
+`.github/workflows/release.yml`, which attaches the binary tarball, the
+`.deb`, the `.rpm` and their `SHA256SUMS`. `tools/release/package.sh` builds
+the same files locally from `cargo build --release --workspace`. Then bump
+`pkgver` in `aur/tuxmix` and `aur/tuxmix-bin` and run `updpkgsums` in each.
 
 ## License
 

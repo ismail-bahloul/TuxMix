@@ -59,6 +59,10 @@ package() {
     install -Dm644 "tuxmix-gui/assets/tuxmix-256.png" \
         "${pkgdir}/usr/share/icons/hicolor/256x256/apps/tuxmix.png"
 
+    # Lets the logged-in user open the card for the USB backend.
+    install -Dm644 "tools/udev/70-tuxmix.rules" \
+        "${pkgdir}/usr/lib/udev/rules.d/70-tuxmix.rules"
+
     install -Dm644 "README.md" \
         "${pkgdir}/usr/share/doc/tuxmix/README.md"
 }

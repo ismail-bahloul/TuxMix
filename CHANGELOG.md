@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Release packages: each GitHub release gets a prebuilt binary tarball
+  (the new `tuxmix-bin` AUR package), a `.deb` and an `.rpm`.
+- A udev rule (`tools/udev/70-tuxmix.rules`), installed by every package,
+  that lets the logged-in user open the card for the USB backend.
+
 ## 0.3.4 (2026-10-29)
 
 ### Changed
