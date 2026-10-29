@@ -77,12 +77,16 @@ Two ways to get sound from the Babyface Pro FS:
 - The ALSA backend (`tuxmix-core`'s `alsa` feature) is hardware-validated,
   including Input/Playback Mute and Solo, which zero the crosspoints the way
   the USB backend does.
-- The ALSA backend follows the card: changes made by the front panel,
-  `alsamixer`, `alsactl restore` or any other client show up in the GUI
-  within a tick. It also plays TotalMix's part for the DIM button: the
-  kernel driver only counts presses (`DIM Button Press Count`) and TuxMix
-  toggles `Dim` on each one, so the hardware DIM button works while TuxMix
-  runs. `cargo run --example panel-watch` prints what the backend sees.
+- The ALSA backend follows the card: front-panel changes show up within
+  a tick, and the whole card is re-read every couple of seconds. The
+  driver does not notify host-side writes, so without that poll an
+  `alsamixer` change or an `alsactl restore` would be invisible; the
+  first read runs a second after open, which is what catches udev's
+  restore once the card appears. It also plays TotalMix's part for the
+  DIM button: the kernel driver only counts presses (`DIM Button Press
+  Count`) and TuxMix toggles `Dim` on each one, so the hardware DIM
+  button works while TuxMix runs. `cargo run --example panel-watch`
+  prints what the backend sees.
 - See the sibling driver repo for the kernel-side status.
 
 ## Building from source

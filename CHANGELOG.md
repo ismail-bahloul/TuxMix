@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- The ALSA backend now re-reads the card every two seconds, and once a
+  second after opening. The driver does not notify host-side writes, so
+  udev's `alsactl restore` could land after TuxMix's initial read and
+  leave the faders showing the factory defaults while the unit held the
+  restored levels — a monitor fader read as off while the unit still
+  passed signal (#23).
 - The USB backend's crosspoint map had AN1/2 and PH3/4 swapped and every
   pair after it shifted, so a mix into one output landed in the next
   pair's submix. The map is now `0x34 * pair + 0x1A * side + source`,
