@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.4 (2026-10-29)
 
 ### Changed
 - Without an interface, the GUI no longer opens the simulation: it shows
@@ -12,11 +12,17 @@
 ### Fixed
 - Launching the GUI before plugging the card in left it in the simulation
   until a restart.
+- A linked input pair showed as one strip but sent its two channels as
+  mono into every submix, and its pan moved only the left channel. A
+  linked pair now puts its left channel hard left and its right channel
+  hard right, and its pan moves both together. The AN1/2 microphones are
+  no longer linked by default, so a single microphone stays centred
+  (#23).
 - The ALSA backend now re-reads the card every two seconds, and once a
   second after opening. The driver does not notify host-side writes, so
   udev's `alsactl restore` could land after TuxMix's initial read and
   leave the faders showing the factory defaults while the unit held the
-  restored levels — a monitor fader read as off while the unit still
+  restored levels, so a monitor fader read as off while the unit still
   passed signal (#23).
 - The USB backend's crosspoint map had AN1/2 and PH3/4 swapped and every
   pair after it shifted, so a mix into one output landed in the next
