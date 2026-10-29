@@ -4278,6 +4278,14 @@ unchanged: "Simulated", no screen, no probe.
 The TUI has no screen to draw before it goes full screen, so it prints the
 same message once (again only when the probe's answer changes) and waits.
 
+The card sits over the mixer itself, under a scrim (`BG_DEEP` at 88 %),
+rather than on an empty window: the user sees what opens once the card is
+there, and the card lifting off it is the transition. Dark enough that the
+mixer reads as a shape and not as values, which are the simulation's and not
+the user's mix. iced 0.14 has no backdrop blur, only shadow and compositor
+window blur, so a blur would need a custom shader; the scrim does the job.
+The chip behind says "Waiting".
+
 Verified in Xvfb with no card: the screen, the demo and its banner, back to
 the screen, and the window titles; a 3 s TUI run printed the message once.
 Not verified: the switch when the card is plugged in (no card here).

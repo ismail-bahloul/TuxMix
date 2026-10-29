@@ -3582,9 +3582,6 @@ fn handle_global_event(
 // ── View ─────────────────────────────────────────────────────────
 
 pub fn view(state: &TuxMix, _window: window::Id) -> Element<'_, Message> {
-    if state.no_device == Some(NoDevice::Waiting) {
-        return no_device_screen(state);
-    }
     let top = top_bar(state);
     let content = match state.view {
         View::Quick => quick_view(state),
@@ -3619,6 +3616,15 @@ pub fn view(state: &TuxMix, _window: window::Id) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .into();
+    // The mixer stays behind the no-device card, as a silhouette of what
+    // opens once the card is there; the drawers and toasts below never
+    // open over it (the scrim takes every click).
+    if state.no_device == Some(NoDevice::Waiting) {
+        return stack(vec![base, no_device_screen(state)])
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    }
     if state.show_device_panel {
         base = stack(vec![base, device_panel(state)])
             .width(Length::Fill)
@@ -3687,9 +3693,9 @@ fn disconnected_banner(state: &TuxMix) -> Element<'_, Message> {
     .into()
 }
 
-/// The whole window while TuxMix was started without a card: what is
-/// missing, what to check, and that it opens on its own once the card is
-/// there (the Tick probe). Without it, a missing card used to drop the
+/// Over the whole window while TuxMix was started without a card: what
+/// is missing, what to check, and that it opens on its own once the card
+/// is there (the Tick probe). Without it, a missing card used to drop the
 /// user into the simulation, a mixer that looks live and drives nothing,
 /// with "Simulated" in the sidebar as the only clue.
 fn no_device_screen(state: &TuxMix) -> Element<'_, Message> {
@@ -3784,12 +3790,23 @@ fn no_device_screen(state: &TuxMix) -> Element<'_, Message> {
         .padding(theme::SPACE_XXL * scale)
         .width(Length::Fill)
         .max_width(520.0 * scale);
-    container(card)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
-        .padding(theme::SPACE_XXL * scale)
-        .style(theme::root)
-        .into()
+    // Dark enough that the mixer behind reads as a shape, not as values:
+    // they are the simulation's, not the user's mix, and a mixer that
+    // looks live is what this screen replaces. Opaque, so nothing behind
+    // takes a click; iced has no backdrop blur, hence a plain scrim.
+    opaque(
+        container(card)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .padding(theme::SPACE_XXL * scale)
+            .style(|_theme: &iced::Theme| container::Style {
+                background: Some(iced::Background::Color(Color {
+                    a: 0.88,
+                    ..theme::BG_DEEP
+                })),
+                ..container::Style::default()
+            }),
+    )
 }
 
 /// Above the view while the demo runs, so it never passes for the real
@@ -6744,6 +6761,7 @@ mod tests {
 
         state.no_device = Some(NoDevice::Waiting);
         assert!(title(&state, id).contains("waiting for the"));
+        assert_eq!(crate::sidebar::device_state(&state).1, "Waiting");
 
         let _ = update(&mut state, Message::SetDemo(true));
         assert_eq!(state.no_device, Some(NoDevice::Demo));
