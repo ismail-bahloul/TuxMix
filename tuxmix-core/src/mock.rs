@@ -44,9 +44,26 @@ pub struct MockBabyfacePro {
     /// `TUXMIX_MOCK_DISCONNECT` so the disconnected chip can be looked at
     /// without unplugging anything, and flippable at runtime for tests.
     connected: bool,
+    /// Crosspoints written with `write_crosspoint_raw`: the hardware side,
+    /// keyed by (source channel, output pair). A model write (`set_volume`,
+    /// `set_pan`) rewrites the real crosspoint, so it drops the cell here.
+    /// Lets tests check an override separately from the model.
+    hardware: std::collections::HashMap<(ChannelId, usize), (f32, i8)>,
 }
 
 impl MockBabyfacePro {
+    /// What the "hardware" carries at a crosspoint: the last raw write
+    /// (`write_crosspoint_raw`), else the model's level and pan.
+    pub fn hardware_crosspoint(&self, channel: ChannelId, output: usize) -> (f32, i8) {
+        if let Some(&cell) = self.hardware.get(&(channel, output)) {
+            return cell;
+        }
+        (
+            self.volume(channel, output).unwrap_or(0.0),
+            self.pan(channel, output).unwrap_or(0),
+        )
+    }
+
     /// Point this mock at the class-compliant personality's feature set, or
     /// back at the full one. See the field's own comment.
     pub fn set_protocol_features(&mut self, on: bool) {
@@ -195,6 +212,7 @@ impl RmeDevice for MockBabyfacePro {
 
         Ok(Self {
             model_name: format!("{} (mock)", PROFILE.model_name),
+            hardware: Default::default(),
             inputs,
             playbacks,
             outputs: PROFILE.build_outputs(),
@@ -269,6 +287,7 @@ impl RmeDevice for MockBabyfacePro {
     }
 
     fn set_volume(&mut self, channel: ChannelId, output: usize, volume: f32) -> Result<(), Error> {
+        self.hardware.remove(&(channel, output));
         let vol = volume.clamp(0.0, 1.0);
         match channel {
             ChannelId::Input(idx) => {
@@ -322,7 +341,23 @@ impl RmeDevice for MockBabyfacePro {
         }
     }
 
+    fn write_crosspoint_raw(
+        &mut self,
+        channel: ChannelId,
+        output: usize,
+        volume: f32,
+        pan: i8,
+    ) -> Result<(), Error> {
+        if matches!(channel, ChannelId::Output(_)) || output >= self.output_pair_count() {
+            return Err(Error::InvalidChannel(format!("{channel:?} into {output}")));
+        }
+        self.hardware
+            .insert((channel, output), (volume.clamp(0.0, 2.0), pan.clamp(-100, 100)));
+        Ok(())
+    }
+
     fn set_pan(&mut self, channel: ChannelId, output: usize, pan: i8) -> Result<(), Error> {
+        self.hardware.remove(&(channel, output));
         let pan = pan.clamp(-100, 100);
         match channel {
             ChannelId::Input(idx) => {
@@ -728,6 +763,21 @@ impl RmeDevice for MockBabyfacePro {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_raw_crosspoint_write_leaves_the_model_alone() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        let mic = ChannelId::Input(0);
+        dev.set_volume(mic, 1, 0.2).unwrap();
+        dev.write_crosspoint_raw(mic, 1, 0.7, -50).unwrap();
+        assert_eq!(dev.hardware_crosspoint(mic, 1), (0.7, -50));
+        assert_eq!(dev.volume(mic, 1).unwrap(), 0.2, "the model keeps the user's level");
+        // A model write rewrites the real crosspoint, replacing the override.
+        dev.set_volume(mic, 1, 0.3).unwrap();
+        assert_eq!(dev.hardware_crosspoint(mic, 1).0, 0.3);
+        // Outputs have no crosspoint of their own.
+        assert!(dev.write_crosspoint_raw(ChannelId::Output(0), 1, 0.5, 0).is_err());
+    }
 
     #[test]
     fn test_open_creates_correct_number_of_channels() {

@@ -2326,6 +2326,38 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
+    fn write_crosspoint_raw(
+        &mut self,
+        channel: ChannelId,
+        output: usize,
+        volume: f32,
+        pan: i8,
+    ) -> Result<(), Error> {
+        if output >= self.profile.output_pair_count() {
+            return Err(Error::InvalidChannel(format!("Output {}", output)));
+        }
+        let (src, ch, is_mono) = match channel {
+            ChannelId::Input(idx) => input_crosspoint_slot(idx)
+                .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?,
+            ChannelId::Playback(idx) => {
+                let (src, ch) = playback_crosspoint_slot(idx)
+                    .ok_or_else(|| Error::InvalidChannel(format!("Playback {}", idx)))?;
+                (src, ch, false)
+            }
+            ChannelId::Output(idx) => {
+                return Err(Error::InvalidChannel(format!("Output {idx} has no crosspoint")))
+            }
+        };
+        // Same ranges `set_volume` writes: the driver's crosspoints reach
+        // +6 dB (2.0), the class-compliant ones 0 dB.
+        let vol = if self.grammar == ControlGrammar::ClassCompliant {
+            volume.clamp(0.0, 1.0)
+        } else {
+            volume.clamp(0.0, 2.0)
+        };
+        self.write_crosspoint(src, ch, is_mono, output, vol, pan)
+    }
+
     fn restore_auto_scene(&mut self, scene: &Scene) -> Result<(), Error> {
         scene.check_compatible(self.canonical_model())?;
         // The hardware already told us every level when it opened, so only

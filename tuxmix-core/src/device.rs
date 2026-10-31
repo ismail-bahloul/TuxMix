@@ -434,6 +434,27 @@ pub trait RmeDevice {
         Ok(())
     }
 
+    /// Writes a crosspoint's level and pan to the hardware only, leaving the
+    /// stored mix (the `inputs`/`playbacks` volumes and pans) untouched. For
+    /// host-side overrides, such as an app's Control Room Cue, Talkback or
+    /// External Input, that compose temporary values on top of the user's
+    /// mix and must be able to put the mix back exactly. Backends without
+    /// such a path report `UnsupportedDeviceMode` rather than change the
+    /// model.
+    fn write_crosspoint_raw(
+        &mut self,
+        channel: ChannelId,
+        output: usize,
+        volume: f32,
+        pan: i8,
+    ) -> Result<(), Error> {
+        let _ = (channel, output, volume, pan);
+        Err(Error::UnsupportedDeviceMode {
+            card: self.model_name().to_string(),
+            missing: "raw crosspoint writes".into(),
+        })
+    }
+
     /// Sets output pair `pair`'s mute, respecting its link state — same
     /// shape as [`Self::set_output_volume`].
     fn set_output_mute(&mut self, pair: usize, which: usize, mute: bool) -> Result<(), Error> {
