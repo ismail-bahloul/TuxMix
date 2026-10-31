@@ -46,22 +46,50 @@ pub struct MockBabyfacePro {
     connected: bool,
     /// Crosspoints written with `write_crosspoint_raw`: the hardware side,
     /// keyed by (source channel, output pair). A model write (`set_volume`,
-    /// `set_pan`) rewrites the real crosspoint, so it drops the cell here.
-    /// Lets tests check an override separately from the model.
+    /// `set_pan`) rewrites the real crosspoint, so it drops the cell here;
+    /// `set_mute`/`set_solo` do too, because the ALSA backend rewrites the
+    /// affected crosspoints from the model. Lets tests check an override
+    /// separately from the model.
     hardware: std::collections::HashMap<(ChannelId, usize), (f32, i8)>,
 }
 
 impl MockBabyfacePro {
     /// What the "hardware" carries at a crosspoint: the last raw write
-    /// (`write_crosspoint_raw`), else the model's level and pan.
+    /// (`write_crosspoint_raw`), else the model's level and pan. Mute and
+    /// solo zero the crosspoints on the real backend, so they do here too:
+    /// a muted strip, or any strip other than the soloed one (and its
+    /// linked partner), carries no level.
     pub fn hardware_crosspoint(&self, channel: ChannelId, output: usize) -> (f32, i8) {
         if let Some(&cell) = self.hardware.get(&(channel, output)) {
             return cell;
         }
-        (
-            self.volume(channel, output).unwrap_or(0.0),
-            self.pan(channel, output).unwrap_or(0),
-        )
+        let pan = self.pan(channel, output).unwrap_or(0);
+        if matches!(channel, ChannelId::Input(_) | ChannelId::Playback(_))
+            && (self.mute(channel).unwrap_or(false) || self.soloed_elsewhere(channel))
+        {
+            return (0.0, pan);
+        }
+        (self.volume(channel, output).unwrap_or(0.0), pan)
+    }
+
+    /// Whether some strip other than `channel` (or its linked partner) is
+    /// soloed. The ALSA backend zeroes every other strip's sends when a
+    /// solo goes on, and spares the soloed strip and its partner.
+    fn soloed_elsewhere(&self, channel: ChannelId) -> bool {
+        let partner = match channel {
+            ChannelId::Input(i) if self.input_pair_linked(i / 2) => {
+                Some(ChannelId::Input(i ^ 1))
+            }
+            ChannelId::Playback(c) if self.playback_linked(c / 2) => {
+                Some(ChannelId::Playback(c ^ 1))
+            }
+            _ => None,
+        };
+        self.inputs.iter().enumerate().any(|(i, c)| {
+            c.solo && ChannelId::Input(i) != channel && Some(ChannelId::Input(i)) != partner
+        }) || self.playbacks.iter().enumerate().any(|(c, ch)| {
+            ch.solo && ChannelId::Playback(c) != channel && Some(ChannelId::Playback(c)) != partner
+        })
     }
 
     /// Point this mock at the class-compliant personality's feature set, or
@@ -404,6 +432,10 @@ impl RmeDevice for MockBabyfacePro {
     fn set_mute(&mut self, channel: ChannelId, mute: bool) -> Result<(), Error> {
         let ch = self.channel_mut(channel)?;
         *ch.0 = mute;
+        // Mute/unmute rewrites this channel's crosspoints from the model on
+        // the ALSA backend, so an active raw override is gone.
+        self.hardware
+            .retain(|(raw_channel, _), _| *raw_channel != channel);
         Ok(())
     }
 
@@ -415,6 +447,24 @@ impl RmeDevice for MockBabyfacePro {
     fn set_solo(&mut self, channel: ChannelId, solo: bool) -> Result<(), Error> {
         let ch = self.channel_mut(channel)?;
         *ch.1 = solo;
+        // Soloing zeroes every other strip's sends and un-solo restores
+        // them from the model, so their raw overrides are gone. The ALSA
+        // backend skips the soloed strip and its linked partner, so their
+        // cells stay.
+        let partner = match channel {
+            ChannelId::Input(i) if self.input_pair_linked(i / 2) => {
+                Some(ChannelId::Input(i ^ 1))
+            }
+            ChannelId::Playback(c) if self.playback_linked(c / 2) => {
+                Some(ChannelId::Playback(c ^ 1))
+            }
+            _ => None,
+        };
+        if !matches!(channel, ChannelId::Output(_)) {
+            self.hardware.retain(|(raw_channel, _), _| {
+                *raw_channel == channel || Some(*raw_channel) == partner
+            });
+        }
         Ok(())
     }
 
@@ -777,6 +827,44 @@ mod tests {
         assert_eq!(dev.hardware_crosspoint(mic, 1).0, 0.3);
         // Outputs have no crosspoint of their own.
         assert!(dev.write_crosspoint_raw(ChannelId::Output(0), 1, 0.5, 0).is_err());
+    }
+
+    #[test]
+    fn mute_and_solo_discard_raw_crosspoint_writes() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        let mic = ChannelId::Input(0);
+        let pb = ChannelId::Playback(0);
+        let pb_partner = ChannelId::Playback(1);
+        dev.set_volume(mic, 1, 0.2).unwrap();
+
+        // Mute rewrites this strip's crosspoints from the model.
+        dev.write_crosspoint_raw(mic, 1, 0.7, -50).unwrap();
+        dev.set_mute(mic, true).unwrap();
+        assert_eq!(
+            dev.hardware_crosspoint(mic, 1).0,
+            0.0,
+            "mute zeroes the crosspoint"
+        );
+        dev.set_mute(mic, false).unwrap();
+        assert_eq!(
+            dev.hardware_crosspoint(mic, 1).0,
+            0.2,
+            "unmute restores the model, not the override"
+        );
+
+        // Soloing zeroes the other strips, their overrides gone; the soloed
+        // strip and its linked partner keep theirs.
+        dev.write_crosspoint_raw(mic, 1, 0.7, -50).unwrap();
+        dev.write_crosspoint_raw(pb, 0, 0.8, 0).unwrap();
+        dev.write_crosspoint_raw(pb_partner, 0, 0.9, 0).unwrap();
+        dev.set_solo(pb, true).unwrap();
+        assert_eq!(
+            dev.hardware_crosspoint(mic, 1).0,
+            0.0,
+            "other strips are zeroed"
+        );
+        assert_eq!(dev.hardware_crosspoint(pb, 0), (0.8, 0));
+        assert_eq!(dev.hardware_crosspoint(pb_partner, 0), (0.9, 0));
     }
 
     #[test]

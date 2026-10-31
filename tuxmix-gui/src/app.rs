@@ -201,6 +201,15 @@ impl RmeDevice for DeviceHandle {
     fn pan(&self, ch: ChannelId, out: usize) -> Result<i8, tuxmix_core::Error> {
         delegate!(self, pan(ch, out))
     }
+    fn write_crosspoint_raw(
+        &mut self,
+        ch: ChannelId,
+        out: usize,
+        volume: f32,
+        pan: i8,
+    ) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, write_crosspoint_raw(ch, out, volume, pan))
+    }
     fn set_mute(&mut self, ch: ChannelId, m: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_mute(ch, m))
     }
