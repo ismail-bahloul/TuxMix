@@ -441,6 +441,21 @@ pub trait RmeDevice {
     /// mix and must be able to put the mix back exactly. Backends without
     /// such a path report `UnsupportedDeviceMode` rather than change the
     /// model.
+    ///
+    /// `volume` uses the same range as [`Self::set_volume`]. `pan` only
+    /// applies to the four true-mono inputs (AN1-AN4): the linked stereo
+    /// sources (AS1/2 and the ADAT pairs) and every playback pair have one
+    /// hardware level per side with no cross-routing, so `pan` is ignored
+    /// for them.
+    ///
+    /// Mute and solo win over a raw write. [`Self::set_mute`] rewrites this
+    /// channel's crosspoints from the model, and [`Self::set_solo`] does the
+    /// same for every strip except the soloed one (and its linked partner),
+    /// so both discard any active override. In the other direction, a raw
+    /// write on a muted or non-soloed channel puts sound back on the
+    /// hardware while the model still reports the channel as muted/silent.
+    /// Callers must respect mute/solo themselves and re-apply their override
+    /// after toggling either.
     fn write_crosspoint_raw(
         &mut self,
         channel: ChannelId,
