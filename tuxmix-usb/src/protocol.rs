@@ -472,17 +472,17 @@ pub fn set_fx_send(value: u16) -> [VendorRequest; 2] {
 }
 
 /// Stereo split of a playback strip into the AN1/2 output (cap_ctrl3.pcap):
-/// stereo pair = 0x1000 (-6 dB per side) on both crosspoints; split-mono
-/// = 0x2000 (0 dB, own side) / 0x0000 (muted, other side). Both the low
-/// map and the standard map are rewritten, like every other fader write.
+/// split-mono = 0x2000 (0 dB, own side) / 0x0000 (muted, other side).
+/// Joining writes `joined` (left, right) back: the strip's own crosspoint
+/// levels, which the caller keeps. It used to write a fixed 0x1000 per
+/// side, 6 dB below what TotalMix FX writes for a joined pair at 0 dB
+/// (issue #20), and it dropped whatever level the user had set. Both the
+/// low map and the standard map are rewritten, like every other fader
+/// write.
 /// (The exact "alternating per mono channel" bus mapping needs a
 /// hardware check — this writes the literal captured pattern into out0.)
-pub fn set_stereo_split(pb: Playback, split: bool) -> Vec<VendorRequest> {
-    let (l, r) = if split {
-        (0x2000, 0x0000)
-    } else {
-        (0x1000, 0x1000)
-    };
+pub fn set_stereo_split(pb: Playback, split: bool, joined: (u16, u16)) -> Vec<VendorRequest> {
+    let (l, r) = if split { (0x2000, 0x0000) } else { joined };
     let src = Source::Playback(pb);
     vec![
         VendorRequest::new(0x12, l, map::low_map_l(src) as u16),
@@ -1210,10 +1210,10 @@ mod tests {
 
     #[test]
     fn stereo_split_rewrites_playback_crosspoints() {
-        // cap_ctrl3.pcap: split-mono = 0x2000/0x0000, stereo = 0x1000
-        // each. The low map is AN1/2's standard map (pair 0), so both
-        // writes carry the same registers (PB1 = 0x000C/0x0027).
-        let split = set_stereo_split(Playback(1), true);
+        // cap_ctrl3.pcap: split-mono = 0x2000/0x0000. The low map is
+        // AN1/2's standard map (pair 0), so both writes carry the same
+        // registers (PB1 = 0x000C/0x0027).
+        let split = set_stereo_split(Playback(1), true, (0x16A0, 0x16A0));
         assert_eq!(
             split,
             vec![
@@ -1223,8 +1223,17 @@ mod tests {
                 VendorRequest::new(0x12, 0x0000, 0x0027),
             ]
         );
-        let stereo = set_stereo_split(Playback(1), false);
-        assert!(stereo.iter().all(|r| r.w_value == 0x1000));
+        // Joining puts the strip's own levels back, not a fixed constant.
+        let stereo = set_stereo_split(Playback(1), false, (0x16A0, 0x0B57));
+        assert_eq!(
+            stereo,
+            vec![
+                VendorRequest::new(0x12, 0x16A0, 0x000C),
+                VendorRequest::new(0x12, 0x0B57, 0x0027),
+                VendorRequest::new(0x12, 0x16A0, 0x000C),
+                VendorRequest::new(0x12, 0x0B57, 0x0027),
+            ]
+        );
     }
 
     #[test]

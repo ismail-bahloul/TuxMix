@@ -1091,7 +1091,11 @@ impl RmeDevice for BabyfaceProUsb {
         // The two mono channels of a strip share the split state.
         self.playbacks[pb].split = split;
         self.playbacks[pb ^ 1].split = split;
-        let reqs = tuxmix_usb::protocol::set_stereo_split(Playback(pb / 2 + 1), split);
+        // Joining restores the strip's own AN1/2 levels (left channel of
+        // the pair, then the right one).
+        let level = |c: usize| volume_to_raw(self.playbacks[c].volumes[0]);
+        let joined = (level(pb & !1), level(pb | 1));
+        let reqs = tuxmix_usb::protocol::set_stereo_split(Playback(pb / 2 + 1), split, joined);
         self.dev.send_all(&reqs)?;
         Ok(())
     }
