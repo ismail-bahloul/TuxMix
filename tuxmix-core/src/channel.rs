@@ -90,7 +90,7 @@ pub enum EqBandType {
 }
 
 /// One of the 3 parametric bands in an [`InputEq`] strip.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct EqBand {
     pub band_type: EqBandType,
     /// 20 – 20000 Hz.
@@ -114,7 +114,7 @@ impl Default for EqBand {
 
 /// Hardware 3-band parametric EQ + low cut on one analog input strip
 /// (`eq.c`: 3 bands, a shared enable, and a low-cut filter).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct InputEq {
     pub enabled: bool,
     pub bands: [EqBand; 3],

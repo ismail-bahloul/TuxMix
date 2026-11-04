@@ -3452,12 +3452,10 @@ const NOTICE_FOR: Duration = Duration::from_secs(5);
 
 /// Options > Reset Mix. The routing and level entries rewrite a captured
 /// scene and push it in one `apply_scene`. The effects entry goes through
-/// the EQ setters, because the backends' `apply_scene` never writes the EQ;
-/// the stereo/mono entries use the link setters, which also re-pan the
-/// pairs, and the names are GUI state. The whole entry is one undo step
-/// (`update` has already captured the scene before this runs). Undoing an
-/// entry that switched the EQ off restores the model's EQ, not the card's,
-/// as it does for any EQ edit.
+/// the EQ setters, so it leaves the routing alone; the stereo/mono entries
+/// use the link setters, which also re-pan the pairs, and the names are GUI
+/// state. The whole entry is one undo step (`update` has already captured the
+/// scene before this runs).
 fn apply_reset_mix(state: &mut TuxMix, kind: ResetMix) {
     let result = match kind {
         ResetMix::ResetNames => {
@@ -3519,9 +3517,12 @@ fn clear_submixes(scene: &mut tuxmix_core::Scene) {
     }
 }
 
-/// Switches the EQ, the low cut and Width off. The band settings are kept:
-/// "off" here is the switch, not an erase. These setters only exist on a
-/// connection with the RME protocol, so any other one has nothing to clear.
+/// Switches the EQ and the low cut off. The band settings are kept: "off"
+/// here is the switch, not an erase. Width stays out of it: `set_width`
+/// writes the AN1/AN2 crosspoints themselves, so "off" would open both mics
+/// into AN1/2 and PH3/4 whatever their faders say. The EQ setters only exist
+/// on a connection with the RME protocol, so any other one has nothing to
+/// clear.
 fn clear_effects(state: &mut TuxMix) -> Result<(), tuxmix_core::Error> {
     if !state.device.protocol_features() {
         return Ok(());
@@ -3537,7 +3538,7 @@ fn clear_effects(state: &mut TuxMix) -> Result<(), tuxmix_core::Error> {
         state.device.set_eq_enabled(idx, false)?;
         state.device.set_eq_low_cut_freq(idx, 0)?;
     }
-    state.device.set_width(0.0)
+    Ok(())
 }
 
 /// Stereo-links (or unlinks) every input and output pair.
@@ -7484,7 +7485,7 @@ mod tests {
     }
 
     #[test]
-    fn clear_effects_switches_eq_low_cut_and_width_off_and_keeps_the_bands() {
+    fn clear_effects_switches_eq_and_low_cut_off_and_keeps_the_bands_and_width() {
         let mut state = new(true, None, None);
         let _ = update(&mut state, Message::EqEnabled(0, true));
         let _ = update(&mut state, Message::EqLowCutFreq(0, 300));
@@ -7501,7 +7502,7 @@ mod tests {
             eq.bands[1].band_type,
             tuxmix_core::channel::EqBandType::Bell
         );
-        assert_eq!(state.device.settings().width, 0.0);
+        assert_eq!(state.device.settings().width, 0.5, "width writes crosspoints");
     }
 
     #[test]
