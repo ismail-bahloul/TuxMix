@@ -551,6 +551,38 @@ impl BabyfacePro {
     /// `if let Some(selem)`, which would return `Ok(())` having done
     /// nothing: the exact "silently lying to the user" failure this
     /// backend spent 2026-09-12 removing. Fail loudly instead.
+    /// Writes the EQ of a scene `apply_scene` just adopted, for the strips
+    /// that differ from `before`, the model's EQ until then: a full strip is
+    /// 15 controls, and an undo comes through here for every fader move. The
+    /// switch goes last, so a strip does not come on with its old curve. A
+    /// strip the scene has no EQ for (a scene saved before EQ existed) keeps
+    /// the one it had.
+    fn write_scene_eq(&mut self, before: &[Option<InputEq>]) -> Result<(), Error> {
+        if self.grammar == ControlGrammar::ClassCompliant {
+            return Ok(());
+        }
+        for idx in 0..self.inputs.len() {
+            let was = before.get(idx).copied().flatten();
+            let Some(eq) = self.inputs[idx].eq else {
+                self.inputs[idx].eq = was;
+                continue;
+            };
+            if eq_strip_name(idx).is_none() || was == Some(eq) {
+                continue;
+            }
+            for (band, b) in eq.bands.iter().enumerate() {
+                self.set_eq_band_type(idx, band, b.band_type)?;
+                self.set_eq_band_freq(idx, band, b.freq_hz)?;
+                self.set_eq_band_q(idx, band, b.q)?;
+                self.set_eq_band_gain(idx, band, b.gain_db)?;
+            }
+            self.set_eq_low_cut_freq(idx, eq.low_cut_freq_hz)?;
+            self.set_eq_low_cut_slope(idx, eq.low_cut_slope_db_oct)?;
+            self.set_eq_enabled(idx, eq.enabled)?;
+        }
+        Ok(())
+    }
+
     fn require_proprietary(&self, feature: &str) -> Result<(), Error> {
         if self.grammar == ControlGrammar::ClassCompliant {
             return Err(Error::InvalidChannel(format!(
@@ -2280,6 +2312,7 @@ impl RmeDevice for BabyfacePro {
         for (i, saved) in scene.outputs.iter().enumerate() {
             self.set_volume(ChannelId::Output(i), 0, saved.volume)?;
         }
+        let eq_before: Vec<Option<InputEq>> = self.inputs.iter().map(|c| c.eq).collect();
         self.inputs = scene.inputs.clone();
         self.playbacks = scene.playbacks.clone();
         self.outputs = scene.outputs.clone();
@@ -2305,6 +2338,7 @@ impl RmeDevice for BabyfacePro {
                 let _ = self.set_loopback(pair, out.loopback);
             }
         }
+        self.write_scene_eq(&eq_before)?;
         // Best-effort: `ms_proc`/`an12`/`width`/`fx_send`/`clock_source`
         // are all real ALSA controls on this backend, but some (clock
         // source especially — see `PROTOCOL.md`/this session's own
@@ -2880,6 +2914,37 @@ mod tests {
 
         dev.set_volume(soloed, 0, orig_soloed_vol).unwrap();
         dev.set_volume(other, 0, orig_other_vol).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    fn live_hardware_apply_scene_writes_the_eq() {
+        // A second handle reads the card back, as the other live tests do.
+        let mut dev = BabyfacePro::open().expect("real device attached");
+        let baseline = dev.capture_scene();
+        let original = baseline.inputs[0].eq.expect("AN1 has an EQ");
+
+        let mut changed = baseline.clone();
+        let eq = changed.inputs[0].eq.as_mut().unwrap();
+        eq.enabled = !original.enabled;
+        eq.low_cut_freq_hz = 123;
+        eq.bands[1].band_type = EqBandType::Bell;
+        eq.bands[1].freq_hz = 2345;
+        eq.bands[1].q = 1.5;
+        eq.bands[1].gain_db = 1.5;
+        dev.apply_scene(&changed).expect("apply_scene");
+        let read = BabyfacePro::open().unwrap().inputs[0].eq.unwrap();
+        assert_eq!(read, changed.inputs[0].eq.unwrap());
+
+        // A scene saved before EQ existed leaves the strip alone.
+        let mut legacy = changed.clone();
+        legacy.inputs[0].eq = None;
+        dev.apply_scene(&legacy).expect("apply_scene");
+        assert_eq!(dev.inputs[0].eq, changed.inputs[0].eq);
+
+        dev.apply_scene(&baseline).expect("restore baseline");
+        let read = BabyfacePro::open().unwrap().inputs[0].eq.unwrap();
+        assert_eq!(read, original);
     }
 
     #[test]

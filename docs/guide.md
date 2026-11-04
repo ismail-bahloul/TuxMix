@@ -24,8 +24,7 @@ project status.
 - **Matrix**: the full routing grid.
 
 The **Reset Mix** menu beside the tabs holds TotalMix's reset entries (straight
-playback, clear submixes, and so on). Each one can be undone, except that
-undoing the EQ switch-off does not write the EQ back to the card.
+playback, clear submixes, and so on). Each one can be undone.
 
 `tuxmix --view quick|mixer|matrix` opens a given view; `--mock` runs against
 a simulated device, no hardware needed.
