@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Reset Mix, a menu beside the view tabs with the entries of TotalMix's
+  Options > Reset Mix that this device can honour: straight playback, clear
+  all submixes, clear channel effects (EQ, low cut and width off, the band
+  settings kept), set output volumes (all at 0 dB), reset channel names, set
+  all channels mono or stereo, set inputs mono and outputs stereo, and total
+  reset. Each entry is one undo step, except that undoing the EQ switch-off
+  does not write the EQ back to the card.
+
 ## 0.3.5 (2026-10-29)
 
 ### Added

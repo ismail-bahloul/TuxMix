@@ -31,6 +31,51 @@ use tuxmix_core::pw_meter;
 
 pub const OUT_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "ADAT3/4", "ADAT5/6", "ADAT7/8"];
 
+/// The entries of TotalMix's Options > Reset Mix that apply to this device.
+/// The list follows jspx-projects' `TUXMIX-SPEC.md` (tuxmix-fireface), minus
+/// what the Babyface Pro has no model for: a Main Out assignment, dynamics,
+/// Reverb and Echo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResetMix {
+    StraightPlayback,
+    ClearSubmixes,
+    ClearEffects,
+    SetOutputVolumes,
+    ResetNames,
+    AllMono,
+    AllStereo,
+    InputsMonoOutputsStereo,
+    TotalReset,
+}
+
+pub const RESET_MIX: [ResetMix; 9] = [
+    ResetMix::StraightPlayback,
+    ResetMix::ClearSubmixes,
+    ResetMix::ClearEffects,
+    ResetMix::SetOutputVolumes,
+    ResetMix::ResetNames,
+    ResetMix::AllMono,
+    ResetMix::AllStereo,
+    ResetMix::InputsMonoOutputsStereo,
+    ResetMix::TotalReset,
+];
+
+impl std::fmt::Display for ResetMix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ResetMix::StraightPlayback => "Straight playback",
+            ResetMix::ClearSubmixes => "Clear all submixes",
+            ResetMix::ClearEffects => "Clear channel effects",
+            ResetMix::SetOutputVolumes => "Set output volumes",
+            ResetMix::ResetNames => "Reset channel names",
+            ResetMix::AllMono => "Set all channels mono",
+            ResetMix::AllStereo => "Set all channels stereo",
+            ResetMix::InputsMonoOutputsStereo => "Set inputs mono, outputs stereo",
+            ResetMix::TotalReset => "Total reset",
+        })
+    }
+}
+
 /// Strips redundant prefixes baked into a channel's stored name before it's
 /// shown in a strip header — "PCM " for playback channels, "OUT " for
 /// output bus pairs (`profile.rs`'s `format!("OUT {}", pair.left)`). Both
@@ -816,6 +861,8 @@ pub enum Message {
     /// Flips the hardware Dim (`RmeDevice::set_dim`), the same switch the
     /// front-panel DIM button toggles.
     DimToggle,
+    /// One entry of TotalMix's Options > Reset Mix, see `ResetMix`.
+    ResetMix(ResetMix),
     /// Recalls "Mix `u8`" (1-8) and marks it as the slot `SnapshotStore`
     /// will save into.
     SnapshotClicked(u8),
@@ -3307,6 +3354,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 state.matrix_hover = None;
             }
         }
+        Message::ResetMix(kind) => apply_reset_mix(state, kind),
         Message::DimToggle => {
             let on = !state.device.settings().dim;
             if let Err(e) = state.device.set_dim(on) {
@@ -3401,6 +3449,111 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
 
 /// How long a failure stays on screen.
 const NOTICE_FOR: Duration = Duration::from_secs(5);
+
+/// Options > Reset Mix. The routing and level entries rewrite a captured
+/// scene and push it in one `apply_scene`. The effects entry goes through
+/// the EQ setters, because the backends' `apply_scene` never writes the EQ;
+/// the stereo/mono entries use the link setters, which also re-pan the
+/// pairs, and the names are GUI state. The whole entry is one undo step
+/// (`update` has already captured the scene before this runs). Undoing an
+/// entry that switched the EQ off restores the model's EQ, not the card's,
+/// as it does for any EQ edit.
+fn apply_reset_mix(state: &mut TuxMix, kind: ResetMix) {
+    let result = match kind {
+        ResetMix::ResetNames => {
+            state.labels.clear();
+            state.editing = None;
+            state.prefs_dirty = true;
+            Ok(())
+        }
+        ResetMix::AllMono => reset_links(state, false, false),
+        ResetMix::AllStereo => reset_links(state, true, true),
+        ResetMix::InputsMonoOutputsStereo => reset_links(state, false, true),
+        ResetMix::ClearEffects => clear_effects(state),
+        ResetMix::StraightPlayback
+        | ResetMix::ClearSubmixes
+        | ResetMix::SetOutputVolumes
+        | ResetMix::TotalReset => {
+            let mut scene = state.device.capture_scene();
+            match kind {
+                ResetMix::StraightPlayback | ResetMix::TotalReset => straight_playback(&mut scene),
+                ResetMix::ClearSubmixes => clear_submixes(&mut scene),
+                _ => {}
+            }
+            if matches!(kind, ResetMix::SetOutputVolumes | ResetMix::TotalReset) {
+                for out in scene.outputs.iter_mut() {
+                    out.volume = 1.0;
+                }
+            }
+            let applied = state.device.apply_scene(&scene);
+            if kind == ResetMix::TotalReset {
+                applied.and_then(|()| clear_effects(state))
+            } else {
+                applied
+            }
+        }
+    };
+    match result {
+        Ok(()) => state.notice = Some((format!("Reset Mix: {kind}"), Instant::now())),
+        Err(e) => fail(state, "reset_mix", &e),
+    }
+}
+
+/// Every playback channel on its own output pair at 0 dB and nowhere else,
+/// and the hardware inputs routed nowhere: the same state the mock starts in.
+fn straight_playback(scene: &mut tuxmix_core::Scene) {
+    clear_submixes(scene);
+    for (i, pb) in scene.playbacks.iter_mut().enumerate() {
+        if let Some(v) = pb.volumes.get_mut(i / 2) {
+            *v = 1.0;
+        }
+    }
+}
+
+fn clear_submixes(scene: &mut tuxmix_core::Scene) {
+    for pb in scene.playbacks.iter_mut() {
+        pb.volumes.fill(0.0);
+    }
+    for inp in scene.inputs.iter_mut() {
+        inp.volumes.fill(0.0);
+    }
+}
+
+/// Switches the EQ, the low cut and Width off. The band settings are kept:
+/// "off" here is the switch, not an erase. These setters only exist on a
+/// connection with the RME protocol, so any other one has nothing to clear.
+fn clear_effects(state: &mut TuxMix) -> Result<(), tuxmix_core::Error> {
+    if !state.device.protocol_features() {
+        return Ok(());
+    }
+    let with_eq: Vec<usize> = state
+        .device
+        .inputs()
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ch)| ch.eq.map(|_| i))
+        .collect();
+    for idx in with_eq {
+        state.device.set_eq_enabled(idx, false)?;
+        state.device.set_eq_low_cut_freq(idx, 0)?;
+    }
+    state.device.set_width(0.0)
+}
+
+/// Stereo-links (or unlinks) every input and output pair.
+fn reset_links(
+    state: &mut TuxMix,
+    inputs_linked: bool,
+    outputs_linked: bool,
+) -> Result<(), tuxmix_core::Error> {
+    for pair in 0..state.device.inputs().len() / 2 {
+        state.device.set_input_pair_linked(pair, inputs_linked)?;
+    }
+    for pair in 0..state.device.output_pair_count() {
+        state.device.set_output_linked(pair, outputs_linked)?;
+    }
+    Ok(())
+}
 
 /// Reports a refused device write: logged, and shown briefly so a fader that
 /// moves without effect is not silent. A drag repeats the same failure many
@@ -4605,9 +4758,19 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
         .style(theme::ghost_button)
         .on_press(Message::ToggleAbout);
 
+    // TotalMix's Options > Reset Mix, beside the view tabs: a menu that
+    // never keeps a selection, so each entry can be chosen again.
+    let reset_mix = pick_list(RESET_MIX.to_vec(), None::<ResetMix>, Message::ResetMix)
+        .placeholder("RESET MIX")
+        .style(theme::pick_list)
+        .menu_style(theme::menu)
+        .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+        .text_size(theme::TEXT_MD * scale);
+
     let mut bar = row![
         brand,
         tab_toggle,
+        reset_mix,
         // Everything right of here is the tool side of the bar: the
         // flexible space sits in the middle, so the session chip stays
         // against the right edge instead of floating at whatever width it
@@ -6343,7 +6506,7 @@ mod tests {
         any_channel_muted, any_channel_soloed, apply_pending_resize, apply_prefs, channel_is_muted,
         channel_is_soloed, is_undoable, mute_armed, new, power_sum_output_meters, prefs_of,
         route_popover_open, title, update, window, zoom, ChannelId, EditField, Message, MeterAnim,
-        NoDevice, RowMode, TuxMix, View, LOW_CUT_ON_HZ, ZOOM_STEP,
+        NoDevice, ResetMix, RowMode, TuxMix, View, LOW_CUT_ON_HZ, RESET_MIX, ZOOM_STEP,
     };
     use crate::sidebar;
     use crate::theme;
@@ -7248,6 +7411,151 @@ mod tests {
         // Switching it on while it is on changes nothing.
         let _ = update(&mut state, Message::EqLowCutEnabled(0, true));
         assert_eq!(low_cut_hz(&state), LOW_CUT_ON_HZ);
+    }
+
+    fn reset_mix(state: &mut TuxMix, kind: ResetMix) {
+        let _ = update(state, Message::ResetMix(kind));
+    }
+
+    #[test]
+    fn straight_playback_routes_each_playback_to_its_own_pair_and_clears_the_inputs() {
+        let mut state = new(true, None, None);
+        let _ = update(
+            &mut state,
+            Message::VolumeChanged(ChannelId::Input(0), 2, 0.7),
+        );
+        let _ = update(
+            &mut state,
+            Message::VolumeChanged(ChannelId::Playback(0), 3, 0.5),
+        );
+        reset_mix(&mut state, ResetMix::StraightPlayback);
+        for (i, pb) in state.device.playbacks().iter().enumerate() {
+            for (pair, &v) in pb.volumes.iter().enumerate() {
+                assert_eq!(
+                    v,
+                    if pair == i / 2 { 1.0 } else { 0.0 },
+                    "PB{i} into pair {pair}"
+                );
+            }
+        }
+        for ch in state.device.inputs() {
+            assert!(
+                ch.volumes.iter().all(|&v| v == 0.0),
+                "{} is routed",
+                ch.name
+            );
+        }
+    }
+
+    #[test]
+    fn clear_submixes_zeroes_every_send_and_leaves_the_output_masters() {
+        let mut state = new(true, None, None);
+        let _ = update(
+            &mut state,
+            Message::VolumeChanged(ChannelId::Output(0), 0, 0.4),
+        );
+        reset_mix(&mut state, ResetMix::ClearSubmixes);
+        assert!(state
+            .device
+            .playbacks()
+            .iter()
+            .all(|c| c.volumes.iter().all(|&v| v == 0.0)));
+        assert!(state
+            .device
+            .inputs()
+            .iter()
+            .all(|c| c.volumes.iter().all(|&v| v == 0.0)));
+        assert_eq!(state.device.outputs()[0].volume, 0.4);
+    }
+
+    #[test]
+    fn set_output_volumes_puts_every_master_at_0_db() {
+        let mut state = new(true, None, None);
+        let _ = update(
+            &mut state,
+            Message::VolumeChanged(ChannelId::Output(0), 0, 0.4),
+        );
+        let _ = update(
+            &mut state,
+            Message::VolumeChanged(ChannelId::Output(3), 0, 0.0),
+        );
+        reset_mix(&mut state, ResetMix::SetOutputVolumes);
+        assert!(state.device.outputs().iter().all(|o| o.volume == 1.0));
+    }
+
+    #[test]
+    fn clear_effects_switches_eq_low_cut_and_width_off_and_keeps_the_bands() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::EqEnabled(0, true));
+        let _ = update(&mut state, Message::EqLowCutFreq(0, 300));
+        let _ = update(
+            &mut state,
+            Message::EqBandType(0, 1, tuxmix_core::channel::EqBandType::Bell),
+        );
+        let _ = update(&mut state, Message::WidthChanged(0.5));
+        reset_mix(&mut state, ResetMix::ClearEffects);
+        let eq = state.device.inputs()[0].eq.unwrap();
+        assert!(!eq.enabled);
+        assert!(!eq.low_cut_on());
+        assert_eq!(
+            eq.bands[1].band_type,
+            tuxmix_core::channel::EqBandType::Bell
+        );
+        assert_eq!(state.device.settings().width, 0.0);
+    }
+
+    #[test]
+    fn the_stereo_and_mono_entries_link_and_unlink_every_pair() {
+        let mut state = new(true, None, None);
+        reset_mix(&mut state, ResetMix::AllMono);
+        assert!((0..6).all(|p| !state.device.output_linked(p)));
+        assert!((0..6).all(|p| !state.device.input_pair_linked(p)));
+        reset_mix(&mut state, ResetMix::AllStereo);
+        assert!((0..6).all(|p| state.device.output_linked(p)));
+        assert!((0..6).all(|p| state.device.input_pair_linked(p)));
+        reset_mix(&mut state, ResetMix::InputsMonoOutputsStereo);
+        assert!((0..6).all(|p| state.device.output_linked(p)));
+        assert!((0..6).all(|p| !state.device.input_pair_linked(p)));
+    }
+
+    #[test]
+    fn reset_names_clears_the_labels_and_the_open_edit() {
+        let mut state = new(true, None, None);
+        state.labels.insert(ChannelId::Input(0), "Vox".into());
+        state.editing = Some(ChannelId::Input(0));
+        reset_mix(&mut state, ResetMix::ResetNames);
+        assert!(state.labels.is_empty());
+        assert!(state.editing.is_none());
+        assert!(state.prefs_dirty, "the cleared names must be saved");
+    }
+
+    #[test]
+    fn total_reset_does_all_three_and_one_undo_brings_the_mix_back() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::EqEnabled(0, true));
+        let _ = update(
+            &mut state,
+            Message::VolumeChanged(ChannelId::Output(0), 0, 0.4),
+        );
+        let _ = update(
+            &mut state,
+            Message::VolumeChanged(ChannelId::Input(0), 2, 0.7),
+        );
+        reset_mix(&mut state, ResetMix::TotalReset);
+        assert!(!state.device.inputs()[0].eq.unwrap().enabled);
+        assert_eq!(state.device.outputs()[0].volume, 1.0);
+        assert_eq!(state.device.inputs()[0].volumes[2], 0.0);
+        assert_eq!(state.device.playbacks()[0].volumes[0], 1.0);
+        let _ = update(&mut state, Message::Undo);
+        assert_eq!(state.device.outputs()[0].volume, 0.4);
+        assert_eq!(state.device.inputs()[0].volumes[2], 0.7);
+    }
+
+    #[test]
+    fn every_reset_mix_entry_is_undoable() {
+        for kind in RESET_MIX {
+            assert!(is_undoable(&Message::ResetMix(kind)), "{kind}");
+        }
     }
 
     #[test]
