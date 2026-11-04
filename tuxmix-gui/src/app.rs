@@ -31,6 +31,10 @@ use tuxmix_core::pw_meter;
 
 pub const OUT_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "ADAT3/4", "ADAT5/6", "ADAT7/8"];
 
+/// The output pair the Control Room shows as Main: PH3/4, the one the unit's
+/// DIM acts on and the one TotalMix's Main is assigned to in our captures.
+const MAIN_PAIR: usize = 1;
+
 /// The entries of TotalMix's Options > Reset Mix that apply to this device.
 /// The list follows jspx-projects' `TUXMIX-SPEC.md` (tuxmix-fireface), minus
 /// what the Babyface Pro has no model for: a Main Out assignment, dynamics,
@@ -863,6 +867,10 @@ pub enum Message {
     DimToggle,
     /// One entry of TotalMix's Options > Reset Mix, see `ResetMix`.
     ResetMix(ResetMix),
+    /// Control Room: remembers the Main volume for `RecallMain`.
+    StoreRecall,
+    /// Control Room: puts the Main volume back to the stored one.
+    RecallMain,
     /// Recalls "Mix `u8`" (1-8) and marks it as the slot `SnapshotStore`
     /// will save into.
     SnapshotClicked(u8),
@@ -1014,6 +1022,9 @@ pub struct TuxMix {
     /// own layout instead of overlaying it. Opens/closes instantly, no
     /// width tween — unlike `collapse_anim`, this isn't animated.
     pub flyout_open: HashSet<(ChannelId, strip::FlyoutKind)>,
+    /// The Main volume stored for Recall. Host-side, as in TotalMix: the
+    /// unit has no register for it (`PROTOCOL.md`, cap_dim.pcap).
+    pub main_recall: Option<f32>,
     /// Manual UI zoom for the mixer/matrix views — every text size and
     /// widget dimension there is multiplied by this. Changed only by
     /// `ZoomIn`/`ZoomOut`/`ZoomReset`/Ctrl+molette (`zoom`); it is NOT tied
@@ -1471,6 +1482,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         eq_low_cut_memory: HashMap::new(),
         collapse_anim: HashMap::new(),
         flyout_open: HashSet::new(),
+        main_recall: None,
         ui_scale: theme::SCALE_DEFAULT,
         fullscreen: false,
         // Matches `window::Settings::size` in main.rs — updated for real
@@ -2184,6 +2196,7 @@ fn is_undoable(message: &Message) -> bool {
     !matches!(
         message,
         Message::Tick
+            | Message::StoreRecall
             | Message::SetView(_)
             | Message::QuickChannelSelected(_)
             | Message::SelectOutput(_)
@@ -3355,6 +3368,21 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::ResetMix(kind) => apply_reset_mix(state, kind),
+        Message::StoreRecall => {
+            state.main_recall = state
+                .device
+                .outputs()
+                .get(MAIN_PAIR * 2)
+                .map(|out| out.volume);
+        }
+        Message::RecallMain => {
+            if let Some(volume) = state.main_recall {
+                return update(
+                    state,
+                    Message::VolumeChanged(ChannelId::Output(MAIN_PAIR * 2), 0, volume),
+                );
+            }
+        }
         Message::DimToggle => {
             let on = !state.device.settings().dim;
             if let Err(e) = state.device.set_dim(on) {
@@ -6044,7 +6072,14 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
     let mut out_strips = row![].spacing(theme::SPACE_MD);
     let mut out_width = 0.0f32;
     let mut out_item_count = 0usize;
+    // Only with the RME protocol: Dim needs it, and without Dim and with no
+    // other control beside it the section would just rename an output.
+    let control_room = state.device.protocol_features();
+    let mut main_strips = row![].spacing(theme::SPACE_MD);
+    let mut main_width = 0.0f32;
+    let mut main_item_count = 0usize;
     for pair in 0..state.device.output_pair_count() {
+        let is_main = control_room && pair == MAIN_PAIR;
         let l = pair * 2;
         let linked = state.device.output_linked(pair);
         let pair_channels = [l, l + 1];
@@ -6063,6 +6098,9 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 params.meter2 = state.output_meters.get(l + 1).map(MeterAnim::frame);
                 params.clip2 = state.output_meters.get(l + 1).is_some_and(|m| m.clipped);
                 params.meter2_available = output_meter_available(state, l + 1);
+                if is_main {
+                    params.name = "Main".to_string();
+                }
             }
             let strip_widget = strip::strip(finish_params(state, params));
             let mut item_width = rendered_strip_width(state, cid);
@@ -6071,19 +6109,29 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 .contains(&(cid, strip::FlyoutKind::Settings))
             {
                 let panel_w = strip::full_width(cid) * state.ui_scale;
-                out_strips = out_strips.push(strip_with_panel(
-                    strip_widget,
-                    settings_popover(state, cid, panel_w, state.ui_scale),
-                ));
+                let panel = settings_popover(state, cid, panel_w, state.ui_scale);
                 item_width += panel_w + theme::SPACE_MD;
+                if is_main {
+                    main_strips = main_strips.push(strip_with_panel(strip_widget, panel));
+                } else {
+                    out_strips = out_strips.push(strip_with_panel(strip_widget, panel));
+                }
+            } else if is_main {
+                main_strips = main_strips.push(strip_widget);
             } else {
                 out_strips = out_strips.push(strip_widget);
             }
-            out_width += item_width;
-            out_item_count += 1;
+            if is_main {
+                main_width += item_width;
+                main_item_count += 1;
+            } else {
+                out_width += item_width;
+                out_item_count += 1;
+            }
         }
     }
     out_width += out_item_count.saturating_sub(1) as f32 * theme::SPACE_MD;
+    main_width += main_item_count.saturating_sub(1) as f32 * theme::SPACE_MD;
 
     // `page()`'s own horizontal padding, plus a small safety margin so a
     // borderline-fitting row biases toward scrolling instead of clipping.
@@ -6166,15 +6214,77 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
         .spacing(theme::SPACE_LG)
         .into()
     };
-    let body = column![
-        sources,
-        section_header("HARDWARE OUTPUTS", scale),
-        responsive_row(out_strips.into(), out_width, available_width),
-    ]
+    let outputs: Element<'_, Message> = if control_room {
+        let buttons_w = CONTROL_ROOM_BUTTONS_W * scale;
+        let room_width = main_width + theme::SPACE_MD + buttons_w;
+        let gap = theme::SPACE_XXL * scale;
+        let row_width = out_width + gap + room_width;
+        responsive_row(
+            row![
+                column![section_header("HARDWARE OUTPUTS", scale), out_strips]
+                    .spacing(theme::SPACE_LG)
+                    .width(Length::Fixed(out_width)),
+                column![
+                    section_header("CONTROL ROOM", scale),
+                    row![main_strips, control_room_buttons(state, buttons_w)]
+                        .spacing(theme::SPACE_MD),
+                ]
+                .spacing(theme::SPACE_LG)
+                .width(Length::Fixed(room_width)),
+            ]
+            .spacing(gap)
+            .into(),
+            row_width,
+            available_width,
+        )
+    } else {
+        column![
+            section_header("HARDWARE OUTPUTS", scale),
+            responsive_row(out_strips.into(), out_width, available_width),
+        ]
+        .spacing(theme::SPACE_LG)
+        .into()
+    };
+    let body = column![sources, outputs]
     .spacing(theme::SPACE_LG)
     .width(Length::Fill);
 
     page(body)
+}
+
+const CONTROL_ROOM_BUTTONS_W: f32 = 64.0;
+
+/// The buttons beside Main. Only what does something on this unit: TotalMix's
+/// Mono, Ext. Input, Mute FX and Talkback write nothing over USB, they are
+/// its own processing on the host (`PROTOCOL.md`, cap_ctrl3.pcap).
+fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
+    let scale = state.ui_scale;
+    let cell = move |label: &'static str| {
+        button(
+            container(text(label).size(theme::TEXT_XS * scale))
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+        )
+        .padding([theme::SPACE_SM * scale, 0.0])
+        .width(Length::Fill)
+    };
+    column![
+        cell("dim")
+            .style(theme::toggle_button(
+                state.device.settings().dim,
+                theme::ACCENT,
+            ))
+            .on_press(Message::DimToggle),
+        cell("recall")
+            .style(theme::toggle_button(false, theme::ACCENT))
+            .on_press_maybe(state.main_recall.map(|_| Message::RecallMain)),
+        cell("store")
+            .style(theme::toggle_button(false, theme::ACCENT))
+            .on_press(Message::StoreRecall),
+    ]
+    .spacing(theme::SPACE_SM * scale)
+    .width(Length::Fixed(width))
+    .into()
 }
 
 fn matrix_view(state: &TuxMix) -> Element<'_, Message> {
@@ -7550,6 +7660,19 @@ mod tests {
         let _ = update(&mut state, Message::Undo);
         assert_eq!(state.device.outputs()[0].volume, 0.4);
         assert_eq!(state.device.inputs()[0].volumes[2], 0.7);
+    }
+
+    #[test]
+    fn recall_does_nothing_until_a_volume_is_stored_then_brings_it_back() {
+        let mut state = new(true, None, None);
+        let main = ChannelId::Output(super::MAIN_PAIR * 2);
+        let _ = update(&mut state, Message::VolumeChanged(main, 0, 0.5));
+        let _ = update(&mut state, Message::RecallMain);
+        assert_eq!(state.device.outputs()[super::MAIN_PAIR * 2].volume, 0.5);
+        let _ = update(&mut state, Message::StoreRecall);
+        let _ = update(&mut state, Message::VolumeChanged(main, 0, 0.2));
+        let _ = update(&mut state, Message::RecallMain);
+        assert_eq!(state.device.outputs()[super::MAIN_PAIR * 2].volume, 0.5);
     }
 
     #[test]
