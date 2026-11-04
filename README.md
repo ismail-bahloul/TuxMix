@@ -47,4 +47,6 @@ Try it without hardware: `tuxmix --mock`.
 
 [Guide](docs/guide.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Kernel driver](https://github.com/ismail-bahloul/babyface-pro-linux)
 
+Related: [tuxmix-fireface](https://github.com/jspx-projects/tuxmix-fireface), a fork by jspx-projects for the Fireface UC and UCX.
+
 </div>
