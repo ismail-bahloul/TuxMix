@@ -1,9 +1,19 @@
 # Contributing to TuxMix
 
-TuxMix is pre-alpha and the architecture is still settling, but the most
-useful thing outside contributors can do right now — adding support for a
-second real RME device — has a concrete recipe below. If you're not sure
-where something fits, open an issue first rather than guessing.
+TuxMix supports the Babyface Pro FS today, validated on real hardware. The
+most useful thing outside contributors can do is help bring a second RME
+device: it needs someone who owns one, because nothing here can be verified
+without the hardware. If you're not sure where something fits, open an issue
+first rather than guessing.
+
+Fireface UC and UCX have their own project,
+[TotalControl](https://github.com/jspx-projects/TotalControl), which started
+from TuxMix. Questions about those units belong there.
+
+The recipe below covers devices the kernel exposes through ALSA mixer
+controls, the way the Babyface Pro FS driver does. A device in RME's
+proprietary USB mode with no kernel driver needs a capture of the vendor
+software talking to the unit first; open an issue and we'll go from there.
 
 ## Development setup
 
