@@ -15,6 +15,8 @@
   the EQ on screen but not on the card.
 - An EQ band that had never been set read 0 Hz from the driver, so switching
   it on left the curve flat. It now starts at 1 kHz, Q 0.7, on the card too.
+- The Submix field slid under the sidebar in a narrow window. Below about
+  1000 px at 100 % zoom, the bar now drops the wordmark and the Submix label.
 
 ## 0.3.5 (2026-10-29)
 
