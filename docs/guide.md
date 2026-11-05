@@ -124,10 +124,15 @@ the same files locally from `cargo build --release --workspace`. Then bump
 
 ## License
 
-MIT for the library and the rest of the tree: `tuxmix-core`, the tools and
+MIT for the library and most of the tree: `tuxmix-core`, the tools and
 the docs, see [`LICENSE`](../LICENSE).
 
 The rest is copyleft: `tuxmix-usb` is GPL-3.0-or-later and `tuxmix-sys` is
 GPL-3.0. The applications link both, so `tuxmix-gui` and `tuxmix-tui` are
 GPL-3.0-only, see [`COPYING`](../COPYING). It is the license every package
-declares.
+declares. `tools/alsa` is GPL-3.0-or-later too: the plugin it builds links
+`tuxmix-sys`, so the binary it installs is a GPL-3.0 work even though the
+rest of the tools are MIT.
+
+The licenses cover the code, not the name. [`TRADEMARK.md`](../TRADEMARK.md)
+says what that means for forks.

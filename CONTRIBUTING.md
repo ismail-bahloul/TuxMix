@@ -84,6 +84,13 @@ guide if you want to help with that instead.
 6. **Open a PR** with your profile, the adjusted naming helpers if
    needed, and a note on which real device you tested against.
 
+## Licensing of contributions
+
+A contribution is accepted under the license of the crate it touches: MIT for
+`tuxmix-core`, the tools and the docs, GPL-3.0 for the applications and the
+USB backend. There is no CLA. Keep the SPDX header of the file you edit, and
+add one to a new file that has none.
+
 ## Other ways to help
 
 - **UI / UX**: improve the iced GUI or the ratatui TUI — see

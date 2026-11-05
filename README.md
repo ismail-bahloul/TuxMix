@@ -47,6 +47,13 @@ Try it without hardware: `tuxmix --mock`.
 
 [Guide](docs/guide.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Kernel driver](https://github.com/ismail-bahloul/babyface-pro-linux)
 
-Related: [tuxmix-fireface](https://github.com/jspx-projects/tuxmix-fireface), a fork by jspx-projects for the Fireface UC and UCX.
+Related: [TotalControl](https://github.com/jspx-projects/TotalControl), a fork by jspx-projects that extends TuxMix to the Fireface UC and UCX.
 
 </div>
+
+## License
+
+`tuxmix-core`, the docs and most of the tools are MIT; the applications,
+the USB backend and the ALSA plugin are GPL-3.0, see
+[the license section](docs/guide.md#license). Forks are welcome under either.
+They run under their own name: see [`TRADEMARK.md`](TRADEMARK.md).

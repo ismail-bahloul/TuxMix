@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+//
+// GPL-3.0-or-later rather than the MIT that covers the other tools: this
+// plugin links libtuxmix_sys.so (tuxmix-sys, GPL-3.0), so the .so it builds
+// is a GPL-3.0 work.
+
 /*
  * pcm_tuxmix.c — ALSA PCM plugin for the RME Babyface Pro FS in
  * PROPRIETARY mode (the TotalMix protocol, reverse-engineered by the

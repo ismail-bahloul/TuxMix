@@ -24,5 +24,9 @@ SOFTWARE.
 
 The applications are licensed differently, and the MIT text above does not
 cover them: `tuxmix-gui` and `tuxmix-tui` are GPL-3.0-only, `tuxmix-usb` is
-GPL-3.0-or-later, `tuxmix-sys` is GPL-3.0; see COPYING. The License section of
-docs/guide.md has the details.
+GPL-3.0-or-later, `tuxmix-sys` is GPL-3.0, and `tools/alsa` is GPL-3.0-or-later
+because the plugin it builds links `tuxmix-sys`; see COPYING. The License
+section of docs/guide.md has the details.
+
+The licenses cover the code, not the name: see TRADEMARK.md for the naming
+policy that applies to forks.

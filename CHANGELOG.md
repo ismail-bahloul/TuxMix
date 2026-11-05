@@ -10,6 +10,15 @@
   channels mono or stereo, set inputs mono and outputs stereo, and total
   reset. Each entry is one undo step.
 
+### Changed
+- Every source file now carries an `SPDX-License-Identifier` and the
+  copyright line, so attribution survives a fork or a vendored copy.
+- `tools/alsa` is GPL-3.0-or-later rather than MIT: the plugin it builds links
+  `tuxmix-sys` (GPL-3.0), so the binary it installs was already a GPL-3.0
+  work. The rest of the tools stay MIT.
+- [`TRADEMARK.md`](TRADEMARK.md) states the naming policy that applies to
+  forks.
+
 ### Fixed
 - Undoing an EQ change or recalling a snapshot on the ALSA backend updated
   the EQ on screen but not on the card.
