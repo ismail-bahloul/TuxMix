@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Diagnostic: the real audio stream is INTERRUPT transfers on interface
 //! 5, ep `0x01` OUT / `0x82` IN (bmAttributes 0x03 = interrupt; a
 //! tshark analysis of cap_audio.pcap shows 14336-byte URBs every

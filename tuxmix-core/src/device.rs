@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 use crate::channel::{ChannelId, ChannelType, EqBandType, InputChannel, OutputChannel, PlaybackChannel, Sensitivity};
 use crate::error::Error;
 use crate::scene::Scene;

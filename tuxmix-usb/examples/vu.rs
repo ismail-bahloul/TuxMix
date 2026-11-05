@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Input VU-meter demo (Rust port of `tools/usbdump/vudemo.c`): open the
 //! device, start the interrupt stream, route AN1 → AN1/2, enable 48V and
 //! gain on Mic 1, then compute per-channel levels from the IN stream

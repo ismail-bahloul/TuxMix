@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Encoding of the Babyface Pro FS proprietary control commands.
 //!
 //! Every command is a USB **vendor control transfer** on endpoint 0 with

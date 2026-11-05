@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 use iced::futures::channel::mpsc;
 use iced::keyboard::{self, Key};
 use iced::widget::{

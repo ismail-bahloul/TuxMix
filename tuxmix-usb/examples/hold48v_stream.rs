@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Control-transfer-only 48V test (no streaming): arm the session and
 //! watch the 0x17 readback — without the audio URBs the session never
 //! activates and 48V cannot physically engage (kept as a control test).

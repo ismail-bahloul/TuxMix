@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! ALSA device and mixer scanner.
 //!
 //! Lists all ALSA cards and their simple mixer elements with

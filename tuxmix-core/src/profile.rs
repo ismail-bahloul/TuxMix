@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Declarative description of an RME device controllable via ALSA
 //! simple-mixer elements (selem) — see `crate::profiles` for the
 //! per-model instances of [`DeviceProfile`].

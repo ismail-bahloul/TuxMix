@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Mock implementation of [`RmeDevice`] for development and testing.
 //!
 //! [`MockBabyfacePro`] simulates a Babyface Pro FS entirely in memory,

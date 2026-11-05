@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Interrupt-transfer audio streaming (raw libusb async, no rusb sync API).
 //!
 //! The Babyface Pro FS' real audio stream runs on **interface 5**,

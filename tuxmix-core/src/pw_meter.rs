@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Per-channel meters from PipeWire: the sink monitor for playback, the
 //! card's own source for the inputs.
 //!

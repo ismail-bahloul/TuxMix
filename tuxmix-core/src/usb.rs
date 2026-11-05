@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Babyface Pro FS implementation of [`RmeDevice`] over the proprietary
 //! USB backend (`tuxmix-usb`).
 //!

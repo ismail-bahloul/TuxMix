@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! panelprobe — dump the 0x17 readback live so we can see the REAL
 //! states while pressing the front-panel buttons (diagnostic for the
 //! MIX/IN/wheel mode switching).

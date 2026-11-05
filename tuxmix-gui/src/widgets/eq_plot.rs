@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Interactive frequency-response editor for the hardware EQ: the three
 //! parametric bands plus the low cut, drawn on a log-frequency axis.
 //!

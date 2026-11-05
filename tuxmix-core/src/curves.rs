@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Calibrated hardware curves shared by every backend that needs a
 //! dB<->raw conversion for the crosspoint-fader family of registers
 //! (crosspoint volumes, FX send). Kept feature-independent (no `alsa`/

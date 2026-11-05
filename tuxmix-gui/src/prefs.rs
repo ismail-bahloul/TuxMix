@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! The GUI's own preferences — how the window was laid out, not what the
 //! mixer is doing (that is the shared auto-saved scene, see
 //! `tuxmix_core::scene`). One JSON file in the XDG config directory

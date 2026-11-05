@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! The PipeWire graph clock: sample rate and buffer size (the "quantum").
 //!
 //! With the kernel driver, the Babyface's rate and buffer are not the

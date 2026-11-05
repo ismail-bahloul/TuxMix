@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Diagnostic: reproduce the cold-start handshake seen in
 //! `cap_coldstart.pcap` (30x `0x15` + `0x17`/`0x8080`, then the first
 //! preamp write followed by `0x17`/`0xF040`) and check whether that

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 use std::fs;
 
 use alsa::mixer::{Mixer, Selem, SelemId};

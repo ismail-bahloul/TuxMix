@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! EQ upload demo: exercise the decoded EQ transport on real hardware.
 //!
 //! The band-EQ biquad and the low-cut formulas are now fully decoded

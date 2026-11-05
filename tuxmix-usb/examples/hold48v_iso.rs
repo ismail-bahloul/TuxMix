@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Diagnostic: turn 48V on, start a real audio stream — INTERRUPT
 //! transfers on interface 5 (ep `0x01` OUT / `0x82` IN, alt-setting 1,
 //! 448-B packets; bmAttributes 0x03 = interrupt, NOT isochronous) — and

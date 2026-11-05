@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Background mode: the notification-area icon, one instance per session,
 //! and starting with the session.
 //!

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! The product artwork, decoded from the same PNGs the packaging installs
 //! into the icon theme: the tile (for the window to wear, see
 //! `main::window_icon`) and the bare mark (for the in-app lockup in the

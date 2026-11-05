@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Raw libusb isochronous transfer support.
 //!
 //! ⚠️ **SUPERSEDED** — the real audio stream is INTERRUPT transfers on

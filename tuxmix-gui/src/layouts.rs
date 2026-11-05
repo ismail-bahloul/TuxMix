@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Mixer Layout (collapsed-strip set) persistence — mirrors `scenes.rs`'s
 //! own file-per-slot pattern, one JSON file per numbered slot (1-6),
 //! sibling directory to the scenes one. A layout is just `TuxMix::

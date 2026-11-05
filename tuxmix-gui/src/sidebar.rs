@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! The right-hand "control strip" sidebar — TotalMix's own device chip,
 //! Undo/Redo, the global M/S/F row, Options, Snapshots, Groups and Mixer
 //! Layout panels.

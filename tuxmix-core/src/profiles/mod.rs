@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Per-model device profiles — see [`crate::profile::DeviceProfile`].
 //!
 //! To add a new ALSA-selem RME model, see the recipe in `CONTRIBUTING.md`

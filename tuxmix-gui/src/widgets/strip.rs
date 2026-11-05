@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! A single channel strip: label + type tag, mute/solo, 48V/PAD, fader+VU,
 //! dB readout (double-click to edit), pan readout.
 

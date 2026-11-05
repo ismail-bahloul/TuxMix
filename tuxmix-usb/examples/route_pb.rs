@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! route_pb — route PB1+PB2 (the ALSA plugin's playback channels) to
 //! the Phones (out pair 1) so ALSA playback through the tuxmix PCM
 //! plugin is audible. The mixer registers persist on the device after

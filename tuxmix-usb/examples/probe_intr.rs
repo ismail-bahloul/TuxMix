@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Probe the interrupt stream pair: start the session and check that
 //! the OUT/IN URBs complete (the device requires both endpoints to have
 //! a pending URB simultaneously — a lone URB never completes).

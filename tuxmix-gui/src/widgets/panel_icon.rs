@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! The "toggle right sidebar" icon, drawn rather than typed: a rounded
 //! window outline with its right-hand column marked off, the column
 //! filled while the sidebar is open. It is the convention editors and

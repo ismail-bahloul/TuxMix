@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! A rotary knob — TotalMix-style value control (gain, pan) as an
 //! alternative to a linear track. Drag vertically to turn it (a literal
 //! circular drag is fiddly with a 2D mouse, so — like every DAW's own
