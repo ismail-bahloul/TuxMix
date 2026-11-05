@@ -177,6 +177,21 @@ fn eq_strip_name(idx: usize) -> Option<&'static str> {
     }
 }
 
+/// A band nobody has set yet reads back from the driver as 0 Hz, which the
+/// hardware has no use for: switched on as it stands, it does nothing to the
+/// curve and looks broken. Such a band takes the model's defaults instead.
+fn settle_unset_eq_band(band: EqBand) -> EqBand {
+    if band.freq_hz > 0 {
+        return band;
+    }
+    let defaults = EqBand::default();
+    EqBand {
+        freq_hz: defaults.freq_hz,
+        q: defaults.q,
+        ..band
+    }
+}
+
 /// `eq.c`'s `bf_eq_type_texts` enum-item order: Off/Bell/Low Shelf/High Shelf.
 fn eq_band_type_to_enum(t: EqBandType) -> u32 {
     match t {
@@ -563,10 +578,13 @@ impl BabyfacePro {
         }
         for idx in 0..self.inputs.len() {
             let was = before.get(idx).copied().flatten();
-            let Some(eq) = self.inputs[idx].eq else {
+            let Some(mut eq) = self.inputs[idx].eq else {
                 self.inputs[idx].eq = was;
                 continue;
             };
+            // A scene saved before `settle_unset_eq_band` can carry 0 Hz.
+            eq.bands = eq.bands.map(settle_unset_eq_band);
+            self.inputs[idx].eq = Some(eq);
             if eq_strip_name(idx).is_none() || was == Some(eq) {
                 continue;
             }
@@ -1158,6 +1176,7 @@ impl BabyfacePro {
                         eq.bands[band].gain_db = v as f32 / 10.0;
                     }
                 }
+                eq.bands[band] = settle_unset_eq_band(eq.bands[band]);
             }
             if let Some(selem) = self
                 .mixer
@@ -1886,6 +1905,26 @@ impl RmeDevice for BabyfacePro {
             .inputs
             .get_mut(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
+        // The card may still hold 0 Hz behind the defaults the model shows
+        // (`settle_unset_eq_band`): an active band has to get those values.
+        if band_type != EqBandType::Off {
+            let shown = inp.eq.get_or_insert_with(InputEq::default).bands[band];
+            if let Some(selem) = self
+                .mixer
+                .find_selem(&format!("{strip} EQ Band {} Freq", band + 1), 0)
+            {
+                selem.set_playback_volume(SelemChannelId::mono(), shown.freq_hz as i64)?;
+            }
+            if let Some(selem) = self
+                .mixer
+                .find_selem(&format!("{strip} EQ Band {} Q", band + 1), 0)
+            {
+                selem.set_playback_volume(
+                    SelemChannelId::mono(),
+                    (shown.q * 100.0).round() as i64,
+                )?;
+            }
+        }
         if let Some(selem) = self
             .mixer
             .find_selem(&format!("{strip} EQ Band {} Type", band + 1), 0)
@@ -2472,7 +2511,6 @@ impl RmeDevice for BabyfacePro {
 
 #[cfg(test)]
 mod tests {
-
     #[test]
     fn pan_split_and_join_round_trip_in_linear_levels() {
         // The dB-converted crosspoints pan on linear levels, louder side
@@ -2489,6 +2527,32 @@ mod tests {
         assert_eq!(pan_join(0.0, 0.0), (0.0, 0));
     }
     use super::*;
+
+    #[test]
+    fn an_unset_eq_band_takes_the_defaults_and_keeps_its_type_and_gain() {
+        let unset = EqBand {
+            band_type: EqBandType::Bell,
+            freq_hz: 0,
+            q: 1.0,
+            gain_db: 3.0,
+        };
+        let settled = settle_unset_eq_band(unset);
+        assert_eq!(settled.freq_hz, EqBand::default().freq_hz);
+        assert_eq!(settled.q, EqBand::default().q);
+        assert_eq!(settled.band_type, EqBandType::Bell);
+        assert_eq!(settled.gain_db, 3.0);
+    }
+
+    #[test]
+    fn a_set_eq_band_is_left_alone() {
+        let set = EqBand {
+            band_type: EqBandType::HighShelf,
+            freq_hz: 20,
+            q: 2.5,
+            gain_db: -4.0,
+        };
+        assert_eq!(settle_unset_eq_band(set), set);
+    }
 
     const TEST_MAX: f32 = 65536.0;
 
