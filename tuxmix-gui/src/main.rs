@@ -89,6 +89,7 @@ Options:
   --fullscreen           start fullscreen
   --minimized            start hidden in the tray
   -h, --help             show this help
+  -V, --version          show the version
 
 The terminal UI is a separate binary: tuxmix-tui.
 ";
@@ -98,6 +99,10 @@ fn main() -> iced::Result {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("tuxmix {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let mock = args.iter().any(|a| a == "--mock");

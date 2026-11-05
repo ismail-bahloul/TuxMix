@@ -639,6 +639,7 @@ Options:
   --mock                 run the simulation instead of the hardware
   --backend alsa|usb     force a backend (default: auto)
   -h, --help             show this help
+  -V, --version          show the version
 ";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -646,6 +647,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("tuxmix-tui {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let mock = args.iter().any(|a| a == "--mock");
