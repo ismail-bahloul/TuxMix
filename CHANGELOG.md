@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.6 (2026-11-05)
 
 ### Added
 - Reset Mix, a menu beside the view tabs with the entries of TotalMix's
