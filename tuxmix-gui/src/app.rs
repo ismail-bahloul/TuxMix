@@ -4663,6 +4663,9 @@ fn page<'a>(body: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
 }
 
 fn top_bar(state: &TuxMix) -> Element<'_, Message> {
+    // Below this width the bar's natural width no longer fits beside the
+    // sidebar, and the Submix field would slide under it.
+    let compact = state.window_width < TOP_BAR_COMPACT_W * state.ui_scale;
     let scale = state.ui_scale;
 
     // The device identity chip (name + connected/simulated status) used
@@ -4703,25 +4706,31 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
     // no reason to keep two separate homes for one feature.
     // Flat fields, like everything else in the bar: this was the bar's
     // only boxed element (a `chip`), and read as dropped into the corner.
-    let session = row![
-        text("Submix")
-            .color(theme::TEXT_SEC)
-            .size(theme::TEXT_XS * scale),
-        pick_list(
-            OUT_LABELS.to_vec(),
-            Some(OUT_LABELS[state.sel_out]),
-            |label| {
-                let idx = OUT_LABELS.iter().position(|l| *l == label).unwrap_or(0);
-                Message::SelectOutput(idx)
-            },
-        )
-        .style(theme::pick_list)
-        .menu_style(theme::menu)
-        .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
-        .text_size(theme::TEXT_MD * scale),
-    ]
-    .spacing(theme::SPACE_SM * scale)
-    .align_y(iced::Alignment::Center);
+    let submix = pick_list(
+        OUT_LABELS.to_vec(),
+        Some(OUT_LABELS[state.sel_out]),
+        |label| {
+            let idx = OUT_LABELS.iter().position(|l| *l == label).unwrap_or(0);
+            Message::SelectOutput(idx)
+        },
+    )
+    .style(theme::pick_list)
+    .menu_style(theme::menu)
+    .padding([theme::SPACE_SM * scale, theme::SPACE_MD * scale])
+    .text_size(theme::TEXT_MD * scale);
+    let session: Element<'_, Message> = if compact {
+        submix.into()
+    } else {
+        row![
+            text("Submix")
+                .color(theme::TEXT_SEC)
+                .size(theme::TEXT_XS * scale),
+            submix,
+        ]
+        .spacing(theme::SPACE_SM * scale)
+        .align_y(iced::Alignment::Center)
+        .into()
+    };
 
     // The mark and the wordmark as one lockup, the same artwork the window
     // icon wears (see `icon::mark`), flat white like every other engaged
@@ -4730,18 +4739,23 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
     let brand_row: Element<'_, Message> = match crate::icon::mark() {
         Some((handle, ratio)) => {
             let mark_h = 20.0 * scale;
-            row![
-                iced::widget::image(handle)
-                    .width(mark_h * ratio)
-                    .height(mark_h)
-                    .filter_method(iced::widget::image::FilterMethod::Linear),
-                text("TuxMix")
-                    .color(theme::ACCENT)
-                    .size(theme::TEXT_XL * scale),
-            ]
-            .spacing(theme::SPACE_SM * scale)
-            .align_y(iced::Alignment::Center)
-            .into()
+            let mark = iced::widget::image(handle)
+                .width(mark_h * ratio)
+                .height(mark_h)
+                .filter_method(iced::widget::image::FilterMethod::Linear);
+            if compact {
+                mark.into()
+            } else {
+                row![
+                    mark,
+                    text("TuxMix")
+                        .color(theme::ACCENT)
+                        .size(theme::TEXT_XL * scale),
+                ]
+                .spacing(theme::SPACE_SM * scale)
+                .align_y(iced::Alignment::Center)
+                .into()
+            }
         }
         None => text("TuxMix")
             .color(theme::ACCENT)
@@ -5060,6 +5074,8 @@ fn apply_pending_resize(state: &mut TuxMix) {
 /// round number rather than a measured one, and it kept a window that fits
 /// everything at 80 % from being any smaller.
 pub(crate) const MIN_WINDOW: (f32, f32) = (640.0, 420.0);
+/// See `top_bar`: in window pixels at a UI scale of 1.0.
+const TOP_BAR_COMPACT_W: f32 = 1000.0;
 
 /// Whether, in a window `w` wide, the sidebar would leave the widest strip
 /// row less room than it needs at the current zoom (the sidebar then folds
