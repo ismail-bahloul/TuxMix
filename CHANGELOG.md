@@ -7,6 +7,8 @@
   instead of leaving the bottom of a tall window empty. They stop at twice
   their base length, and keep their base length (the page scrolls) when the
   rows do not fit.
+- The T, Ø, settings and EQ buttons beside each fader are larger
+  (18 x 20 px at 100 %, from 15 x 14), with larger labels.
 
 ## 0.3.6 (2026-11-05)
 
