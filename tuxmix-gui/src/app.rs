@@ -6350,11 +6350,19 @@ fn mixer_body(state: &TuxMix, height: f32) -> Element<'_, Message> {
         let room_width = main_width + theme::SPACE_MD + buttons_w;
         let gap = theme::SPACE_XXL * scale;
         let row_width = out_width + gap + room_width;
+        // When the row fits, the outputs take the free width, so the Control
+        // Room sits against the mixer's right edge, by the sidebar, as in
+        // TotalMix FX. When it scrolls, there is no free width to take.
+        let outputs_width = if row_width <= available_width {
+            Length::Fill
+        } else {
+            Length::Fixed(out_width)
+        };
         responsive_row(
             row![
                 column![section_header("HARDWARE OUTPUTS", scale), out_strips]
                     .spacing(theme::SPACE_LG)
-                    .width(Length::Fixed(out_width)),
+                    .width(outputs_width),
                 column![
                     section_header("CONTROL ROOM", scale),
                     row![main_strips, control_room_buttons(state, buttons_w)]
@@ -6399,7 +6407,10 @@ fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
         .padding([theme::SPACE_SM * scale, 0.0])
         .width(Length::Fill)
     };
-    column![
+    // A card as tall as the Main strip beside it, like TotalMix's Control
+    // Room column: the monitoring buttons at the top, Store (which only
+    // sets what Recall goes back to) apart at the bottom.
+    let monitoring = column![
         cell("dim")
             .style(theme::toggle_button(
                 state.device.settings().dim,
@@ -6409,12 +6420,23 @@ fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
         cell("recall")
             .style(theme::toggle_button(false, theme::ACCENT))
             .on_press_maybe(state.main_recall.map(|_| Message::RecallMain)),
-        cell("store")
-            .style(theme::toggle_button(false, theme::ACCENT))
-            .on_press(Message::StoreRecall),
     ]
-    .spacing(theme::SPACE_SM * scale)
+    .spacing(theme::SPACE_SM * scale);
+    let store = cell("store")
+        .style(theme::toggle_button(false, theme::ACCENT))
+        .on_press(Message::StoreRecall);
+    container(
+        column![
+            monitoring,
+            iced::widget::Space::new().height(Length::Fill),
+            store
+        ]
+        .height(Length::Fill),
+    )
+    .padding(theme::SPACE_SM * scale)
     .width(Length::Fixed(width))
+    .height(Length::Fill)
+    .style(theme::panel)
     .into()
 }
 

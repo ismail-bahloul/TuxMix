@@ -9,6 +9,9 @@
   rows do not fit.
 - The T, Ø, settings and EQ buttons beside each fader are larger
   (18 x 20 px at 100 %, from 15 x 14), with larger labels.
+- The Control Room sits against the mixer's right edge, by the sidebar, and
+  its buttons in a card as tall as the Main strip, Dim and Recall at the top
+  and Store apart at the bottom, as in TotalMix FX.
 
 ## 0.3.6 (2026-11-05)
 
