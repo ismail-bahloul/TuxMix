@@ -21,7 +21,7 @@ use crate::widgets::knob::{knob, Knob};
 /// in a strip is one of these times `StripParams::scale`, so the window's
 /// adaptive scale (see `app::recompute_ui_scale`) resizes strips the same
 /// way it resizes text.
-const FADER_H: f32 = 170.0;
+pub(crate) const FADER_H: f32 = 170.0;
 /// Widened from the original 80 — with `Fader::layout_x` centering a
 /// `[track][ruler][meter]` group inside the fader canvas *and* a side
 /// icon column (gear/EQ/collapse, see `full_strip`) claiming space in
@@ -241,6 +241,12 @@ pub struct StripParams<'a> {
     /// Off in the Quick view, whose two strips are meant to be large.
     pub can_collapse: bool,
     pub scale: f32,
+    /// Extra fader height in pixels, on top of `FADER_H * scale`. The
+    /// mixer view sets it so the strips fill the window's height, as
+    /// TotalMix's do, instead of leaving the bottom of a tall window empty.
+    /// A collapsed strip's meter takes the same extra, so it still runs
+    /// level with its neighbours' faders.
+    pub fader_extra: f32,
     pub selected: bool,
     pub hovered: bool,
 }
@@ -492,7 +498,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     .height(Length::Fixed(TOP_BAND_H * scale + 2.0 * theme::SPACE_HAIRLINE));
     let meter = container(vu_meter(
         p.meter,
-        FADER_H * scale,
+        FADER_H * scale + p.fader_extra,
         scale,
         p.meter_available,
         p.clip,
@@ -717,7 +723,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // that failure mode doesn't apply and Gain moved in with the rest.
 
     let default_vol = p.default_vol;
-    let fader_h = FADER_H * scale;
+    let fader_h = FADER_H * scale + p.fader_extra;
     let fader_widget = fader(Fader {
         value: p.vol,
         range: p.drag_range.unwrap_or((0.0, 2.0)),
