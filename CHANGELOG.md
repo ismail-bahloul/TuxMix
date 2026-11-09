@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.7 (2026-11-09)
 
 ### Added
 - A Control Room section against the mixer's right edge, by the sidebar, as
