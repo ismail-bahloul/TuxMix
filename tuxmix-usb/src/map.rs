@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Address map of the RME Babyface Pro FS proprietary protocol.
 //!
 //! All addresses were reverse-engineered from USB captures of TotalMix FX

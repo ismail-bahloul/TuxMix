@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! libusb-backed device driver (feature `driver`).
 //!
 //! Opens the Babyface Pro FS, sends the vendor-control requests and

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! A single channel strip: label + type tag, mute/solo, 48V/PAD, fader+VU,
 //! dB readout (double-click to edit), pan readout.
 
@@ -18,7 +21,7 @@ use crate::widgets::knob::{knob, Knob};
 /// in a strip is one of these times `StripParams::scale`, so the window's
 /// adaptive scale (see `app::recompute_ui_scale`) resizes strips the same
 /// way it resizes text.
-const FADER_H: f32 = 170.0;
+pub(crate) const FADER_H: f32 = 170.0;
 /// Widened from the original 80 — with `Fader::layout_x` centering a
 /// `[track][ruler][meter]` group inside the fader canvas *and* a side
 /// icon column (gear/EQ/collapse, see `full_strip`) claiming space in
@@ -72,6 +75,14 @@ pub(crate) const COLLAPSED_W: f32 = 44.0;
 /// (see `full_strip`), which doesn't have much width to spare either.
 const ICON_BTN_W: f32 = 15.0;
 const ICON_BTN_H: f32 = 14.0;
+
+/// The T / Ø / gear / EQ column beside the fader. Larger than the collapse
+/// pill (`ICON_BTN_W` x `ICON_BTN_H`): these open panels and are clicked
+/// often, and at 15 x 14 they were small targets next to TotalMix's. Wider
+/// only by what `STRIP_W`'s headroom allows, so the meter and ruler beside
+/// them keep their room; the extra size goes into the height.
+const SIDE_BTN_W: f32 = 18.0;
+const SIDE_BTN_H: f32 = 20.0;
 
 /// Width (at `scale == 1.0`) of the Route flyout `app.rs` opens over a
 /// strip's right neighbor — `pub(crate)` because `app.rs` needs it to
@@ -238,6 +249,12 @@ pub struct StripParams<'a> {
     /// Off in the Quick view, whose two strips are meant to be large.
     pub can_collapse: bool,
     pub scale: f32,
+    /// Extra fader height in pixels, on top of `FADER_H * scale`. The
+    /// mixer view sets it so the strips fill the window's height, as
+    /// TotalMix's do, instead of leaving the bottom of a tall window empty.
+    /// A collapsed strip's meter takes the same extra, so it still runs
+    /// level with its neighbours' faders.
+    pub fader_extra: f32,
     pub selected: bool,
     pub hovered: bool,
 }
@@ -489,7 +506,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     .height(Length::Fixed(TOP_BAND_H * scale + 2.0 * theme::SPACE_HAIRLINE));
     let meter = container(vu_meter(
         p.meter,
-        FADER_H * scale,
+        FADER_H * scale + p.fader_extra,
         scale,
         p.meter_available,
         p.clip,
@@ -714,7 +731,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // that failure mode doesn't apply and Gain moved in with the rest.
 
     let default_vol = p.default_vol;
-    let fader_h = FADER_H * scale;
+    let fader_h = FADER_H * scale + p.fader_extra;
     let fader_widget = fader(Fader {
         value: p.vol,
         range: p.drag_range.unwrap_or((0.0, 2.0)),
@@ -731,15 +748,15 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         show_meter: true,
         // The icon column (`icon_col`, built below) is this canvas's
         // `row!` sibling — same width regardless of how many buttons it
-        // holds (T/gear/EQ all share `ICON_BTN_W`), plus the row's own
+        // holds (T/gear/EQ all share `SIDE_BTN_W`), plus the row's own
         // spacing between them. See `Fader::reserved_right`'s own doc
         // comment for why the canvas needs to know this at all.
-        // `ICON_BTN_W` scales with the strip (every icon button's width
+        // `SIDE_BTN_W` scales with the strip (every icon button's width
         // does), but the row's own `.spacing(theme::SPACE_TIGHT)` below
         // — like several other spacings in this file — doesn't scale;
         // matching that exactly (not just approximately) is the point,
         // since this value feeds a pixel-level centering fix.
-        reserved_right: ICON_BTN_W * scale + theme::SPACE_TIGHT,
+        reserved_right: SIDE_BTN_W * scale + theme::SPACE_TIGHT,
         modifiers: p.modifiers,
         scale,
         show_track: true,
@@ -763,7 +780,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // it — the user caught this directly). `STRIP_W` was widened (see
     // its own doc comment) specifically so this column has room without
     // pushing the meter/ruler group past the fader canvas's own bounds.
-    let mut icon_col = column![].spacing(theme::SPACE_TIGHT).align_x(iced::Alignment::Center);
+    let mut icon_col = column![].spacing(theme::SPACE_SM * scale).align_x(iced::Alignment::Center);
     // Trim ("T") sits above the gear icon — every hardware input has one
     // (confirmed via the reference: ADAT/AS strips show "T" same as the
     // analog ones, unlike Gain which only exists on Mic/Instrument), but
@@ -777,10 +794,10 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     if p.has_trim && p.protocol_features {
         let trim_open = p.open_flyout == Some(FlyoutKind::Trim);
         icon_col = icon_col.push(hint(
-            button(centered_label("T", theme::TEXT_MICRO * scale))
+            button(centered_label("T", theme::TEXT_XS * scale))
                 .padding(0)
-                .width(ICON_BTN_W * scale)
-                .height(ICON_BTN_H * scale)
+                .width(SIDE_BTN_W * scale)
+                .height(SIDE_BTN_H * scale)
                 // Lights up whenever trim is off unity too, not just
                 // while its flyout is open — same "shows live state at a
                 // glance" idea as the EQ trigger's own `eq_open ||
@@ -793,10 +810,10 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     }
     if p.has_phase && p.protocol_features {
         icon_col = icon_col.push(hint(
-            button(centered_label("Ø", theme::TEXT_MICRO * scale))
+            button(centered_label("Ø", theme::TEXT_XS * scale))
                 .padding(0)
-                .width(ICON_BTN_W * scale)
-                .height(ICON_BTN_H * scale)
+                .width(SIDE_BTN_W * scale)
+                .height(SIDE_BTN_H * scale)
                 .style(theme::toggle_button(p.phase, theme::ACCENT))
                 .on_press(Message::PhaseChanged(cid, !p.phase)),
             "Phase Ø invert",
@@ -810,10 +827,10 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     if has_settings {
         let settings_open = p.open_flyout == Some(FlyoutKind::Settings);
         icon_col = icon_col.push(hint(
-            button(centered_label("⚙", theme::TEXT_MICRO * scale))
+            button(centered_label("⚙", theme::TEXT_XS * scale))
                 .padding(0)
-                .width(ICON_BTN_W * scale)
-                .height(ICON_BTN_H * scale)
+                .width(SIDE_BTN_W * scale)
+                .height(SIDE_BTN_H * scale)
                 .style(theme::toggle_button(settings_open, theme::ACCENT))
                 .on_press(Message::ToggleFlyout(cid, FlyoutKind::Settings)),
             if settings_open { "Hide settings" } else { "Show settings (48V/PAD/Sensitivity)" },
@@ -823,10 +840,10 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     if p.has_eq && p.protocol_features {
         let eq_open = p.open_flyout == Some(FlyoutKind::Eq);
         icon_col = icon_col.push(hint(
-            button(centered_label("EQ", theme::TEXT_MICRO * scale))
+            button(centered_label("EQ", theme::TEXT_XS * scale))
                 .padding(0)
-                .width(ICON_BTN_W * scale)
-                .height(ICON_BTN_H * scale)
+                .width(SIDE_BTN_W * scale)
+                .height(SIDE_BTN_H * scale)
                 .style(theme::toggle_button(eq_open || p.eq_enabled, theme::ACCENT))
                 .on_press(Message::ToggleFlyout(cid, FlyoutKind::Eq)),
             if eq_open { "Hide EQ" } else { "Show EQ (3-band + low cut)" },

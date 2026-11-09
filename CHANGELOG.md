@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- A Control Room section against the mixer's right edge, by the sidebar, as
+  in TotalMix FX on this unit: PH3/4 becomes Main, beside a card of Dim and
+  Recall, with Store apart at the bottom. Recall is host-side, as in
+  TotalMix, and lasts until the app closes. Mono, Ext. Input, Mute FX and
+  Talkback are left out: they write nothing over USB.
+
+### Changed
+- Every source file now carries an `SPDX-License-Identifier` and the
+  copyright line, so attribution survives a fork or a vendored copy.
+- `tools/alsa` is GPL-3.0-or-later rather than MIT: the plugin it builds links
+  `tuxmix-sys` (GPL-3.0), so the binary it installs was already a GPL-3.0
+  work. The rest of the tools stay MIT.
+- [`TRADEMARK.md`](TRADEMARK.md) states the naming policy that applies to
+  forks.
+- The Mixer's faders grow to fill the window's height, as in TotalMix FX,
+  instead of leaving the bottom of a tall window empty. They stop at twice
+  their base length, and keep their base length (the page scrolls) when the
+  rows do not fit.
+- The T, Ø, settings and EQ buttons beside each fader are larger
+  (18 x 20 px at 100 %, from 15 x 14), with larger labels.
+
 ## 0.3.6 (2026-11-05)
 
 ### Added

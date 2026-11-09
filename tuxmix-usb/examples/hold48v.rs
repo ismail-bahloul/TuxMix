@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Diagnostic: turn 48V on, then keep the device open and poll status for
 //! 15s, to check whether phantom power holds while the handle stays open
 //! vs reverting once the process (and its USB handle) closes.

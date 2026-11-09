@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Follow the kernel driver's state the way the GUI does.
 //!
 //! Opens the Babyface Pro through the ALSA backend, calls `poll_events`

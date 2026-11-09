@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! C ABI for the TuxMix Babyface Pro FS proprietary-mode audio driver.
 //!
 //! The ALSA plugin (`tools/alsa/pcm_tuxmix.c`) links against this

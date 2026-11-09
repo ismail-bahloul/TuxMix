@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 use thiserror::Error;
 
 /// Errors that can occur during device discovery or control.

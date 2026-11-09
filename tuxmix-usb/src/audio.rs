@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! High-level real-audio API on top of the interrupt streams
 //! (interface 5, ep 0x01/0x82 — see `device::stream`).
 //!

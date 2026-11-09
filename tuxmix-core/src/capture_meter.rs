@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Fallback for real-time input level metering when PipeWire is not
 //! running: open the card's own capture PCM directly and compute peaks
 //! host-side from the actual audio. The normal path is `pw_meter`'s input

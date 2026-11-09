@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Matrix (submix) view — TotalMix's own crosspoint grid: every input/
 //! playback *channel* (not pair) as a row, every hardware output
 //! *channel* (not pair) as a column, one small numeric dB cell per

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! `tuxmix-usb` — proprietary USB protocol backend for the RME Babyface Pro FS.
 //!
 //! This crate implements the vendor-control protocol that TotalMix FX

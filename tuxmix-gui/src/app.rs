@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 use iced::futures::channel::mpsc;
 use iced::keyboard::{self, Key};
 use iced::widget::{
@@ -30,6 +33,10 @@ use tuxmix_core::pw_clock::{self, CardStream, PwClock};
 use tuxmix_core::pw_meter;
 
 pub const OUT_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "ADAT3/4", "ADAT5/6", "ADAT7/8"];
+
+/// The output pair the Control Room shows as Main: PH3/4, the one the unit's
+/// DIM acts on and the one TotalMix's Main is assigned to in our captures.
+const MAIN_PAIR: usize = 1;
 
 /// The entries of TotalMix's Options > Reset Mix that apply to this device.
 /// The list follows jspx-projects' `TUXMIX-SPEC.md` (tuxmix-fireface), minus
@@ -798,7 +805,7 @@ pub enum Message {
     /// intervening deselect on the first press).
     StripClicked(ChannelId),
     /// Plain click on genuinely empty page background clears the
-    /// selection — see `page()`.
+    /// selection — see `page_frame()`.
     ClearSelection,
     /// The cursor just entered (`Some`) or left (`None`) a strip's card —
     /// drives the hover border/glow. See `TuxMix::hovered_strip`.
@@ -863,6 +870,10 @@ pub enum Message {
     DimToggle,
     /// One entry of TotalMix's Options > Reset Mix, see `ResetMix`.
     ResetMix(ResetMix),
+    /// Control Room: remembers the Main volume for `RecallMain`.
+    StoreRecall,
+    /// Control Room: puts the Main volume back to the stored one.
+    RecallMain,
     /// Recalls "Mix `u8`" (1-8) and marks it as the slot `SnapshotStore`
     /// will save into.
     SnapshotClicked(u8),
@@ -1014,6 +1025,9 @@ pub struct TuxMix {
     /// own layout instead of overlaying it. Opens/closes instantly, no
     /// width tween — unlike `collapse_anim`, this isn't animated.
     pub flyout_open: HashSet<(ChannelId, strip::FlyoutKind)>,
+    /// The Main volume stored for Recall. Host-side, as in TotalMix: the
+    /// unit has no register for it (`PROTOCOL.md`, cap_dim.pcap).
+    pub main_recall: Option<f32>,
     /// Manual UI zoom for the mixer/matrix views — every text size and
     /// widget dimension there is multiplied by this. Changed only by
     /// `ZoomIn`/`ZoomOut`/`ZoomReset`/Ctrl+molette (`zoom`); it is NOT tied
@@ -1471,6 +1485,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         eq_low_cut_memory: HashMap::new(),
         collapse_anim: HashMap::new(),
         flyout_open: HashSet::new(),
+        main_recall: None,
         ui_scale: theme::SCALE_DEFAULT,
         fullscreen: false,
         // Matches `window::Settings::size` in main.rs — updated for real
@@ -2184,6 +2199,7 @@ fn is_undoable(message: &Message) -> bool {
     !matches!(
         message,
         Message::Tick
+            | Message::StoreRecall
             | Message::SetView(_)
             | Message::QuickChannelSelected(_)
             | Message::SelectOutput(_)
@@ -3355,6 +3371,21 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::ResetMix(kind) => apply_reset_mix(state, kind),
+        Message::StoreRecall => {
+            state.main_recall = state
+                .device
+                .outputs()
+                .get(MAIN_PAIR * 2)
+                .map(|out| out.volume);
+        }
+        Message::RecallMain => {
+            if let Some(volume) = state.main_recall {
+                return update(
+                    state,
+                    Message::VolumeChanged(ChannelId::Output(MAIN_PAIR * 2), 0, volume),
+                );
+            }
+        }
         Message::DimToggle => {
             let on = !state.device.settings().dim;
             if let Err(e) = state.device.set_dim(on) {
@@ -3757,8 +3788,8 @@ pub fn view(state: &TuxMix, _window: window::Id) -> Element<'_, Message> {
     // the raw window clear color visually fills the gap identically to
     // our own background (same near-black), making a real empty area
     // indistinguishable on screen from a genuinely non-interactive one.
-    // That's what made `page()`'s click-to-clear-selection silently miss
-    // every click below the shortest section's natural content height.
+    // That's what made `page_frame()`'s click-to-clear-selection silently
+    // miss every click below the shortest section's natural content height.
     // The sidebar runs the window's full height; the top bar, banner,
     // view and OSC drawer stack in the column beside it. (The bar used to
     // span the whole window above both, which left its right-hand tools
@@ -4642,21 +4673,26 @@ fn section_header(label: &str, scale: f32) -> Element<'_, Message> {
     .into()
 }
 
-/// Wraps a view's body in the root background, filling the window, with a
-/// vertical scrollbar for when the stacked sections (or the matrix grid)
-/// don't fit the window height.
-fn page<'a>(body: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
-    mouse_area(
-        container(
-            scrollable(body)
-                .direction(scrollable::Direction::Vertical(theme::thin_scrollbar()))
-                .width(Length::Fill)
-                .style(theme::scrollable),
-        )
-        .style(theme::root)
-        .padding([theme::SPACE_LG, theme::SPACE_XL])
+/// A page's vertical scrollbar, for when the stacked sections don't fit
+/// the window height. The Mixer puts a `responsive` between this and
+/// `page_frame`, to size its faders to the height it is given.
+fn page_scroll<'a>(body: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    scrollable(body)
+        .direction(scrollable::Direction::Vertical(theme::thin_scrollbar()))
         .width(Length::Fill)
-        .height(Length::Fill),
+        .style(theme::scrollable)
+        .into()
+}
+
+/// A page's frame: the root background and padding, filling the window,
+/// and the click on empty space that clears the selection.
+fn page_frame<'a>(content: impl Into<Element<'a, Message>>) -> Element<'a, Message> {
+    mouse_area(
+        container(content)
+            .style(theme::root)
+            .padding([theme::SPACE_LG, theme::SPACE_XL])
+            .width(Length::Fill)
+            .height(Length::Fill),
     )
     .on_press(Message::ClearSelection)
     .into()
@@ -4937,6 +4973,7 @@ fn strip_params<'a>(
         collapse_anim: state.collapse_anim.get(&cid).copied(),
         can_collapse: true,
         scale: state.ui_scale,
+        fader_extra: 0.0,
         selected: state.selected.contains(&cid),
         hovered: state.hovered_strip == Some(cid),
     };
@@ -5885,7 +5922,133 @@ fn with_flyout<'a>(
     .into()
 }
 
+/// The Mixer view. The body is laid out inside a `responsive`, so it knows
+/// the height the page gives it and can stretch the faders to fill it
+/// (`mixer_fader_extra`).
 fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
+    page_frame(iced::widget::responsive(move |size| {
+        page_scroll(mixer_body(state, size.height))
+    }))
+}
+
+/// A full strip card's height at scale 1 with the base `FADER_H` fader,
+/// measured on screen (the card is the sum of many small rows, several of
+/// them text, so it is not derived on paper). Only used to work out how
+/// much room is left for the faders: erring high leaves a few pixels
+/// unused, erring low would make the page scroll.
+const STRIP_CARD_H: f32 = 318.0;
+/// A section header's height at scale 1 (`section_header`).
+const SECTION_HEADER_H: f32 = 18.0;
+/// The submix hint's height at scale 1 (`TEXT_XS` on one line).
+const SUBMIX_HINT_H: f32 = 14.0;
+/// Room kept free under each row for a horizontal scrollbar, when a row
+/// is wider than the window.
+const ROW_SLACK: f32 = 8.0;
+/// The tallest a fader grows, as a multiple of its base height: past this
+/// a very tall window gets a long fader for no gain in resolution.
+const FADER_STRETCH_MAX: f32 = 2.0;
+
+/// Extra fader height (pixels) that makes `rows` rows of strips fill
+/// `height`, the page's inner height. Zero when they already do not fit,
+/// in which case the page scrolls as before.
+fn mixer_fader_extra(height: f32, rows: usize, scale: f32) -> f32 {
+    let rows_f = rows as f32;
+    // Each row has a header and the gap under it; the first one also has
+    // the submix hint and its gap; the sections are one gap apart.
+    let chrome = rows_f * (SECTION_HEADER_H * scale + theme::SPACE_LG)
+        + SUBMIX_HINT_H * scale
+        + theme::SPACE_LG
+        + (rows_f - 1.0) * theme::SPACE_LG;
+    let strips = rows_f * (STRIP_CARD_H * scale + ROW_SLACK);
+    let spare = (height - chrome - strips) / rows_f;
+    spare.clamp(0.0, strip::FADER_H * scale * (FADER_STRETCH_MAX - 1.0))
+}
+
+/// The width an open Settings, EQ or Trim panel adds beside a strip in the
+/// Mixer (the panel and the gap before it), or 0 with none open. These
+/// panels push the row rather than overlaying it (see `with_flyout`).
+fn pushed_panel_width(state: &TuxMix, cid: ChannelId) -> f32 {
+    let open = |kind| state.flyout_open.contains(&(cid, kind));
+    let panel = if open(strip::FlyoutKind::Settings) {
+        // Same width as the strip itself (see the reference design).
+        strip::full_width(cid) * state.ui_scale
+    } else if !matches!(cid, ChannelId::Input(_)) {
+        // Only inputs have EQ and Trim panels.
+        return 0.0;
+    } else if open(strip::FlyoutKind::Eq) {
+        strip::EQ_FLYOUT_W * state.ui_scale
+    } else if open(strip::FlyoutKind::Trim) {
+        strip::FLYOUT_W
+    } else {
+        return 0.0;
+    };
+    panel + theme::SPACE_MD
+}
+
+/// The channels a row of strips shows: one per linked pair, both of a
+/// split one.
+fn shown_channels(
+    pairs: usize,
+    linked: impl Fn(usize) -> bool,
+    id: impl Fn(usize) -> ChannelId,
+) -> Vec<ChannelId> {
+    (0..pairs)
+        .flat_map(|pair| {
+            let n = if linked(pair) { 1 } else { 2 };
+            (0..n).map(move |side| pair * 2 + side)
+        })
+        .map(id)
+        .collect()
+}
+
+/// A row's on-screen width: its strips, their open panels and the gaps.
+fn strips_row_width(state: &TuxMix, cids: &[ChannelId]) -> f32 {
+    let content: f32 = cids
+        .iter()
+        .map(|&cid| rendered_strip_width(state, cid) + pushed_panel_width(state, cid))
+        .sum();
+    content + cids.len().saturating_sub(1) as f32 * theme::SPACE_MD
+}
+
+fn mixer_body(state: &TuxMix, height: f32) -> Element<'_, Message> {
+    // Whether inputs and playbacks share a row decides how many rows the
+    // height is shared between, so it is worked out first, from the
+    // widths alone (they do not depend on the fader height).
+    let scale = state.ui_scale;
+    let input_cids = shown_channels(
+        state.device.inputs().len() / 2,
+        |p| state.device.input_pair_linked(p),
+        ChannelId::Input,
+    );
+    let pb_cids = shown_channels(
+        state.device.playbacks().len() / 2,
+        |p| state.device.playback_linked(p),
+        ChannelId::Playback,
+    );
+    // `page_frame`'s own horizontal padding, plus a small safety margin so a
+    // borderline-fitting row biases toward scrolling instead of clipping.
+    // The sidebar's width comes off too: the mixer only gets what is left
+    // of the window beside it (this used to measure against the whole
+    // window, so a row could overflow under the sidebar without ever
+    // switching to its scrolling form).
+    let sidebar_w = sidebar_px(state);
+    let available_width = (state.window_width - sidebar_w - 2.0 * theme::SPACE_XL - 4.0).max(0.0);
+    let side_gap = theme::SPACE_XXL * scale;
+    let side_by_side_width =
+        strips_row_width(state, &input_cids) + side_gap + strips_row_width(state, &pb_cids);
+    // TotalMix's "2 Row" (Options panel): inputs and playbacks side by
+    // side, outputs underneath. Always honored once chosen: when the two
+    // blocks are wider than the window, the top row scrolls sideways like
+    // any other over-wide strip row. (It used to fall back to the stacked
+    // layout instead, so on a narrower window the switch lit up and
+    // nothing changed.)
+    let two_rows = match state.row_mode {
+        RowMode::Two => true,
+        RowMode::Three => false,
+        RowMode::Auto => side_by_side_width <= available_width,
+    };
+    let fader_extra = mixer_fader_extra(height, if two_rows { 2 } else { 3 }, scale);
+
     // Grouped by pair, TotalMix-style: a linked pair (the default) shows
     // as ONE strip driving both channels; a split pair shows its two
     // channels independently — see `RmeDevice::input_pair_linked`. Pairs
@@ -5918,6 +6081,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
         for &ch_idx in shown {
             let cid = ChannelId::Input(ch_idx);
             let mut params = strip_params(state, cid, state.sel_out);
+            params.fader_extra = fader_extra;
             if linked {
                 // Combined "AN1/2"-style label for the linked bus. EQ
                 // (idx < 4 only) still only reaches this representative
@@ -6016,6 +6180,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
         for &ch_idx in shown {
             let cid = ChannelId::Playback(ch_idx);
             let mut params = strip_params(state, cid, state.sel_out);
+            params.fader_extra = fader_extra;
             if linked {
                 if let Some(right) = state.device.playbacks().get(l + 1) {
                     params.name = pair_bus_label(&params.name, &right.name);
@@ -6060,7 +6225,14 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
     let mut out_strips = row![].spacing(theme::SPACE_MD);
     let mut out_width = 0.0f32;
     let mut out_item_count = 0usize;
+    // Only with the RME protocol: Dim needs it, and without Dim and with no
+    // other control beside it the section would just rename an output.
+    let control_room = state.device.protocol_features();
+    let mut main_strips = row![].spacing(theme::SPACE_MD);
+    let mut main_width = 0.0f32;
+    let mut main_item_count = 0usize;
     for pair in 0..state.device.output_pair_count() {
+        let is_main = control_room && pair == MAIN_PAIR;
         let l = pair * 2;
         let linked = state.device.output_linked(pair);
         let pair_channels = [l, l + 1];
@@ -6072,6 +6244,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
         for &ch_idx in shown {
             let cid = ChannelId::Output(ch_idx);
             let mut params = strip_params(state, cid, state.sel_out);
+            params.fader_extra = fader_extra;
             if linked {
                 if let Some(right) = state.device.outputs().get(l + 1) {
                     params.name = pair_bus_label(&params.name, &right.name);
@@ -6079,6 +6252,9 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 params.meter2 = state.output_meters.get(l + 1).map(MeterAnim::frame);
                 params.clip2 = state.output_meters.get(l + 1).is_some_and(|m| m.clipped);
                 params.meter2_available = output_meter_available(state, l + 1);
+                if is_main {
+                    params.name = "Main".to_string();
+                }
             }
             let strip_widget = strip::strip(finish_params(state, params));
             let mut item_width = rendered_strip_width(state, cid);
@@ -6087,30 +6263,30 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
                 .contains(&(cid, strip::FlyoutKind::Settings))
             {
                 let panel_w = strip::full_width(cid) * state.ui_scale;
-                out_strips = out_strips.push(strip_with_panel(
-                    strip_widget,
-                    settings_popover(state, cid, panel_w, state.ui_scale),
-                ));
+                let panel = settings_popover(state, cid, panel_w, state.ui_scale);
                 item_width += panel_w + theme::SPACE_MD;
+                if is_main {
+                    main_strips = main_strips.push(strip_with_panel(strip_widget, panel));
+                } else {
+                    out_strips = out_strips.push(strip_with_panel(strip_widget, panel));
+                }
+            } else if is_main {
+                main_strips = main_strips.push(strip_widget);
             } else {
                 out_strips = out_strips.push(strip_widget);
             }
-            out_width += item_width;
-            out_item_count += 1;
+            if is_main {
+                main_width += item_width;
+                main_item_count += 1;
+            } else {
+                out_width += item_width;
+                out_item_count += 1;
+            }
         }
     }
     out_width += out_item_count.saturating_sub(1) as f32 * theme::SPACE_MD;
+    main_width += main_item_count.saturating_sub(1) as f32 * theme::SPACE_MD;
 
-    // `page()`'s own horizontal padding, plus a small safety margin so a
-    // borderline-fitting row biases toward scrolling instead of clipping.
-    // The sidebar's width comes off too: the mixer only gets what is left
-    // of the window beside it (this used to measure against the whole
-    // window, so a row could overflow under the sidebar without ever
-    // switching to its scrolling form).
-    let sidebar_w = sidebar_px(state);
-    let available_width = (state.window_width - sidebar_w - 2.0 * theme::SPACE_XL - 4.0).max(0.0);
-
-    let scale = state.ui_scale;
     let submix_hint = || {
         text(format!(
             "Submix: {} \u{00b7} Tab for Matrix",
@@ -6118,19 +6294,6 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
         ))
         .color(theme::TEXT_SEC)
         .size(theme::TEXT_XS * scale)
-    };
-    // TotalMix's "2 Row" (Options panel): inputs and playbacks side by
-    // side, outputs underneath. Always honored once chosen: when the two
-    // blocks are wider than the window, the top row scrolls sideways like
-    // any other over-wide strip row. (It used to fall back to the stacked
-    // layout instead, so on a narrower window the switch lit up and
-    // nothing changed.)
-    let side_gap = theme::SPACE_XXL * scale;
-    let side_by_side_width = input_width + side_gap + pb_width;
-    let two_rows = match state.row_mode {
-        RowMode::Two => true,
-        RowMode::Three => false,
-        RowMode::Auto => side_by_side_width <= available_width,
     };
     let sources: Element<'_, Message> = if two_rows {
         let side_by_side = row![
@@ -6182,15 +6345,99 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
         .spacing(theme::SPACE_LG)
         .into()
     };
-    let body = column![
-        sources,
-        section_header("HARDWARE OUTPUTS", scale),
-        responsive_row(out_strips.into(), out_width, available_width),
-    ]
-    .spacing(theme::SPACE_LG)
-    .width(Length::Fill);
+    let outputs: Element<'_, Message> = if control_room {
+        let buttons_w = CONTROL_ROOM_BUTTONS_W * scale;
+        let room_width = main_width + theme::SPACE_MD + buttons_w;
+        let gap = theme::SPACE_XXL * scale;
+        let row_width = out_width + gap + room_width;
+        // When the row fits, the outputs take the free width, so the Control
+        // Room sits against the mixer's right edge, by the sidebar, as in
+        // TotalMix FX. When it scrolls, there is no free width to take.
+        let outputs_width = if row_width <= available_width {
+            Length::Fill
+        } else {
+            Length::Fixed(out_width)
+        };
+        responsive_row(
+            row![
+                column![section_header("HARDWARE OUTPUTS", scale), out_strips]
+                    .spacing(theme::SPACE_LG)
+                    .width(outputs_width),
+                column![
+                    section_header("CONTROL ROOM", scale),
+                    row![main_strips, control_room_buttons(state, buttons_w)]
+                        .spacing(theme::SPACE_MD),
+                ]
+                .spacing(theme::SPACE_LG)
+                .width(Length::Fixed(room_width)),
+            ]
+            .spacing(gap)
+            .into(),
+            row_width,
+            available_width,
+        )
+    } else {
+        column![
+            section_header("HARDWARE OUTPUTS", scale),
+            responsive_row(out_strips.into(), out_width, available_width),
+        ]
+        .spacing(theme::SPACE_LG)
+        .into()
+    };
+    let body = column![sources, outputs]
+        .spacing(theme::SPACE_LG)
+        .width(Length::Fill);
 
-    page(body)
+    body.into()
+}
+
+const CONTROL_ROOM_BUTTONS_W: f32 = 64.0;
+
+/// The buttons beside Main. Only what does something on this unit: TotalMix's
+/// Mono, Ext. Input, Mute FX and Talkback write nothing over USB, they are
+/// its own processing on the host (`PROTOCOL.md`, cap_ctrl3.pcap).
+fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
+    let scale = state.ui_scale;
+    let cell = move |label: &'static str| {
+        button(
+            container(text(label).size(theme::TEXT_XS * scale))
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+        )
+        .padding([theme::SPACE_SM * scale, 0.0])
+        .width(Length::Fill)
+    };
+    // A card as tall as the Main strip beside it, like TotalMix's Control
+    // Room column: the monitoring buttons at the top, Store (which only
+    // sets what Recall goes back to) apart at the bottom.
+    let monitoring = column![
+        cell("dim")
+            .style(theme::toggle_button(
+                state.device.settings().dim,
+                theme::ACCENT,
+            ))
+            .on_press(Message::DimToggle),
+        cell("recall")
+            .style(theme::toggle_button(false, theme::ACCENT))
+            .on_press_maybe(state.main_recall.map(|_| Message::RecallMain)),
+    ]
+    .spacing(theme::SPACE_SM * scale);
+    let store = cell("store")
+        .style(theme::toggle_button(false, theme::ACCENT))
+        .on_press(Message::StoreRecall);
+    container(
+        column![
+            monitoring,
+            iced::widget::Space::new().height(Length::Fill),
+            store
+        ]
+        .height(Length::Fill),
+    )
+    .padding(theme::SPACE_SM * scale)
+    .width(Length::Fixed(width))
+    .height(Length::Fill)
+    .style(theme::panel)
+    .into()
 }
 
 fn matrix_view(state: &TuxMix) -> Element<'_, Message> {
@@ -6215,8 +6462,9 @@ fn matrix_view(state: &TuxMix) -> Element<'_, Message> {
     .width(Length::Fill)
     .height(Length::Fill);
 
-    // Not `page()`: the grid scrolls inside itself, under a fixed header
-    // (see `matrix::view`), which a page-wide scrollable would defeat.
+    // Not `page_frame` + `page_scroll`: the grid scrolls inside itself,
+    // under a fixed header (see `matrix::view`), which a page-wide
+    // scrollable would defeat.
     mouse_area(
         container(body)
             .style(theme::root)
@@ -6521,8 +6769,8 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
 mod tests {
     use super::{
         any_channel_muted, any_channel_soloed, apply_pending_resize, apply_prefs, channel_is_muted,
-        channel_is_soloed, is_undoable, mute_armed, new, power_sum_output_meters, prefs_of,
-        route_popover_open, title, update, window, zoom, ChannelId, EditField, Message, MeterAnim,
+        channel_is_soloed, is_undoable, mixer_fader_extra, mute_armed, new,
+        power_sum_output_meters, prefs_of, route_popover_open, shown_channels, title, update, window, zoom, ChannelId, EditField, Message, MeterAnim,
         NoDevice, ResetMix, RowMode, TuxMix, View, LOW_CUT_ON_HZ, RESET_MIX, ZOOM_STEP,
     };
     use crate::sidebar;
@@ -7569,6 +7817,19 @@ mod tests {
     }
 
     #[test]
+    fn recall_does_nothing_until_a_volume_is_stored_then_brings_it_back() {
+        let mut state = new(true, None, None);
+        let main = ChannelId::Output(super::MAIN_PAIR * 2);
+        let _ = update(&mut state, Message::VolumeChanged(main, 0, 0.5));
+        let _ = update(&mut state, Message::RecallMain);
+        assert_eq!(state.device.outputs()[super::MAIN_PAIR * 2].volume, 0.5);
+        let _ = update(&mut state, Message::StoreRecall);
+        let _ = update(&mut state, Message::VolumeChanged(main, 0, 0.2));
+        let _ = update(&mut state, Message::RecallMain);
+        assert_eq!(state.device.outputs()[super::MAIN_PAIR * 2].volume, 0.5);
+    }
+
+    #[test]
     fn every_reset_mix_entry_is_undoable() {
         for kind in RESET_MIX {
             assert!(is_undoable(&Message::ResetMix(kind)), "{kind}");
@@ -8317,5 +8578,31 @@ mod tests {
         let _ = update(&mut state, Message::LayoutClicked(1));
         assert_eq!(state.active_layout, Some(1));
         assert!(state.collapsed.contains(&cid));
+    }
+
+    #[test]
+    fn mixer_faders_grow_into_spare_height_and_stop_at_the_cap() {
+        // Too short for the rows at their base size: nothing is added and
+        // the page scrolls as before.
+        assert_eq!(mixer_fader_extra(500.0, 2, 1.0), 0.0);
+        // 1080p, two rows: some room, under the cap.
+        let extra = mixer_fader_extra(1024.0, 2, 1.0);
+        assert!(extra > 0.0 && extra < strip::FADER_H, "{extra}");
+        // The same height shared between three rows gives each less.
+        assert!(mixer_fader_extra(1024.0, 3, 1.0) < extra);
+        // A very tall window stops at the cap.
+        assert_eq!(mixer_fader_extra(10_000.0, 2, 1.0), strip::FADER_H);
+        // Zooming in leaves less room to grow into.
+        assert!(mixer_fader_extra(1024.0, 2, 1.2) < extra);
+    }
+
+    #[test]
+    fn shown_channels_has_one_strip_per_linked_pair() {
+        let shown = shown_channels(3, |pair| pair != 1, ChannelId::Input);
+        assert_eq!(
+            shown,
+            [0, 2, 3, 4].map(ChannelId::Input).to_vec(),
+            "pair 1 is split, so both its channels show"
+        );
     }
 }

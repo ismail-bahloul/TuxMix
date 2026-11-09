@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Front-panel emulator — turns physical front-panel events into mixer
 //! actions, mirroring what TotalMix does on Windows.
 //!

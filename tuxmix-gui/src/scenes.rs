@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Scene (preset) file I/O — ported verbatim from v1.
 
 use std::path::PathBuf;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! One Matrix crosspoint: a gain cell, drawn and driven the way TotalMix's
 //! own Matrix is (docs.rme-audio.com, "The Matrix").
 //!

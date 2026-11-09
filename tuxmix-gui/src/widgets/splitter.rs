@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! A thin vertical drag strip: a splitter for the sidebar's inner edge.
 //!
 //! iced ships no splitter widget, and `mouse_area` can't stand in for one

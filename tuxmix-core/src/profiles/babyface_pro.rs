@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Babyface Pro FS device profile — channel topology and card
 //! detection, consumed by both [`crate::BabyfacePro`] (real hardware)
 //! and [`crate::MockBabyfacePro`] (simulation), so they can't drift

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! The About dialog: what the app is, which version of it is running, and
 //! which device it is driving. Opened from the brand lockup in the top bar
 //! (the mark + wordmark, see `app::top_bar`), it draws as a centered modal

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! OSC (Open Sound Control) control surface.
 //!
 //! Lets an external tool — a hardware controller, a script, a second UI —

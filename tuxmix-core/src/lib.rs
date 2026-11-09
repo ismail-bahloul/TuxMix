@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! `tuxmix-core` — Abstraction layer for RME audio interfaces on Linux.
 //!
 //! This crate provides a hardware-agnostic interface for controlling

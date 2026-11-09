@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Custom vertical fader + VU meter, drawn and driven entirely through a
 //! [`canvas::Program`] — the one widget egui's built-in slider couldn't give
 //! us (shift-drag fine range, scroll-wheel nudge, double-click reset).

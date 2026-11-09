@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 Ismaïl Bahloul
+
 //! Demo: print the vendor requests that set up a basic Babyface mix.
 //!
 //! No hardware needed — this shows the exact USB control transfers that
