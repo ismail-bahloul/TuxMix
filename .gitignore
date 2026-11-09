@@ -7,3 +7,9 @@ __pycache__/
 # Proprietary RME TotalMix FX screenshots — local visual reference for
 # the redesign, never to be committed.
 /Totalmix UI Screenshots/
+
+# What updpkgsums and makepkg download or build in these directories.
+/aur/*/*.tar.gz
+/aur/*/src/
+/aur/*/pkg/
+/aur/*/*.pkg.tar.*
