@@ -4593,7 +4593,7 @@ fn engine_section(state: &TuxMix, label_w: f32) -> Element<'_, Message> {
         row![caption("Buffer size"), quantum_pick]
             .spacing(theme::SPACE_MD * scale)
             .align_y(iced::Alignment::Center),
-        row![caption("Latency"), latency_readout(state, clock)]
+        row![caption("Buffer time"), latency_readout(state, clock)]
             .spacing(theme::SPACE_MD * scale)
             .align_y(iced::Alignment::Center),
     ]
