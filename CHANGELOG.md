@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- An input strip whose output pair has Loop on is tagged LOOP instead of its
+  type: its meter shows that output, not the input (#23).
+
 ## 0.3.7 (2026-11-09)
 
 ### Added

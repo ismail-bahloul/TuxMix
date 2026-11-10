@@ -132,6 +132,20 @@ pub fn type_tag(t: ChannelType) -> (&'static str, iced::Color) {
 /// don't just blend into the secondary-text gray everything else uses.
 pub const PB_TAG: iced::Color = iced::Color::from_rgb8(0x5f, 0xb3, 0xa8);
 pub const OUT_TAG: iced::Color = iced::Color::from_rgb8(0x7f, 0xbf, 0x8a);
+/// Tag of an input strip whose meter shows a looped-back output.
+pub const LOOP_TAG: iced::Color = iced::Color::from_rgb8(0xe0, 0x7a, 0x5f);
+
+/// Does input strip `i` meter an output bus instead of its input? With
+/// loopback on an output pair, the matching capture pair carries that
+/// output (see `capture_meter`), so the meter is not the input's level.
+fn input_meter_looped(state: &TuxMix, i: usize) -> bool {
+    state.device.has_input_meter(i)
+        && state
+            .device
+            .outputs()
+            .get(i / 2 * 2)
+            .is_some_and(|o| o.loopback)
+}
 
 pub fn parse_db_input(s: &str) -> Option<f32> {
     let raw = s.trim().to_lowercase();
@@ -4984,7 +4998,11 @@ fn strip_params<'a>(
             let has_48v = ch.channel_type == ChannelType::Mic;
             strip::StripParams {
                 name: ch.name.clone(),
-                type_tag: Some(type_tag(ch.channel_type)),
+                type_tag: Some(if input_meter_looped(state, i) {
+                    ("LOOP", LOOP_TAG)
+                } else {
+                    type_tag(ch.channel_type)
+                }),
                 vol: ch.volumes[output_idx],
                 pan: strip_pan(state, cid, output_idx).unwrap_or(ch.pans[output_idx]),
                 meter: state
@@ -7466,6 +7484,25 @@ mod tests {
         assert!(state
             .flyout_open
             .contains(&(b, strip::FlyoutKind::Settings)));
+    }
+
+    #[test]
+    fn loopback_on_an_output_tags_the_matching_input_pair_as_looped() {
+        let mut state = new(true, None, None);
+        let tag = |state: &TuxMix, i: usize| {
+            super::strip_params(state, ChannelId::Input(i), state.sel_out)
+                .type_tag
+                .map(|(t, _)| t)
+        };
+        assert_ne!(tag(&state, 0), Some("LOOP"));
+
+        let _ = update(&mut state, Message::LoopbackChanged(0, true));
+        assert_eq!(tag(&state, 0), Some("LOOP"));
+        assert_eq!(tag(&state, 1), Some("LOOP"));
+        assert_ne!(tag(&state, 2), Some("LOOP"));
+
+        let _ = update(&mut state, Message::LoopbackChanged(0, false));
+        assert_ne!(tag(&state, 0), Some("LOOP"));
     }
 
     #[test]
