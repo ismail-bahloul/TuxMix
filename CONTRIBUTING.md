@@ -6,10 +6,6 @@ device: it needs someone who owns one, because nothing here can be verified
 without the hardware. If you're not sure where something fits, open an issue
 first rather than guessing.
 
-Fireface UC and UCX have their own project,
-[TotalControl](https://github.com/jspx-projects/TotalControl), which started
-from TuxMix. Questions about those units belong there.
-
 The recipe below covers devices the kernel exposes through ALSA mixer
 controls, the way the Babyface Pro FS driver does. A device in RME's
 proprietary USB mode with no kernel driver needs a capture of the vendor
