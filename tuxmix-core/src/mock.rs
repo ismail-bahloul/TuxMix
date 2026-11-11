@@ -16,6 +16,7 @@ use rand::Rng;
 use crate::channel::*;
 use crate::device::{DeviceSettings, RmeDevice};
 use crate::error::Error;
+use crate::profile::DeviceProfile;
 use crate::profiles::babyface_pro::PROFILE;
 use crate::scene::Scene;
 
@@ -28,8 +29,13 @@ use crate::scene::Scene;
 /// Topology (channel counts/names/types) comes from the same
 /// [`PROFILE`] as [`crate::BabyfacePro`], so the two can't drift apart
 /// the way the old hand-duplicated const tables did.
+///
+/// `TUXMIX_MOCK_MODEL=ucx` runs it with the Fireface UCX's topology
+/// instead (`profiles::fireface_ucx`), to see the UI with another unit's
+/// layout; everything else stays the Babyface Pro's simulation.
 pub struct MockBabyfacePro {
     model_name: String,
+    profile: &'static DeviceProfile,
     inputs: Vec<InputChannel>,
     playbacks: Vec<PlaybackChannel>,
     outputs: Vec<OutputChannel>,
@@ -193,12 +199,12 @@ impl RmeDevice for MockBabyfacePro {
         &self.model_name
     }
 
-    fn profile(&self) -> &'static crate::profile::DeviceProfile {
-        &PROFILE
+    fn profile(&self) -> &'static DeviceProfile {
+        self.profile
     }
 
     fn output_pair_count(&self) -> usize {
-        PROFILE.output_pair_count()
+        self.profile.output_pair_count()
     }
 
     fn protocol_features(&self) -> bool {
@@ -210,10 +216,14 @@ impl RmeDevice for MockBabyfacePro {
     }
 
     fn open() -> Result<Self, Error> {
+        let profile: &'static DeviceProfile = match std::env::var("TUXMIX_MOCK_MODEL") {
+            Ok(m) if m.eq_ignore_ascii_case("ucx") => &crate::profiles::fireface_ucx::PROFILE,
+            _ => &PROFILE,
+        };
         // Same topology as the real device, plus a mock-only demo
         // default: the first two (Mic) inputs start with phantom power
         // on, so the UI has something interesting to show immediately.
-        let mut inputs = PROFILE.build_inputs();
+        let mut inputs = profile.build_inputs();
         for (i, ch) in inputs.iter_mut().enumerate() {
             ch.phantom = i < 2;
             // Ranges matching the kernel driver's controls (2026-08-26:
@@ -225,11 +235,12 @@ impl RmeDevice for MockBabyfacePro {
                 _ => None,
             };
             ch.gain = ch.gain_max.map(|_| 0);
-            // The 4 analog inputs have a hardware EQ strip (see
+            // The preamp inputs have a hardware EQ strip (see
             // `InputChannel::eq`'s doc comment and `babyface.rs`'s
-            // `eq_strip_name`, same `idx < 4` gate) — every other input
-            // type stays `None`.
-            ch.eq = (i < 4).then(InputEq::default);
+            // `eq_strip_name`: AN1-4 on the Babyface Pro) — every other
+            // input type stays `None`.
+            ch.eq = matches!(ch.channel_type, ChannelType::Mic | ChannelType::Instrument)
+                .then(InputEq::default);
             // Inputs start routed nowhere, as after TotalMix's "Reset
             // mix: straight playback" (see `playbacks` below).
             ch.volumes.fill(0.0);
@@ -238,7 +249,7 @@ impl RmeDevice for MockBabyfacePro {
         // nowhere else, instead of every crosspoint at 0 dB: a mock that
         // looks like a real card's default mix, in the Matrix and in
         // screenshots.
-        let mut playbacks = PROFILE.build_playbacks();
+        let mut playbacks = profile.build_playbacks();
         for (i, ch) in playbacks.iter_mut().enumerate() {
             for (pair, v) in ch.volumes.iter_mut().enumerate() {
                 *v = if pair == i / 2 { 1.0 } else { 0.0 };
@@ -246,11 +257,12 @@ impl RmeDevice for MockBabyfacePro {
         }
 
         Ok(Self {
-            model_name: format!("{} (mock)", PROFILE.model_name),
+            model_name: format!("{} (mock)", profile.model_name),
+            profile,
             hardware: Default::default(),
             inputs,
             playbacks,
-            outputs: PROFILE.build_outputs(),
+            outputs: profile.build_outputs(),
             settings: DeviceSettings {
                 clock_source: "Internal".into(),
                 // Mocked from the real Babyface Pro FS's own enum items
@@ -275,8 +287,8 @@ impl RmeDevice for MockBabyfacePro {
                 output_link: Vec::new(),
                 input_pair_link: Vec::new(),
             },
-            input_meters: vec![0.0; PROFILE.input_count()],
-            playback_meters: vec![0.0; PROFILE.output_pair_count() * 2],
+            input_meters: vec![0.0; profile.input_count()],
+            playback_meters: vec![0.0; profile.output_pair_count() * 2],
             tick: 0,
             // `TUXMIX_MOCK_CC=1` (or any value) turns the mock into the
             // class-compliant personality's feature set, which is how the

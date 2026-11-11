@@ -108,8 +108,15 @@ pub fn short_label(name: &str) -> &str {
 /// list used before it became per-channel (see `usb.rs`'s `open()`),
 /// and what TotalMix itself shows for a linked stereo bus. Falls back to
 /// `"{left}/{right}"` unmodified if `right` doesn't end in digits (not
-/// expected for this device's own channel names, but harmless).
+/// expected for this device's own channel names, but harmless). A pair
+/// named by side ("SPDIF L"/"SPDIF R", as on the Fireface UCX) is the
+/// shared name alone ("SPDIF").
 pub(crate) fn pair_bus_label(left: &str, right: &str) -> String {
+    if let (Some(l), Some(r)) = (left.strip_suffix(" L"), right.strip_suffix(" R")) {
+        if l == r {
+            return l.to_string();
+        }
+    }
     let right_num: String = right.chars().skip_while(|c| !c.is_ascii_digit()).collect();
     if right_num.is_empty() {
         format!("{left}/{right}")
@@ -6256,7 +6263,9 @@ fn mixer_body(state: &TuxMix, height: f32) -> Element<'_, Message> {
     let mut out_item_count = 0usize;
     // Only with the RME protocol: Dim needs it, and without Dim and with no
     // other control beside it the section would just rename an output.
-    let control_room = state.device.protocol_features();
+    // And only on a unit whose profile names a Main pair: without one the
+    // section would be its buttons around an empty slot.
+    let control_room = state.device.protocol_features() && main_pair(state).is_some();
     let mut main_strips = row![].spacing(theme::SPACE_MD);
     let mut main_width = 0.0f32;
     let mut main_item_count = 0usize;
@@ -6808,6 +6817,14 @@ mod tests {
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
     use tuxmix_core::RmeDevice;
+
+    #[test]
+    fn pair_bus_label_joins_numbered_and_sided_pairs() {
+        assert_eq!(super::pair_bus_label("AN1", "AN2"), "AN1/2");
+        assert_eq!(super::pair_bus_label("PCM ADAT7", "PCM ADAT8"), "PCM ADAT7/8");
+        assert_eq!(super::pair_bus_label("SPDIF L", "SPDIF R"), "SPDIF");
+        assert_eq!(super::pair_bus_label("PCM SPDIF L", "PCM SPDIF R"), "PCM SPDIF");
+    }
 
     #[test]
     fn output_meters_reads_the_right_pair_for_every_individual_channel() {
