@@ -70,8 +70,8 @@ pub struct DeviceSettings {
     /// expose).
     #[serde(default)]
     pub optical_out_spdif: bool,
-    /// Dim engaged on the Phones output (an absolute -20 dB cut,
-    /// independent of the Phones master's own volume). See
+    /// Dim engaged on the Phones output (20 dB off its current level,
+    /// as TotalMix does). See
     /// [`RmeDevice::set_dim`].
     #[serde(default)]
     pub dim: bool,
@@ -349,8 +349,8 @@ pub trait RmeDevice {
         ))
     }
 
-    /// Dim the Phones output by a fixed -20 dB, independent of its
-    /// current master volume (disengage restores the pre-dim level).
+    /// Dim the Phones output: 20 dB off its current master level, as
+    /// TotalMix does (disengage restores the undimmed level).
     fn set_dim(&mut self, on: bool) -> Result<(), Error> {
         let _ = on;
         Err(Error::InvalidChannel(
