@@ -32,11 +32,17 @@ use crate::widgets::strip::{self, hint};
 use tuxmix_core::pw_clock::{self, CardStream, PwClock};
 use tuxmix_core::pw_meter;
 
-pub const OUT_LABELS: [&str; 6] = ["AN1/2", "PH3/4", "AS1/2", "ADAT3/4", "ADAT5/6", "ADAT7/8"];
+/// The bus name of output pair `pair` on the open device ("AN1/2"), from
+/// its profile; `""` past the last pair.
+pub(crate) fn out_label(state: &TuxMix, pair: usize) -> &'static str {
+    state.device.profile().pair_label(pair)
+}
 
-/// The output pair the Control Room shows as Main: PH3/4, the one the unit's
-/// DIM acts on and the one TotalMix's Main is assigned to in our captures.
-const MAIN_PAIR: usize = 1;
+/// The output pair the Control Room shows as Main, from the device's
+/// profile (PH3/4 on the Babyface Pro). `None` when the unit has none.
+fn main_pair(state: &TuxMix) -> Option<usize> {
+    state.device.profile().main_pair
+}
 
 /// The entries of TotalMix's Options > Reset Mix that apply to this device.
 /// The list follows jspx-projects' `TUXMIX-SPEC.md` (tuxmix-fireface), minus
@@ -227,6 +233,9 @@ impl RmeDevice for DeviceHandle {
     }
     fn output_pair_count(&self) -> usize {
         delegate!(self, output_pair_count)
+    }
+    fn profile(&self) -> &'static tuxmix_core::profile::DeviceProfile {
+        delegate!(self, profile)
     }
     fn open() -> Result<Self, tuxmix_core::Error> {
         unreachable!()
@@ -2455,7 +2464,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             // CHANGES on the panel, so a GUI click on the submix picker
             // keeps winning until the user touches OUT. Panel OUT
             // selection (0=Ch1/2, 1=Phones, 2=Opt) → submix pair index
-            // (OUT_LABELS: AN1/2=0, PH3/4=1, … ADAT7/8=5).
+            // (the profile's pair labels: AN1/2=0, PH3/4=1, … ADAT7/8=5).
             if let Some((_, _, out_sel)) = state.device.panel_selection() {
                 let out = match out_sel {
                     1 => 1,
@@ -3388,17 +3397,15 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         }
         Message::ResetMix(kind) => apply_reset_mix(state, kind),
         Message::StoreRecall => {
-            state.main_recall = state
-                .device
-                .outputs()
-                .get(MAIN_PAIR * 2)
+            state.main_recall = main_pair(state)
+                .and_then(|pair| state.device.outputs().get(pair * 2))
                 .map(|out| out.volume);
         }
         Message::RecallMain => {
-            if let Some(volume) = state.main_recall {
+            if let (Some(volume), Some(pair)) = (state.main_recall, main_pair(state)) {
                 return update(
                     state,
-                    Message::VolumeChanged(ChannelId::Output(MAIN_PAIR * 2), 0, volume),
+                    Message::VolumeChanged(ChannelId::Output(pair * 2), 0, volume),
                 );
             }
         }
@@ -4758,11 +4765,12 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
     // no reason to keep two separate homes for one feature.
     // Flat fields, like everything else in the bar: this was the bar's
     // only boxed element (a `chip`), and read as dropped into the corner.
+    let labels = state.device.profile().pair_labels();
     let submix = pick_list(
-        OUT_LABELS.to_vec(),
-        Some(OUT_LABELS[state.sel_out]),
-        |label| {
-            let idx = OUT_LABELS.iter().position(|l| *l == label).unwrap_or(0);
+        labels.clone(),
+        Some(out_label(state, state.sel_out)),
+        move |label| {
+            let idx = labels.iter().position(|l| *l == label).unwrap_or(0);
             Message::SelectOutput(idx)
         },
     )
@@ -4937,6 +4945,7 @@ fn strip_params<'a>(
     let base = strip::StripParams {
         cid,
         output_idx,
+        out_label: out_label(state, output_idx),
         // The three per-kind literals below spread this one, so the
         // capability is read once. See `RmeDevice::protocol_features`.
         protocol_features: state.device.protocol_features(),
@@ -5269,7 +5278,7 @@ fn responsive_row<'a>(
 /// `.clip(true)` keeps the list from spilling out past it mid-animation.
 fn route_popover(state: &TuxMix, width: f32, scale: f32) -> Element<'_, Message> {
     let mut list = column![].spacing(theme::SPACE_TIGHT);
-    for (idx, label) in OUT_LABELS.iter().enumerate() {
+    for (idx, label) in state.device.profile().pair_labels().iter().enumerate() {
         list = list.push(
             button(text(*label).size(theme::TEXT_SM * scale))
                 .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
@@ -6252,7 +6261,7 @@ fn mixer_body(state: &TuxMix, height: f32) -> Element<'_, Message> {
     let mut main_width = 0.0f32;
     let mut main_item_count = 0usize;
     for pair in 0..state.device.output_pair_count() {
-        let is_main = control_room && pair == MAIN_PAIR;
+        let is_main = control_room && main_pair(state) == Some(pair);
         let l = pair * 2;
         let linked = state.device.output_linked(pair);
         let pair_channels = [l, l + 1];
@@ -6310,7 +6319,7 @@ fn mixer_body(state: &TuxMix, height: f32) -> Element<'_, Message> {
     let submix_hint = || {
         text(format!(
             "Submix: {} \u{00b7} Tab for Matrix",
-            OUT_LABELS[state.sel_out]
+            out_label(state, state.sel_out)
         ))
         .color(theme::TEXT_SEC)
         .size(theme::TEXT_XS * scale)
@@ -6626,10 +6635,10 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
     // The destination picker lists the submix buses by the same names the
     // rest of the UI uses for them (a user label on an output strip
     // included), and selecting one is exactly the top bar's Submix field.
-    let dest_labels: Vec<String> = (0..OUT_LABELS.len())
+    let dest_labels: Vec<String> = (0..state.device.output_pair_count())
         .map(|i| {
             user_label(state, ChannelId::Output(i * 2))
-                .unwrap_or(OUT_LABELS[i])
+                .unwrap_or(out_label(state, i))
                 .to_string()
         })
         .collect();
@@ -6670,7 +6679,7 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
             },
         ));
 
-        // `sel_out` indexes the 6 *submix pairs* (`OUT_LABELS`), but
+        // `sel_out` indexes the 6 *submix pairs* (the profile's pair labels), but
         // `device.outputs()` is a flat list of individual physical
         // channels, two per pair (`build_outputs`: index `2*i`/`2*i+1` =
         // left/right of pair `i`) — so the pair's representative channel
@@ -7858,14 +7867,14 @@ mod tests {
     #[test]
     fn recall_does_nothing_until_a_volume_is_stored_then_brings_it_back() {
         let mut state = new(true, None, None);
-        let main = ChannelId::Output(super::MAIN_PAIR * 2);
+        let main = ChannelId::Output(super::main_pair(&state).unwrap() * 2);
         let _ = update(&mut state, Message::VolumeChanged(main, 0, 0.5));
         let _ = update(&mut state, Message::RecallMain);
-        assert_eq!(state.device.outputs()[super::MAIN_PAIR * 2].volume, 0.5);
+        assert_eq!(state.device.outputs()[super::main_pair(&state).unwrap() * 2].volume, 0.5);
         let _ = update(&mut state, Message::StoreRecall);
         let _ = update(&mut state, Message::VolumeChanged(main, 0, 0.2));
         let _ = update(&mut state, Message::RecallMain);
-        assert_eq!(state.device.outputs()[super::MAIN_PAIR * 2].volume, 0.5);
+        assert_eq!(state.device.outputs()[super::main_pair(&state).unwrap() * 2].volume, 0.5);
     }
 
     #[test]

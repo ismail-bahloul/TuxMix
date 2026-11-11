@@ -193,6 +193,10 @@ impl RmeDevice for MockBabyfacePro {
         &self.model_name
     }
 
+    fn profile(&self) -> &'static crate::profile::DeviceProfile {
+        &PROFILE
+    }
+
     fn output_pair_count(&self) -> usize {
         PROFILE.output_pair_count()
     }

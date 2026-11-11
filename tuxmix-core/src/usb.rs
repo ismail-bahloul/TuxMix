@@ -552,6 +552,10 @@ impl RmeDevice for BabyfaceProUsb {
         crate::profiles::babyface_pro::PROFILE.model_name
     }
 
+    fn profile(&self) -> &'static crate::profile::DeviceProfile {
+        &crate::profiles::babyface_pro::PROFILE
+    }
+
     fn output_pair_count(&self) -> usize {
         // `outputs` is per-physical-channel now (2 per pair) — see the
         // doc comment on `open()`'s `outputs` vec.

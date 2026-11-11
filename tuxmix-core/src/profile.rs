@@ -34,6 +34,9 @@ pub struct DeviceProfile {
     pub inputs: &'static [InputSpec],
     /// One entry per physical stereo output pair.
     pub outputs: &'static [OutputPairSpec],
+    /// The output pair TotalMix shows as Main in its Control Room, if the
+    /// unit has one; `None` hides the Control Room's Main strip.
+    pub main_pair: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -46,6 +49,9 @@ pub struct InputSpec {
 pub struct OutputPairSpec {
     pub left: &'static str,
     pub right: &'static str,
+    /// The pair's name as a bus, in submix pickers and matrix headers
+    /// ("AN1/2").
+    pub label: &'static str,
 }
 
 impl DeviceProfile {
@@ -55,6 +61,16 @@ impl DeviceProfile {
 
     pub fn output_pair_count(&self) -> usize {
         self.outputs.len()
+    }
+
+    /// The bus name of output pair `pair`, or `""` past the last pair.
+    pub fn pair_label(&self, pair: usize) -> &'static str {
+        self.outputs.get(pair).map_or("", |o| o.label)
+    }
+
+    /// Every output pair's bus name, in pair order.
+    pub fn pair_labels(&self) -> Vec<&'static str> {
+        self.outputs.iter().map(|o| o.label).collect()
     }
 
     /// Instrument inputs default to +4dBu sensitivity; every other

@@ -32,7 +32,7 @@ use iced::{Color, Element, Length};
 
 use tuxmix_core::{ChannelId, ChannelType, RmeDevice};
 
-use crate::app::{pair_bus_label, short_label, Message, TuxMix, OUT_LABELS};
+use crate::app::{out_label, pair_bus_label, short_label, Message, TuxMix};
 use crate::theme;
 use crate::widgets::crosspoint::{cell_text, crosspoint, Crosspoint};
 
@@ -167,7 +167,7 @@ fn input_row_groups(state: &TuxMix) -> Vec<RowGroup> {
 }
 
 /// Playback row-groups: always one pair per hardware output bus,
-/// labeled with the same verified `OUT_LABELS` the rest of the app
+/// labeled with the same profile pair labels the rest of the app
 /// uses (not TotalMix's own instance-specific renaming in the
 /// reference screenshot, e.g. "Main" for what this hardware calls
 /// "PH3/4" — that's this session's own established naming, kept).
@@ -177,7 +177,7 @@ fn playback_row_groups(state: &TuxMix) -> Vec<RowGroup> {
         .map(|pair| RowGroup {
             label: crate::app::user_label(state, ChannelId::Playback(pair * 2))
                 .map(str::to_string)
-                .or_else(|| OUT_LABELS.get(pair).map(|s| s.to_string()))
+                .or_else(|| Some(out_label(state, pair).to_string()))
                 .unwrap_or_default(),
             color: crate::app::PB_TAG,
             first_idx: pair * 2,
@@ -356,7 +356,7 @@ pub fn hover_readout(state: &TuxMix) -> Option<String> {
     let (cid, col) = state.matrix_hover?;
     let pair = col / 2;
     let bus = crate::app::user_label(state, ChannelId::Output(pair * 2))
-        .unwrap_or(OUT_LABELS.get(pair).copied().unwrap_or_default())
+        .unwrap_or(out_label(state, pair))
         .to_string();
     let side = if col % 2 == 0 { "L" } else { "R" };
     let (source, gain) = match cid {
@@ -500,7 +500,7 @@ fn grid_view(state: &TuxMix, size: iced::Size) -> Element<'_, Message> {
     .spacing(theme::SPACE_HAIRLINE);
     for pair in 0..(n_outputs / 2) {
         let label = crate::app::user_label(state, ChannelId::Output(pair * 2))
-            .unwrap_or(OUT_LABELS.get(pair).copied().unwrap_or_default())
+            .unwrap_or(out_label(state, pair))
             .to_string();
         footer = footer.push(header_cell(
             label,

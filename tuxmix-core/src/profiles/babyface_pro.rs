@@ -66,26 +66,35 @@ pub const PROFILE: DeviceProfile = DeviceProfile {
         OutputPairSpec {
             left: "AN1",
             right: "AN2",
+            label: "AN1/2",
         },
         OutputPairSpec {
             left: "PH3",
             right: "PH4",
+            label: "PH3/4",
         },
         OutputPairSpec {
             left: "AS1",
             right: "AS2",
+            label: "AS1/2",
         },
         OutputPairSpec {
             left: "ADAT3",
             right: "ADAT4",
+            label: "ADAT3/4",
         },
         OutputPairSpec {
             left: "ADAT5",
             right: "ADAT6",
+            label: "ADAT5/6",
         },
         OutputPairSpec {
             left: "ADAT7",
             right: "ADAT8",
+            label: "ADAT7/8",
         },
     ],
+    // PH3/4: what TotalMix FX shows as Main on this unit, and the pair
+    // DIM and the Control Room's Recall act on.
+    main_pair: Some(1),
 };
