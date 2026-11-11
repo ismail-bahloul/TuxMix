@@ -10,3 +10,4 @@
 //! grammar is only confirmed for the Babyface Pro so far.
 
 pub mod babyface_pro;
+pub mod fireface_ucx;
