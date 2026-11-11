@@ -699,6 +699,16 @@ pub enum EqType {
     HighShelf,
 }
 
+/// The strip's shared output gain (the word at 0x34): the product of its
+/// bands' `c4`, each ×2²⁷. The three biquads are normalised to b0 = 1 and
+/// run in cascade, so the levels they take out go into one gain (measured
+/// against TotalMix FX, 2026-11-11). A band that is off counts as 1.0.
+pub fn eq_cascade_gain(c4: &[i32; 3]) -> i32 {
+    let q27 = 1i64 << 27;
+    c4.iter()
+        .fold(q27, |acc, &c| (acc * c as i64 + (q27 >> 1)) >> 27) as i32
+}
+
 /// The 5 stored words for one EQ band slot (c0..c3 @ slot + c4 @ 0x34).
 ///
 /// The storage is NOT the biquad directly — it is the RBJ cookbook
@@ -730,24 +740,23 @@ pub fn eq_band_storage(eq_type: EqType, freq_hz: f32, q: f32, gain_db: f32, fs: 
     let a = 10f32.powf(gain_db / 40.0);
     let w0 = 2.0 * std::f32::consts::PI * freq_hz / fs;
     let c = w0.cos();
-    // RBJ cookbook. Bell: α = sin(w0)/(2Q). Shelves: SAME Q-driven α
-    // (cap_eq8d shelf sweep 2026-08-24: the implied α from the stored
-    // a1'/a2' = sin(w0)/(2Q) to ~1e-5, vs the old S=1 which was ~4e-4
-    // off; the residual is the same high-freq warping as the bell).
+    // RBJ cookbook, with the α TotalMix computes, sin(w0 / (2Q)) rather
+    // than the cookbook's sin(w0) / (2Q): the two agree at low
+    // frequencies and part ways as w0 grows (the effective Q that
+    // shrinks above a few kHz, `tools/usbdump/eq_biquad.md`). The angle
+    // is held to π/2, past it sin() would fall again. Shelves use the
+    // same Q-driven α as the bell.
+    let alpha = (w0 / (2.0 * q)).min(std::f32::consts::FRAC_PI_2).sin();
     let (b0, b1, b2, a0, a1, a2) = match eq_type {
-        EqType::Bell => {
-            let alpha = w0.sin() / (2.0 * q);
-            (
-                1.0 + alpha * a,
-                -2.0 * c,
-                1.0 - alpha * a,
-                1.0 + alpha / a,
-                -2.0 * c,
-                1.0 - alpha / a,
-            )
-        }
+        EqType::Bell => (
+            1.0 + alpha * a,
+            -2.0 * c,
+            1.0 - alpha * a,
+            1.0 + alpha / a,
+            -2.0 * c,
+            1.0 - alpha / a,
+        ),
         EqType::LowShelf => {
-            let alpha = w0.sin() / (2.0 * q);
             let sq = 2.0 * a.sqrt() * alpha;
             (
                 a * ((a + 1.0) - (a - 1.0) * c + sq),
@@ -759,14 +768,13 @@ pub fn eq_band_storage(eq_type: EqType, freq_hz: f32, q: f32, gain_db: f32, fs: 
             )
         }
         EqType::HighShelf => {
-            let alpha = w0.sin() / (2.0 * q);
             let sq = 2.0 * a.sqrt() * alpha;
             (
                 a * ((a + 1.0) + (a - 1.0) * c + sq),
                 -2.0 * a * ((a - 1.0) + (a + 1.0) * c),
                 a * ((a + 1.0) + (a - 1.0) * c - sq),
                 (a + 1.0) - (a - 1.0) * c + sq,
-                -2.0 * ((a - 1.0) - (a + 1.0) * c),
+                2.0 * ((a - 1.0) - (a + 1.0) * c),
                 (a + 1.0) - (a - 1.0) * c - sq,
             )
         }
@@ -780,8 +788,11 @@ pub fn eq_band_storage(eq_type: EqType, freq_hz: f32, q: f32, gain_db: f32, fs: 
 /// The two EQ blocks (left + right) for a single-band change, keeping
 /// the other two slots as passed.
 ///
-/// `slot` = 0 (Low) / 1 (Mid) / 2 (High). `current` = the other slots'
-/// stored words (pass the current values so they survive).
+/// `slot` = 0 (Low) / 1 (Mid) / 2 (High). `current` = every slot's stored
+/// words, c0..c3 and then its c4 (pass the current values so the other
+/// slots survive; a band that is off is `[0, 0, 0, 0, 1 << 27]`). The
+/// shared gain written is the product of the three slots' c4, see
+/// [`eq_cascade_gain`].
 pub fn set_eq_band(
     slot: usize,
     eq_type: EqType,
@@ -789,12 +800,13 @@ pub fn set_eq_band(
     q: f32,
     gain_db: f32,
     fs: f32,
-    current: &[[i32; 4]; 3],
+    current: &[[i32; 5]; 3],
 ) -> [[u8; EQ_BLOCK_LEN]; 2] {
-    let mut bands = *current;
+    let mut all = *current;
     let w = eq_band_storage(eq_type, freq_hz, q, gain_db, fs);
-    bands[slot] = [w[0], w[1], w[2], w[3]];
-    let shared = w[4];
+    all[slot] = w;
+    let bands = all.map(|b| [b[0], b[1], b[2], b[3]]);
+    let shared = eq_cascade_gain(&all.map(|b| b[4]));
     let (freq, slope) = (LOW_CUT_OFF, 0); // preserve the low cut? caller re-sends
     [
         eq_block(true, &bands, shared, freq, slope),
@@ -1390,6 +1402,102 @@ mod tests {
                 (*w as f64 / s - cap).abs() < 1e-5,
                 "-6 shelf word {w:08X} vs captured {cap}"
             );
+        }
+    }
+
+    /// The words TotalMix FX wrote for a strip on a Babyface Pro at 48 kHz
+    /// (usbmon, Windows VM, 2026-11-11): low shelf 80 Hz, bell 1 kHz and
+    /// high shelf 5 kHz, all Q 1.0 and +3 dB. TotalMix computes in single
+    /// precision, as this does, so a few LSB of 2^-27 are rounding.
+    const TM_LOW: [u32; 4] = [0xf013c43a, 0x07ec6bec, 0xf0178365, 0x07e8c08e];
+    const TM_BELL: [u32; 4] = [0xf0f6dc08, 0x072a5ac0, 0xf147f093, 0x06d8931a];
+    const TM_HIGH: [u32; 4] = [0xf6f61e27, 0x03e83935, 0xf5ddb5c7, 0x044f5939];
+    const TM_SHARED_ALL_THREE: u32 = 0x0ac86021;
+
+    fn assert_words_near(got: &[i32; 5], want: &[u32; 4], what: &str) {
+        for (k, (g, w)) in got.iter().zip(want).enumerate() {
+            let d = (*g as i64 - *w as i32 as i64).abs();
+            assert!(
+                d <= 64,
+                "{what} c{k}: {:08x} vs TotalMix {w:08x}",
+                *g as u32
+            );
+        }
+    }
+
+    #[test]
+    fn eq_band_storage_matches_totalmix_for_all_three_types() {
+        let low = eq_band_storage(EqType::LowShelf, 80.0, 1.0, 3.0, 48000.0);
+        let bell = eq_band_storage(EqType::Bell, 1000.0, 1.0, 3.0, 48000.0);
+        let high = eq_band_storage(EqType::HighShelf, 5000.0, 1.0, 3.0, 48000.0);
+        assert_words_near(&low, &TM_LOW, "low shelf");
+        assert_words_near(&bell, &TM_BELL, "bell");
+        // The high shelf's a1 once had the opposite sign: c0 came out
+        // 0x0909e1dc, +3 dB at 5 kHz some 17 dB low across the band.
+        assert_words_near(&high, &TM_HIGH, "high shelf");
+        // -3 dB mirrors +3 dB: c0 <-> c2, c1 <-> c3.
+        let neg = eq_band_storage(EqType::HighShelf, 5000.0, 1.0, -3.0, 48000.0);
+        assert!((neg[0] as i64 - high[2] as i64).abs() <= 64);
+        assert!((neg[2] as i64 - high[0] as i64).abs() <= 64);
+    }
+
+    #[test]
+    fn the_shared_gain_is_the_product_of_the_bands() {
+        let low = eq_band_storage(EqType::LowShelf, 80.0, 1.0, 3.0, 48000.0);
+        let bell = eq_band_storage(EqType::Bell, 1000.0, 1.0, 3.0, 48000.0);
+        let high = eq_band_storage(EqType::HighShelf, 5000.0, 1.0, 3.0, 48000.0);
+        let shared = eq_cascade_gain(&[low[4], bell[4], high[4]]);
+        assert!(
+            (shared as i64 - TM_SHARED_ALL_THREE as i64).abs() <= 64,
+            "{shared:08x} vs TotalMix {TM_SHARED_ALL_THREE:08x}"
+        );
+        // Not the last band's: that is 3 % lower.
+        assert!((high[4] as i64 - TM_SHARED_ALL_THREE as i64).abs() > 1 << 21);
+        // A band that is off leaves the others alone.
+        let off = 1 << 27;
+        assert_eq!(eq_cascade_gain(&[off, bell[4], off]), bell[4]);
+        // set_eq_band writes it at 0x34, on both channels.
+        let current = [
+            [low[0], low[1], low[2], low[3], low[4]],
+            [bell[0], bell[1], bell[2], bell[3], bell[4]],
+            [0, 0, 0, 0, off],
+        ];
+        let blocks = set_eq_band(2, EqType::HighShelf, 5000.0, 1.0, 3.0, 48000.0, &current);
+        for blk in blocks {
+            let at_34 = i32::from_le_bytes(blk[0x34..0x38].try_into().unwrap());
+            assert!((at_34 as i64 - TM_SHARED_ALL_THREE as i64).abs() <= 64);
+        }
+    }
+
+    #[test]
+    fn a_shelf_takes_its_gain_at_its_own_end_of_the_band() {
+        // Independent of any reference: a low shelf has its gain at DC and
+        // none at Nyquist, a high shelf the other way round.
+        fn db(w: &[i32; 5], om: f64) -> f64 {
+            let s = (1i64 << 27) as f64;
+            let [c0, c1, c2, c3, c4] = w.map(|v| v as f64 / s);
+            let (c, s1, c2w, s2w) = (om.cos(), om.sin(), (2.0 * om).cos(), (2.0 * om).sin());
+            let num =
+                ((1.0 + c2 * c + c3 * c2w).powi(2) + (c2 * s1 + c3 * s2w).powi(2)).sqrt() * c4;
+            let den = ((1.0 + c0 * c + c1 * c2w).powi(2) + (c0 * s1 + c1 * s2w).powi(2)).sqrt();
+            20.0 * (num / den).log10()
+        }
+        for f in [100.0f32, 1000.0, 5000.0, 10000.0] {
+            for g in [-12.0f32, -3.0, 3.0, 12.0] {
+                let g64 = g as f64;
+                let low = eq_band_storage(EqType::LowShelf, f, 0.7, g, 48000.0);
+                let high = eq_band_storage(EqType::HighShelf, f, 0.7, g, 48000.0);
+                assert!((db(&low, 0.0) - g64).abs() < 0.15, "low {f} Hz {g} dB");
+                assert!(
+                    db(&low, std::f64::consts::PI).abs() < 0.15,
+                    "low {f} Hz {g} dB"
+                );
+                assert!(db(&high, 0.0).abs() < 0.15, "high {f} Hz {g} dB");
+                assert!(
+                    (db(&high, std::f64::consts::PI) - g64).abs() < 0.15,
+                    "high {f} Hz {g} dB"
+                );
+            }
         }
     }
 

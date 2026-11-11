@@ -332,8 +332,9 @@ impl BabyfaceUsb {
     /// Set one EQ band (0 = Low, 1 = Mid, 2 = High) on the device DSP:
     /// RBJ bell/shelf → the 5 stored words (see
     /// [`protocol::eq_band_storage`]), written on bulk ep 0x0A as the
-    /// L+R block pair. `current` = the other slots' stored words so a
-    /// single-band change preserves them.
+    /// L+R block pair. `current` = every slot's stored words (c0..c3, then
+    /// c4) so a single-band change preserves the others and the shared
+    /// gain is the product of the three.
     pub fn set_eq_band(
         &mut self,
         slot: usize,
@@ -342,7 +343,7 @@ impl BabyfaceUsb {
         q: f32,
         gain_db: f32,
         fs: f32,
-        current: &[[i32; 4]; 3],
+        current: &[[i32; 5]; 3],
     ) -> Result<(), Error> {
         let blocks = protocol::set_eq_band(slot, eq_type, freq_hz, q, gain_db, fs, current);
         self.write_eq_block(&blocks[0])?;

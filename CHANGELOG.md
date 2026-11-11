@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+- The direct USB backend (`tuxmix-usb`) wrote a high shelf with the sign of
+  its a1 coefficient wrong, so it did not shelve; it used the cookbook's
+  alpha rather than TotalMix's `sin(w0 / 2Q)`; and it wrote the last band's
+  gain as the strip's shared gain instead of the product of the three.
+  Checked against the words TotalMix FX writes on the unit. The app drives
+  the kernel driver's EQ, which had the first and last of these and is fixed
+  there; only the library API and its `eqtest` example change here, and
+  `set_eq_band` now takes each slot's c4 as well.
+
 ### Added
 - With no supported device, the waiting screen names an RME unit it finds on
   the USB bus (Fireface UC, UCX or any other under RME's vendor ID) and says

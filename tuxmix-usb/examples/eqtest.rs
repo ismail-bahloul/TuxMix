@@ -56,24 +56,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // No band EQ, no low cut: the baseline 64-byte block (0x38 = OFF).
     let empty = [[0i32; 4]; 3];
+    let off = [[0, 0, 0, 0, 1 << 27]; 3];
     println!("EQ transport ready (bulk ep 0x0A, interface 1).");
 
     pause(3, "1. NO EQ — baseline mic sound (48V + 35 dB gain on AN1)");
 
     // +6 dB Low bell @ 200 Hz, Q = 0.7 (the exact cap_eq8c state).
-    dev.set_eq_band(0, EqType::Bell, 200.0, 0.7, 6.0, 48_000.0, &empty)?;
+    dev.set_eq_band(0, EqType::Bell, 200.0, 0.7, 6.0, 48_000.0, &off)?;
     pause(4, "2. +6 dB Low BELL @ 200 Hz (Q 0.7) — low end louder");
 
     // -6 dB — the notch (mirror of +6).
-    dev.set_eq_band(0, EqType::Bell, 200.0, 0.7, -6.0, 48_000.0, &empty)?;
+    dev.set_eq_band(0, EqType::Bell, 200.0, 0.7, -6.0, 48_000.0, &off)?;
     pause(4, "3. -6 dB Low BELL @ 200 Hz — low end quieter (notch)");
 
     // +10 dB @ 4 kHz — a clearly audible mid emphasis.
-    dev.set_eq_band(0, EqType::Bell, 4000.0, 0.7, 10.0, 48_000.0, &empty)?;
+    dev.set_eq_band(0, EqType::Bell, 4000.0, 0.7, 10.0, 48_000.0, &off)?;
     pause(4, "4. +10 dB Low BELL @ 4 kHz — nasal/telephone emphasis");
 
     // Reset the band (0 dB = identity), then add a low cut 100 Hz.
-    dev.set_eq_band(0, EqType::Bell, 200.0, 0.7, 0.0, 48_000.0, &empty)?;
+    dev.set_eq_band(0, EqType::Bell, 200.0, 0.7, 0.0, 48_000.0, &off)?;
     dev.set_low_cut(Some(100.0), 12, &empty, 1 << 27)?;
     pause(4, "5. LOW CUT 100 Hz @ 12 dB/oct — boom below 100 Hz gone");
 
