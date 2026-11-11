@@ -6,10 +6,11 @@ device: it needs someone who owns one, because nothing here can be verified
 without the hardware. If you're not sure where something fits, open an issue
 first rather than guessing.
 
-The recipe below covers devices the kernel exposes through ALSA mixer
-controls, the way the Babyface Pro FS driver does. A device in RME's
-proprietary USB mode with no kernel driver needs a capture of the vendor
-software talking to the unit first; open an issue and we'll go from there.
+The first recipe below covers devices the kernel exposes through ALSA
+mixer controls, the way the Babyface Pro FS driver does. A unit whose mixer
+is not exposed that way (the Fireface UC and UCX, for example) needs a
+backend of its own: see [Adding a unit with no ALSA mixer
+controls](#adding-a-unit-with-no-alsa-mixer-controls).
 
 ## Development setup
 
@@ -22,6 +23,9 @@ cargo test --workspace
 # Run the GUI/TUI against a simulated device — no hardware required:
 cargo run -p tuxmix-gui -- --mock
 cargo run -p tuxmix-tui -- --mock
+
+# The same simulation with the Fireface UCX's channel layout:
+TUXMIX_MOCK_MODEL=ucx cargo run -p tuxmix-gui -- --mock
 ```
 
 Dependencies: `rustc`, `cargo`, `alsa-lib` (dev headers).
@@ -46,7 +50,10 @@ guide if you want to help with that instead.
    (a substring of your card's name as it appears in
    `/proc/asound/cards`), `model_name`, one `InputSpec` per physical
    input in channel-id order, one `OutputPairSpec` per stereo output
-   pair. Register the new module in `profiles/mod.rs`.
+   pair with the bus `label` the UIs show ("AN1/2"), and `main_pair`, the
+   pair TotalMix shows as Main in its Control Room (`None` if you don't
+   know: the Control Room is then hidden). Register the new module in
+   `profiles/mod.rs`.
 
 3. **Re-verify the ALSA control-naming grammar.** `babyface.rs`'s
    `selem_name`/`ch_type_str` helpers encode a specific naming pattern
@@ -72,13 +79,50 @@ guide if you want to help with that instead.
    planned but not built — happy to help design it once a second device
    is actually working.
 
-5. **Add tests.** `mock.rs`'s existing suite (channel counts, output pair
+5. **Look at it in the simulation.** Add your profile to the
+   `TUXMIX_MOCK_MODEL` match in `MockBabyfacePro::open()` (`mock.rs`) and
+   run the GUI with `--mock`. Anything that still assumes the Babyface
+   Pro's layout shows up there before you need the hardware.
+
+6. **Add tests.** `mock.rs`'s existing suite (channel counts, output pair
    count, phantom-power defaults, etc.) is the pattern to follow — it
    should read straight off your new profile's data, the same way the
    Babyface Pro FS ones do.
 
-6. **Open a PR** with your profile, the adjusted naming helpers if
+7. **Open a PR** with your profile, the adjusted naming helpers if
    needed, and a note on which real device you tested against.
+
+## Adding a unit with no ALSA mixer controls
+
+The Fireface UC and UCX run in RME's vendor mode with out-of-tree drivers
+that keep the mixer matrix out of ALSA: the audio is an ALSA card (some
+also expose a few levels and the clock as controls), but routing, preamps
+and EQ go through a hwdep node or straight over USB. TuxMix needs a backend
+for that family, the way `babyface.rs` (ALSA controls) and `usb.rs` (the
+Babyface Pro over libusb) are backends for the Babyface Pro. Such a backend
+implements `RmeDevice` (`device.rs`) and is added to `DeviceHandle` in
+`tuxmix-gui` and `tuxmix-tui`.
+
+The UI side is ready for another layout: give the unit a `DeviceProfile`
+(step 2 above) and check it with `TUXMIX_MOCK_MODEL`. The Fireface UCX
+already has one, `profiles/fireface_ucx.rs`, from its public channel
+layout; it has not been checked on a unit.
+
+What only an owner can provide, in an issue:
+
+- `lsusb -v -d <vendor>:<product>` for the unit, in each mode it has.
+- Which Linux driver you run it with, and what it exposes: `aplay -l`,
+  `amixer -c <card> scontents`, and `ls -l /dev/snd/hwC*D*`.
+- USB captures of TotalMix FX on Windows (USBPcap/Wireshark) while you
+  move one control at a time, each named in the file name. One control per
+  capture makes the protocol readable.
+- What you can test, and whether we may write to the unit: a first
+  backend should read before it writes, and nothing should reach the
+  analog outputs before someone with the unit has checked the levels.
+
+When TuxMix finds an RME unit it cannot drive yet, its waiting screen names
+it from `tuxmix-core/src/usb_ids.rs`. Adding your unit's USB ID there is a
+small first PR.
 
 ## Licensing of contributions
 
@@ -99,7 +143,7 @@ add one to a new file that has none.
   per-input EQ interaction edge cases — if you own the hardware,
   poking at those is directly useful.
 - **MIDI SysEx backend**: help design the I/O layer for UCX II/UFX+/
-  III-class devices — a bigger, separate effort from the recipe above.
+  III-class devices — a bigger, separate effort from the recipes above.
 - **Testing**: run `cargo test --workspace` and report anything that
   breaks, especially on hardware.
 
