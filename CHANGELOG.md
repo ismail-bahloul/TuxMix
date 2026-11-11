@@ -7,6 +7,11 @@
   the USB bus (Fireface UC, UCX or any other under RME's vendor ID) and says
   it is not supported yet, instead of only asking to check the cable. A
   Babyface Pro in class-compliant mode is told how to switch back.
+- A stereo strip (a playback pair, AS1/2, an ADAT pair) has its own Width
+  knob in its settings, as in TotalMix FX: it narrows the pair's routing into
+  every output. It needs a driver with one width control per stereo source;
+  with such a driver the single Width knob of the device panel, which only
+  acted on AN1/2, is no longer shown.
 
 ### Changed
 - An input strip whose output pair has Loop on is tagged LOOP instead of its

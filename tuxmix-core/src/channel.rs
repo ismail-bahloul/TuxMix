@@ -73,6 +73,17 @@ pub struct InputChannel {
     /// same as `gain`. `#[serde(default)]` so old scene JSON still loads.
     #[serde(default)]
     pub trim: f32,
+    /// Stereo width of the pair this input belongs to (-1.0..=1.0,
+    /// +1.0 plain stereo, 0 mono, -1.0 sides swapped), kept equal on
+    /// both channels of the pair. Meaningless on a mono input. See
+    /// [`RmeDevice::set_strip_width`](crate::RmeDevice::set_strip_width).
+    #[serde(default = "plain_width")]
+    pub width: f32,
+}
+
+/// The width of a pair nobody has narrowed: plain stereo.
+pub fn plain_width() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display)]
@@ -162,6 +173,9 @@ pub struct PlaybackChannel {
     /// 0x2000/0x0000 (split mono) instead of 0x1000/0x1000 (-6 dB pair).
     #[serde(default)]
     pub split: bool,
+    /// Stereo width of the pair, as on [`InputChannel::width`].
+    #[serde(default = "plain_width")]
+    pub width: f32,
     pub mute: bool,
     pub solo: bool,
 }
@@ -211,6 +225,7 @@ impl InputChannel {
             mute: false,
             solo: false,
             trim: 0.0,
+            width: plain_width(),
         }
     }
 
@@ -238,6 +253,7 @@ impl PlaybackChannel {
             volumes: vec![1.0; outputs],
             pans: vec![0; outputs],
             split: false,
+            width: plain_width(),
             mute: false,
             solo: false,
         }

@@ -368,6 +368,15 @@ impl RmeDevice for DeviceHandle {
     fn set_width(&mut self, width: f32) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_width(width))
     }
+    fn has_global_width(&self) -> bool {
+        delegate!(self, has_global_width())
+    }
+    fn has_strip_width(&self, cid: ChannelId) -> bool {
+        delegate!(self, has_strip_width(cid))
+    }
+    fn set_strip_width(&mut self, cid: ChannelId, width: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_strip_width(cid, width))
+    }
     fn set_ref_level(&mut self, idx: usize, raw: u16) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_ref_level(idx, raw))
     }
@@ -790,6 +799,8 @@ pub enum Message {
     /// Global device settings, all in the `device_panel` drawer.
     PitchChanged(f32),
     WidthChanged(f32),
+    /// Stereo width of `cid`'s pair (-1.0..=1.0), the strip's own knob.
+    StripWidth(ChannelId, f32),
     MsProcChanged(bool),
     An12Changed(bool),
     InputLinkChanged(bool),
@@ -1322,6 +1333,7 @@ pub enum UndoGesture {
     LowCut(usize),
     Pitch,
     Width,
+    StripWidth(ChannelId),
 }
 
 /// See `UndoGesture`. Long enough to bridge the gaps inside one wheel spin
@@ -1343,6 +1355,7 @@ fn undo_gesture(message: &Message) -> Option<UndoGesture> {
         Message::EqLowCutFreq(idx, _) => UndoGesture::LowCut(*idx),
         Message::PitchChanged(_) => UndoGesture::Pitch,
         Message::WidthChanged(_) => UndoGesture::Width,
+        Message::StripWidth(cid, _) => UndoGesture::StripWidth(*cid),
         _ => return None,
     })
 }
@@ -2330,6 +2343,7 @@ fn needs_protocol_features(message: &Message) -> bool {
             | Message::LoopbackChanged(..)
             | Message::PitchChanged(_)
             | Message::WidthChanged(_)
+            | Message::StripWidth(..)
             | Message::MsProcChanged(_)
             | Message::An12Changed(_)
             | Message::InputLinkChanged(_)
@@ -2931,6 +2945,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::WidthChanged(v) => {
             if let Err(e) = state.device.set_width(v) {
                 fail(state, "set_width", &e);
+            }
+        }
+        Message::StripWidth(cid, v) => {
+            if let Err(e) = state.device.set_strip_width(cid, v.clamp(-1.0, 1.0)) {
+                fail(state, "set_strip_width", &e);
             }
         }
         Message::MsProcChanged(on) => {
@@ -4272,26 +4291,27 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .into()
             };
-        let output = column![
-            section("OUTPUT"),
-            row![
-                knob_cell(
-                    "Pitch",
-                    knob(Knob {
-                        tint: None,
-                        value: settings.pitch_percent,
-                        range: (-5.0, 5.0),
-                        label: format!("{:+.1}%", settings.pitch_percent),
-                        arc_from_center: true,
-                        interactive: true,
-                        log_scale: false,
-                        modifiers,
-                        scale,
-                        on_change: Box::new(|v| Message::PitchChanged(v.clamp(-5.0, 5.0))),
-                        on_reset: Box::new(|| Message::PitchChanged(0.0)),
-                    }),
-                ),
-                knob_cell(
+        let output = column![section("OUTPUT"), {
+            // The single width knob of older drivers (AN1/2 only);
+            // newer ones have one per stereo strip, in its settings.
+            let mut knobs = row![knob_cell(
+                "Pitch",
+                knob(Knob {
+                    tint: None,
+                    value: settings.pitch_percent,
+                    range: (-5.0, 5.0),
+                    label: format!("{:+.1}%", settings.pitch_percent),
+                    arc_from_center: true,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers,
+                    scale,
+                    on_change: Box::new(|v| Message::PitchChanged(v.clamp(-5.0, 5.0))),
+                    on_reset: Box::new(|| Message::PitchChanged(0.0)),
+                }),
+            ),];
+            if state.device.has_global_width() {
+                knobs = knobs.push(knob_cell(
                     "Width",
                     knob(Knob {
                         tint: None,
@@ -4306,9 +4326,10 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                         on_change: Box::new(|v| Message::WidthChanged(v.clamp(-1.0, 1.0))),
                         on_reset: Box::new(|| Message::WidthChanged(0.0)),
                     }),
-                ),
-            ],
-        ]
+                ));
+            }
+            knobs
+        },]
         .spacing(theme::SPACE_MD * scale);
 
         // The global flags as a two-column grid of equal toggles, the same
@@ -5393,6 +5414,44 @@ fn settings_popover(
         tip,
         scale,
     ));
+
+    // The pair's own width (newer drivers), as TotalMix's width knob: it
+    // narrows the pair's routing into every output. Only on a stereo
+    // strip; a split pair is two mono strips.
+    if p.stereo_linked && state.device.has_strip_width(cid) {
+        let value = match cid {
+            ChannelId::Input(i) => state.device.inputs().get(i).map(|c| c.width),
+            ChannelId::Playback(i) => state.device.playbacks().get(i).map(|c| c.width),
+            ChannelId::Output(_) => None,
+        }
+        .unwrap_or(1.0);
+        col = col.push(hint(
+            row![
+                text("Width")
+                    .size(theme::TEXT_SM * scale)
+                    .color(theme::TEXT_SEC),
+                container(knob(Knob {
+                    tint: None,
+                    value,
+                    range: (-1.0, 1.0),
+                    label: format!("{value:+.2}"),
+                    arc_from_center: true,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers: p.modifiers,
+                    scale,
+                    on_change: Box::new(move |v| Message::StripWidth(cid, v.clamp(-1.0, 1.0))),
+                    on_reset: Box::new(move || Message::StripWidth(cid, 1.0)),
+                }))
+                .width(Length::Fill)
+                .align_x(iced::Alignment::End),
+            ]
+            .align_y(iced::Alignment::Center)
+            .width(Length::Fill),
+            "Width: +1.00 stereo, 0 mono, -1.00 sides swapped. Applies to every output",
+            scale,
+        ));
+    }
 
     let ChannelId::Input(idx) = cid else {
         return flyout_card(col, width, scale);
@@ -8581,6 +8640,17 @@ mod tests {
             crate::sidebar::clock_line(&state, "Internal"),
             "48 kHz \u{00b7} 256 smp \u{00b7} Internal"
         );
+    }
+
+    #[test]
+    fn the_strip_width_knob_sets_the_pair_and_undoes() {
+        let mut state = new(true, None, None);
+        let pb = ChannelId::Playback(0);
+        let _ = update(&mut state, Message::StripWidth(pb, 0.25));
+        assert_eq!(state.device.playbacks()[0].width, 0.25);
+        assert_eq!(state.device.playbacks()[1].width, 0.25);
+        let _ = update(&mut state, Message::Undo);
+        assert_eq!(state.device.playbacks()[0].width, 1.0);
     }
 
     #[test]

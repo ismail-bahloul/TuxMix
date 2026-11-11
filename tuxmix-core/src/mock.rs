@@ -664,6 +664,41 @@ impl RmeDevice for MockBabyfacePro {
         Ok(())
     }
 
+    fn has_strip_width(&self, cid: ChannelId) -> bool {
+        match cid {
+            ChannelId::Input(i) => self.inputs.get(i).is_some_and(|c| !c.is_mono()),
+            ChannelId::Playback(i) => i < self.playbacks.len(),
+            ChannelId::Output(_) => false,
+        }
+    }
+
+    fn set_strip_width(&mut self, cid: ChannelId, width: f32) -> Result<(), Error> {
+        if !self.has_strip_width(cid) {
+            return Err(Error::InvalidChannel(format!(
+                "{cid:?} is not a stereo pair"
+            )));
+        }
+        let width = width.clamp(-1.0, 1.0);
+        match cid {
+            ChannelId::Input(i) => {
+                for k in [i & !1, i | 1] {
+                    if let Some(c) = self.inputs.get_mut(k) {
+                        c.width = width;
+                    }
+                }
+            }
+            ChannelId::Playback(i) => {
+                for k in [i & !1, i | 1] {
+                    if let Some(c) = self.playbacks.get_mut(k) {
+                        c.width = width;
+                    }
+                }
+            }
+            ChannelId::Output(_) => {}
+        }
+        Ok(())
+    }
+
     fn set_ref_level(&mut self, idx: usize, raw: u16) -> Result<(), Error> {
         let inp = self
             .inputs
@@ -1292,5 +1327,32 @@ mod tests {
 
         dev.apply_scene(&scene).unwrap();
         assert!((dev.volume(ChannelId::Input(0), 0).unwrap() - 0.42).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_strip_width_covers_both_channels_of_the_pair() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        dev.set_strip_width(ChannelId::Playback(3), 0.5).unwrap();
+        assert_eq!(dev.playbacks()[2].width, 0.5);
+        assert_eq!(dev.playbacks()[3].width, 0.5);
+        assert_eq!(dev.playbacks()[0].width, 1.0, "other pairs untouched");
+        dev.set_strip_width(ChannelId::Input(4), -2.0).unwrap();
+        assert_eq!(dev.inputs()[5].width, -1.0, "clamped to -1.0");
+    }
+
+    #[test]
+    fn a_mono_input_has_no_strip_width() {
+        let mut dev = MockBabyfacePro::open().unwrap();
+        assert!(!dev.has_strip_width(ChannelId::Input(0)));
+        assert!(dev.set_strip_width(ChannelId::Input(0), 0.5).is_err());
+        assert!(!dev.has_strip_width(ChannelId::Output(0)));
+    }
+
+    #[test]
+    fn a_scene_saved_before_strip_width_loads_as_plain_stereo() {
+        let mut v = serde_json::to_value(PlaybackChannel::new(0, "PB 1", 6)).unwrap();
+        v.as_object_mut().unwrap().remove("width");
+        let pb: PlaybackChannel = serde_json::from_value(v).unwrap();
+        assert_eq!(pb.width, 1.0);
     }
 }

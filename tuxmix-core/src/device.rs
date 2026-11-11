@@ -730,6 +730,29 @@ pub trait RmeDevice {
         ))
     }
 
+    /// Whether this backend has the single width knob of older drivers
+    /// (AN1/2 only). Drivers that have [`Self::set_strip_width`] drop it.
+    fn has_global_width(&self) -> bool {
+        true
+    }
+
+    /// Whether `cid`'s stereo pair has its own width
+    /// ([`Self::set_strip_width`]).
+    fn has_strip_width(&self, cid: ChannelId) -> bool {
+        let _ = cid;
+        false
+    }
+
+    /// Set the stereo width of `cid`'s pair (-1.0..=1.0, +1.0 plain
+    /// stereo, 0 mono, -1.0 sides swapped), as TotalMix's width knob: it
+    /// applies to the pair's routing into every output.
+    fn set_strip_width(&mut self, cid: ChannelId, width: f32) -> Result<(), Error> {
+        let _ = (cid, width);
+        Err(Error::InvalidChannel(
+            "Stereo width per strip is not supported on this backend".into(),
+        ))
+    }
+
     /// Stereo width (-1..+1, 0 = normal).
     fn set_width(&mut self, width: f32) -> Result<(), Error> {
         let _ = width;

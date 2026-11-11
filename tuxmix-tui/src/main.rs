@@ -206,6 +206,15 @@ impl RmeDevice for DeviceHandle {
     fn set_width(&mut self, width: f32) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_width(width))
     }
+    fn has_global_width(&self) -> bool {
+        delegate!(self, has_global_width())
+    }
+    fn has_strip_width(&self, cid: ChannelId) -> bool {
+        delegate!(self, has_strip_width(cid))
+    }
+    fn set_strip_width(&mut self, cid: ChannelId, width: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_strip_width(cid, width))
+    }
     fn set_ref_level(&mut self, idx: usize, raw: u16) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_ref_level(idx, raw))
     }

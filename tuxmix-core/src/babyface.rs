@@ -169,6 +169,21 @@ fn playback_crosspoint_slot(idx: usize) -> Option<(usize, SelemChannelId)> {
     Some((src, ch))
 }
 
+/// The driver's width control of `cid`'s stereo pair: `"<source>
+/// Width"` (newer drivers, one per stereo source). `None` for a mono
+/// input or a channel with no crosspoint.
+fn strip_width_name(cid: ChannelId) -> Option<String> {
+    let src = match cid {
+        ChannelId::Input(idx) => match input_crosspoint_slot(idx)? {
+            (_, _, true) => return None,
+            (src, _, false) => src,
+        },
+        ChannelId::Playback(idx) => playback_crosspoint_slot(idx)?.0,
+        ChannelId::Output(_) => return None,
+    };
+    Some(format!("{} Width", BF_SOURCES[src]))
+}
+
 /// EQ strips exist only on the 4 analog inputs (`eq.c`'s `names[4] =
 /// {"AN1","AN2","AN3","AN4"}`), which happen to be exactly
 /// `BF_SOURCES[0..4]`.
@@ -473,6 +488,28 @@ impl BabyfacePro {
     /// Look up a crosspoint's ALSA element: `BF_SOURCES[src]` at
     /// `.index = output*14 + src`, exactly `mixer.c`'s
     /// `babyface_create_xpoints` layout.
+    /// Keeps `width` on both channels of `cid`'s pair.
+    fn store_strip_width(&mut self, cid: ChannelId, width: f32) {
+        let (ChannelId::Input(i) | ChannelId::Playback(i)) = cid else {
+            return;
+        };
+        let pair = i / 2 * 2;
+        for k in pair..pair + 2 {
+            match cid {
+                ChannelId::Input(_) => {
+                    if let Some(c) = self.inputs.get_mut(k) {
+                        c.width = width;
+                    }
+                }
+                _ => {
+                    if let Some(c) = self.playbacks.get_mut(k) {
+                        c.width = width;
+                    }
+                }
+            }
+        }
+    }
+
     fn crosspoint_selem(&self, src: usize, output: usize) -> Option<Selem<'_>> {
         self.mixer
             .find_selem(BF_SOURCES[src], (output * 14 + src) as u32)
@@ -930,6 +967,27 @@ impl BabyfacePro {
                         c.split = split;
                     }
                 }
+            }
+        }
+
+        // ── Stereo width per pair (newer drivers): mirrored to both
+        // channels of the pair, like the split.
+        for cid in (0..self.inputs.len())
+            .map(ChannelId::Input)
+            .chain((0..self.playbacks.len()).map(ChannelId::Playback))
+            .filter(|cid| match cid {
+                ChannelId::Input(i) | ChannelId::Playback(i) => i % 2 == 0,
+                ChannelId::Output(_) => false,
+            })
+        {
+            let Some(name) = strip_width_name(cid) else {
+                continue;
+            };
+            let Some(selem) = self.mixer.find_selem(&name, 0) else {
+                continue;
+            };
+            if let Ok(v) = selem.get_playback_volume(mono) {
+                self.store_strip_width(cid, v as f32 / 100.0);
             }
         }
 
@@ -2264,6 +2322,29 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
+    fn has_global_width(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary && self.mixer.find_selem("Width", 0).is_some()
+    }
+
+    fn has_strip_width(&self, cid: ChannelId) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && strip_width_name(cid).is_some_and(|n| self.mixer.find_selem(&n, 0).is_some())
+    }
+
+    fn set_strip_width(&mut self, cid: ChannelId, width: f32) -> Result<(), Error> {
+        self.require_proprietary("Width")?;
+        let width = width.clamp(-1.0, 1.0);
+        let name = strip_width_name(cid)
+            .ok_or_else(|| Error::InvalidChannel(format!("{cid:?} is not a stereo pair")))?;
+        let selem = self
+            .mixer
+            .find_selem(&name, 0)
+            .ok_or_else(|| Error::InvalidChannel(format!("No \"{name}\" control")))?;
+        selem.set_playback_volume(SelemChannelId::mono(), (width * 100.0).round() as i64)?;
+        self.store_strip_width(cid, width);
+        Ok(())
+    }
+
     fn set_width(&mut self, width: f32) -> Result<(), Error> {
         self.require_proprietary("Width")?;
         let clamped = width.clamp(-1.0, 1.0);
@@ -2385,6 +2466,16 @@ impl RmeDevice for BabyfacePro {
             }
         }
         self.write_scene_eq(&eq_before)?;
+        for i in (0..self.inputs.len()).step_by(2) {
+            if self.has_strip_width(ChannelId::Input(i)) {
+                let _ = self.set_strip_width(ChannelId::Input(i), scene.inputs[i].width);
+            }
+        }
+        for i in (0..self.playbacks.len()).step_by(2) {
+            if self.has_strip_width(ChannelId::Playback(i)) {
+                let _ = self.set_strip_width(ChannelId::Playback(i), scene.playbacks[i].width);
+            }
+        }
         // Best-effort: `ms_proc`/`an12`/`width`/`fx_send`/`clock_source`
         // are all real ALSA controls on this backend, but some (clock
         // source especially — see `PROTOCOL.md`/this session's own
@@ -2394,7 +2485,7 @@ impl RmeDevice for BabyfacePro {
         // shouldn't abort the rest of the scene load.
         let _ = self.set_ms_proc(self.settings.ms_proc);
         let _ = self.set_an12(self.settings.an12);
-        if self.settings.width != 0.0 {
+        if self.settings.width != 0.0 && self.has_global_width() {
             let _ = self.set_width(self.settings.width);
         }
         if let Some(db) = self.settings.fx_send_db {
@@ -2888,6 +2979,29 @@ mod tests {
         if !was_linked {
             dev.set_input_pair_linked(0, false).unwrap();
         }
+    }
+
+    #[test]
+    #[ignore = "requires the real Babyface Pro FS attached; run manually with --ignored"]
+    fn live_hardware_strip_width_round_trip() {
+        let mut dev = BabyfacePro::open().expect("real device attached");
+        let pb = ChannelId::Playback(2); // PB2 (playback channels 2/3)
+        if !dev.has_strip_width(pb) {
+            eprintln!("driver without per-strip width, skipped");
+            return;
+        }
+        assert!(!dev.has_global_width(), "the AN1/2 Width is gone");
+        assert!(!dev.has_strip_width(ChannelId::Input(0)), "AN1 is mono");
+
+        dev.set_strip_width(pb, 0.4).unwrap();
+        let dev2 = BabyfacePro::open().expect("real device attached");
+        assert_eq!(dev2.playbacks()[2].width, 0.4);
+        assert_eq!(dev2.playbacks()[3].width, 0.4, "mirrored on the pair");
+        drop(dev2);
+
+        dev.set_strip_width(pb, 1.0).unwrap();
+        let dev3 = BabyfacePro::open().expect("real device attached");
+        assert_eq!(dev3.playbacks()[2].width, 1.0);
     }
 
     #[test]
