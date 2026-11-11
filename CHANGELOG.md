@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- With no supported device, the waiting screen names an RME unit it finds on
+  the USB bus (Fireface UC, UCX or any other under RME's vendor ID) and says
+  it is not supported yet, instead of only asking to check the cable. A
+  Babyface Pro in class-compliant mode is told how to switch back.
+
 ### Changed
 - An input strip whose output pair has Loop on is tagged LOOP instead of its
   type: its meter shows that output, not the input (#23).
