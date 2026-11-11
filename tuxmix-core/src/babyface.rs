@@ -1315,6 +1315,10 @@ impl RmeDevice for BabyfacePro {
         self.profile.output_pair_count()
     }
 
+    fn profile(&self) -> &'static DeviceProfile {
+        self.profile
+    }
+
     /// The class-compliant surface is routing, preamps and clock; every
     /// feature in RME's own protocol is missing there (see
     /// `ControlGrammar`). The UIs gate on this so they stop offering

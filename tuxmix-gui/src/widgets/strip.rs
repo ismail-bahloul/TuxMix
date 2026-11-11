@@ -12,7 +12,7 @@ use iced::{alignment, mouse, Color, Element, Length, Point, Rectangle, Renderer,
 use std::time::Instant;
 use tuxmix_core::ChannelId;
 
-use crate::app::{db_text, short_label, Message, OUT_LABELS};
+use crate::app::{db_text, short_label, Message};
 use crate::theme;
 use crate::widgets::fader::{fader, vu_meter, Fader, MeterFrame};
 use crate::widgets::knob::{knob, Knob};
@@ -155,6 +155,8 @@ impl CollapseAnim {
 pub struct StripParams<'a> {
     pub cid: ChannelId,
     pub output_idx: usize,
+    /// The bus name of `output_idx` ("AN1/2"), from the device profile.
+    pub out_label: &'static str,
     /// Whether the connection this strip is drawn for can drive RME's own
     /// protocol (see `RmeDevice::protocol_features`). False on the
     /// class-compliant personality, where EQ, Trim, Phase, Split and
@@ -971,7 +973,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             container(hint(
                 button(
                     row![
-                        text(OUT_LABELS[out])
+                        text(p.out_label)
                             .size(theme::TEXT_XS * scale)
                             .wrapping(advanced_text::Wrapping::None),
                         text("▸").size(theme::TEXT_XS * scale),

@@ -79,6 +79,9 @@ impl RmeDevice for DeviceHandle {
     fn output_pair_count(&self) -> usize {
         delegate!(self, output_pair_count)
     }
+    fn profile(&self) -> &'static tuxmix_core::profile::DeviceProfile {
+        delegate!(self, profile)
+    }
     fn open() -> Result<Self, tuxmix_core::Error> {
         unreachable!()
     }

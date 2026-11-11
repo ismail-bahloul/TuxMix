@@ -186,6 +186,11 @@ pub trait RmeDevice {
     /// Number of physical stereo output pairs on this device.
     fn output_pair_count(&self) -> usize;
 
+    /// The model's static description: channel names, output pair labels
+    /// and which pair is Main. What the UIs read instead of hard-coding
+    /// one unit's layout.
+    fn profile(&self) -> &'static crate::profile::DeviceProfile;
+
     /// Attempt to detect the device on the ALSA bus and open a mixer handle.
     fn open() -> Result<Self, Error>
     where
