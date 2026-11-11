@@ -475,7 +475,9 @@ impl DeviceHandle {
                 Err(_) => {}
             }
         }
-        Err(hint)
+        // Nothing opened: an RME unit TuxMix cannot drive may still be on
+        // the bus, and saying so beats the plug-it-in checklist.
+        Err(hint.or_else(tuxmix_core::usb_ids::unsupported_hint))
     }
     pub fn open_mock() -> Self {
         DeviceHandle::Mock(MockBabyfacePro::open().expect("mock opens"))

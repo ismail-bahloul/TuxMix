@@ -35,6 +35,7 @@ pub mod pw_meter;
 pub mod scene;
 #[cfg(feature = "usb")]
 pub mod usb;
+pub mod usb_ids;
 
 #[cfg(feature = "alsa")]
 pub use babyface::BabyfacePro;
