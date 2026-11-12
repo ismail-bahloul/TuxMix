@@ -75,6 +75,11 @@ pub struct DeviceSettings {
     /// [`RmeDevice::set_dim`].
     #[serde(default)]
     pub dim: bool,
+    /// Main Mono: the stereo sources are summed into the Main pair, as
+    /// the mono button of TotalMix's control room does. Not part of a
+    /// scene (like Dim). See [`RmeDevice::set_main_mono`].
+    #[serde(default)]
+    pub main_mono: bool,
     /// FX send level in dB (-65..0, None = unset). 0 dB = max send.
     /// `Option` so old scenes (no send) stay untouched on apply.
     #[serde(default)]
@@ -355,6 +360,16 @@ pub trait RmeDevice {
         let _ = on;
         Err(Error::InvalidChannel(
             "Dim is not supported on this backend".into(),
+        ))
+    }
+
+    /// Control-room mono: sum the stereo sources into the Main pair
+    /// (PH3/4) - TotalMix writes their Main crosspoints at half level on
+    /// both sides, and restores them when it is switched off.
+    fn set_main_mono(&mut self, on: bool) -> Result<(), Error> {
+        let _ = on;
+        Err(Error::InvalidChannel(
+            "Mono is not supported on this backend".into(),
         ))
     }
 

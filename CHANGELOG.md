@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- A mono button in the Control Room card, as in TotalMix FX: it sums the
+  stereo sources into the Main pair. TotalMix writes the Main crosspoints of
+  a playback pair at half level on both sides, which the kernel driver's new
+  `Main Mono Switch` does; it needs a driver that has it. The 0.3.7 notes
+  said Mono writes nothing over USB, which was wrong.
 - With no supported device, the waiting screen names an RME unit it finds on
   the USB bus (Fireface UC, UCX or any other under RME's vendor ID) and says
   it is not supported yet, instead of only asking to check the cable. A
@@ -19,7 +24,7 @@
   in TotalMix FX on this unit: PH3/4 becomes Main, beside a card of Dim and
   Recall, with Store apart at the bottom. Recall is host-side, as in
   TotalMix, and lasts until the app closes. Mono, Ext. Input, Mute FX and
-  Talkback are left out: they write nothing over USB.
+  Talkback are left out (Mono does write over USB: see Unreleased).
 
 ### Changed
 - Every source file now carries an `SPDX-License-Identifier` and the

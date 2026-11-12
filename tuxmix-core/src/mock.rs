@@ -280,6 +280,7 @@ impl RmeDevice for MockBabyfacePro {
                 eq_for_record: false,
                 optical_out_spdif: false,
                 dim: false,
+                main_mono: false,
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,
@@ -600,6 +601,11 @@ impl RmeDevice for MockBabyfacePro {
 
     fn set_dim(&mut self, on: bool) -> Result<(), Error> {
         self.settings.dim = on;
+        Ok(())
+    }
+
+    fn set_main_mono(&mut self, on: bool) -> Result<(), Error> {
+        self.settings.main_mono = on;
         Ok(())
     }
 
