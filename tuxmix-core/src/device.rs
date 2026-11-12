@@ -119,6 +119,9 @@ pub struct DeviceSettings {
 }
 
 /// Serde default for [`DeviceSettings::sample_rate`].
+/// The bottom of the FX send and return knobs: they read -65 dB when off.
+pub const FX_LEVEL_OFF_DB: f32 = -65.0;
+
 fn default_sample_rate() -> u32 {
     48_000
 }
@@ -356,6 +359,40 @@ pub trait RmeDevice {
         Err(Error::InvalidChannel(
             "Dim is not supported on this backend".into(),
         ))
+    }
+
+    /// Whether every strip has its own FX send and every output pair its
+    /// FX return (TotalMix FX's "send FX" and "return FX" knobs).
+    fn has_fx_levels(&self) -> bool {
+        false
+    }
+
+    /// A strip's FX send, in dB (-65..0, [`FX_LEVEL_OFF_DB`] = off).
+    fn set_fx_send_of(&mut self, channel: ChannelId, db: f32) -> Result<(), Error> {
+        let _ = (channel, db);
+        Err(Error::InvalidChannel(
+            "FX sends are not supported on this backend".into(),
+        ))
+    }
+
+    /// The strip's FX send, in dB.
+    fn fx_send_of(&self, channel: ChannelId) -> f32 {
+        let _ = channel;
+        FX_LEVEL_OFF_DB
+    }
+
+    /// An output pair's FX return, in dB (-65..0, [`FX_LEVEL_OFF_DB`] = off).
+    fn set_fx_return(&mut self, pair: usize, db: f32) -> Result<(), Error> {
+        let _ = (pair, db);
+        Err(Error::InvalidChannel(
+            "FX returns are not supported on this backend".into(),
+        ))
+    }
+
+    /// The output pair's FX return, in dB.
+    fn fx_return(&self, pair: usize) -> f32 {
+        let _ = pair;
+        FX_LEVEL_OFF_DB
     }
 
     /// EQ for Record toggle (settings keepalive bit 6).

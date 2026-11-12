@@ -359,6 +359,21 @@ impl RmeDevice for DeviceHandle {
     fn set_phase(&mut self, idx: usize, invert: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_phase(idx, invert))
     }
+    fn has_fx_levels(&self) -> bool {
+        delegate!(self, has_fx_levels())
+    }
+    fn set_fx_send_of(&mut self, channel: ChannelId, db: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_fx_send_of(channel, db))
+    }
+    fn fx_send_of(&self, channel: ChannelId) -> f32 {
+        delegate!(self, fx_send_of(channel))
+    }
+    fn set_fx_return(&mut self, pair: usize, db: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_fx_return(pair, db))
+    }
+    fn fx_return(&self, pair: usize) -> f32 {
+        delegate!(self, fx_return(pair))
+    }
     fn set_fx_send(&mut self, db: f32) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_fx_send(db))
     }
@@ -794,6 +809,10 @@ pub enum Message {
     An12Changed(bool),
     InputLinkChanged(bool),
     EqForRecordChanged(bool),
+    /// A strip's FX send, in dB (-65..0).
+    FxSendChanged(ChannelId, f32),
+    /// An output pair's FX return, in dB (-65..0).
+    FxReturnChanged(usize, f32),
     OpticalOutFormatChanged(bool),
     /// The CUE button on an Output strip — exclusive across every
     /// output (see `RmeDevice::set_cue`'s own doc comment), so this
@@ -2277,6 +2296,8 @@ fn is_undoable(message: &Message) -> bool {
             | Message::SidebarResize(_)
             | Message::SetRowMode(_)
             | Message::DimToggle
+            | Message::FxSendChanged(..)
+            | Message::FxReturnChanged(..)
             | Message::MatrixHover(..)
             | Message::PointerPressed
             | Message::PointerReleased
@@ -2343,6 +2364,8 @@ fn needs_protocol_features(message: &Message) -> bool {
             | Message::EqBandPoint(..)
             | Message::EqBandReset(..)
             | Message::EqLowCutFreq(..)
+            | Message::FxSendChanged(..)
+            | Message::FxReturnChanged(..)
             | Message::EqLowCutSlope(..)
     )
 }
@@ -2946,6 +2969,22 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::InputLinkChanged(on) => {
             if let Err(e) = state.device.set_input_link(on) {
                 fail(state, "set_input_link", &e);
+            }
+        }
+        Message::FxSendChanged(cid, db) => {
+            if let Err(e) = state
+                .device
+                .set_fx_send_of(cid, db.clamp(-65.0, 0.0).round())
+            {
+                fail(state, "set_fx_send", &e);
+            }
+        }
+        Message::FxReturnChanged(pair, db) => {
+            if let Err(e) = state
+                .device
+                .set_fx_return(pair, db.clamp(-65.0, 0.0).round())
+            {
+                fail(state, "set_fx_return", &e);
             }
         }
         Message::EqForRecordChanged(on) => {
@@ -5393,6 +5432,57 @@ fn settings_popover(
         tip,
         scale,
     ));
+
+    // TotalMix FX's "send FX" (inputs, playback) and "return FX" (outputs)
+    // knobs, where the driver has them.
+    if state.device.has_fx_levels() {
+        let (label, db, on_change, on_reset): (&str, f32, Box<dyn Fn(f32) -> Message>, Message) =
+            match cid {
+                ChannelId::Output(o) => {
+                    let pair = o / 2;
+                    (
+                        "Return FX",
+                        state.device.fx_return(pair),
+                        Box::new(move |v| Message::FxReturnChanged(pair, v)),
+                        Message::FxReturnChanged(pair, tuxmix_core::device::FX_LEVEL_OFF_DB),
+                    )
+                }
+                _ => (
+                    "Send FX",
+                    state.device.fx_send_of(cid),
+                    Box::new(move |v| Message::FxSendChanged(cid, v)),
+                    Message::FxSendChanged(cid, tuxmix_core::device::FX_LEVEL_OFF_DB),
+                ),
+            };
+        col = col.push(
+            row![
+                text(label)
+                    .size(theme::TEXT_SM * scale)
+                    .color(theme::TEXT_SEC),
+                container(knob(Knob {
+                    tint: None,
+                    value: db,
+                    range: (-65.0, 0.0),
+                    label: if db <= tuxmix_core::device::FX_LEVEL_OFF_DB {
+                        "-\u{221e}".to_string()
+                    } else {
+                        format!("{db:.0}")
+                    },
+                    arc_from_center: false,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers: p.modifiers,
+                    scale,
+                    on_change: Box::new(move |v| on_change(v.round())),
+                    on_reset: Box::new(move || on_reset.clone()),
+                }))
+                .width(Length::Fill)
+                .align_x(iced::Alignment::End),
+            ]
+            .align_y(iced::Alignment::Center)
+            .width(Length::Fill),
+        );
+    }
 
     let ChannelId::Input(idx) = cid else {
         return flyout_card(col, width, scale);
@@ -8581,6 +8671,22 @@ mod tests {
             crate::sidebar::clock_line(&state, "Internal"),
             "48 kHz \u{00b7} 256 smp \u{00b7} Internal"
         );
+    }
+
+    #[test]
+    fn fx_send_and_return_knobs_set_the_levels_and_stay_out_of_undo() {
+        let mut state = new(true, None, None);
+        let pb = ChannelId::Playback(0);
+        assert!(state.device.has_fx_levels());
+        assert_eq!(state.device.fx_send_of(pb), -65.0);
+        let _ = update(&mut state, Message::FxSendChanged(pb, -6.0));
+        assert_eq!(state.device.fx_send_of(pb), -6.0);
+        let _ = update(&mut state, Message::FxReturnChanged(1, -10.0));
+        assert_eq!(state.device.fx_return(1), -10.0);
+        // Held to the knob's range.
+        let _ = update(&mut state, Message::FxSendChanged(pb, 12.0));
+        assert_eq!(state.device.fx_send_of(pb), 0.0);
+        assert!(state.undo_stack.is_empty(), "FX levels are not in a scene");
     }
 
     #[test]
