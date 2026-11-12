@@ -10,7 +10,7 @@ use log::info;
 use crate::channel::OutputChannel;
 use crate::channel::*;
 use crate::curves::{fader_db_to_raw, fader_raw_to_db};
-use crate::device::{DeviceSettings, RmeDevice};
+use crate::device::{DeviceSettings, RmeDevice, FX_LEVEL_OFF_DB};
 use crate::error::Error;
 use crate::mixer::AlsaMixer;
 use crate::profile::DeviceProfile;
@@ -71,6 +71,49 @@ pub enum ControlGrammar {
     /// `2a39:3fb0`). Routing, preamps and clock work; the DSP features
     /// that live in RME's own protocol do not exist here.
     ClassCompliant,
+}
+
+/// The driver's FX send is the source's level into the FX bus, 0 dB =
+/// 0x1000; an output's FX return has 0 dB = 0x4000 (TotalMix FX's own
+/// scales, checked with usbmon). Both are linear in amplitude.
+const FX_SEND_TOP: i64 = 0x1000;
+const FX_RETURN_TOP: i64 = 0x4000;
+
+/// The driver's FX send control for a strip: one per source, so the two
+/// channels of a stereo pair share it.
+fn fx_send_control(channel: ChannelId) -> Option<String> {
+    let src = match channel {
+        ChannelId::Input(i) => input_crosspoint_slot(i)?.0,
+        ChannelId::Playback(i) => playback_crosspoint_slot(i)?.0,
+        ChannelId::Output(_) => return None,
+    };
+    Some(fx_send_name(src))
+}
+
+fn fx_send_name(src: usize) -> String {
+    format!("{} FX Send", BF_SOURCES[src])
+}
+
+fn fx_return_name(pair: usize) -> Option<String> {
+    PAIR_LABELS.get(pair).map(|l| format!("{l} FX Return"))
+}
+
+/// A level in dB (-65..0, at or below -65 off) as the raw value of a
+/// control whose 0 dB is `top`.
+fn fx_db_to_raw(db: f32, top: i64) -> i64 {
+    if db <= FX_LEVEL_OFF_DB {
+        0
+    } else {
+        ((top as f32) * 10f32.powf(db.min(0.0) / 20.0) + 0.01).floor() as i64
+    }
+}
+
+fn fx_raw_to_db(raw: i64, top: i64) -> f32 {
+    if raw <= 0 {
+        FX_LEVEL_OFF_DB
+    } else {
+        (20.0 * (raw as f32 / top as f32).log10()).clamp(FX_LEVEL_OFF_DB, 0.0)
+    }
 }
 
 /// A crosspoint source's name in the class-compliant grammar, for
@@ -249,11 +292,15 @@ fn decode_volume_pan(l_raw: i64, r_raw: i64, max: f32) -> (f32, i8) {
     pan_join(l_raw as f32 / max, r_raw as f32 / max)
 }
 
-/// The inverse of [`pan_split`].
+/// The inverse of [`pan_split`]: the volume is the power sum of the two
+/// sides and the pan is their angle.
 fn pan_join(l: f32, r: f32) -> (f32, i8) {
-    let volume = l.max(r);
+    let volume = l.hypot(r);
     let pan = if volume > 0.0 {
-        (((r - l) / volume) * 100.0).round().clamp(-100.0, 100.0) as i8
+        let a = r.atan2(l);
+        ((a / std::f32::consts::FRAC_PI_4 - 1.0) * 100.0)
+            .round()
+            .clamp(-100.0, 100.0) as i8
     } else {
         0
     };
@@ -1112,6 +1159,17 @@ impl BabyfacePro {
                 self.settings.dim = v != 0;
             }
         }
+        if let Some(selem) = self.mixer.find_selem("Dim Level", 0) {
+            // The driver counts the cut in positive dB.
+            if let Ok(v) = selem.get_playback_volume(mono) {
+                self.settings.dim_level_db = -(v as f32);
+            }
+        }
+        if let Some(selem) = self.mixer.find_selem("Main Mono", 0) {
+            if let Ok(v) = selem.get_playback_switch(mono) {
+                self.settings.main_mono = v != 0;
+            }
+        }
         if let Some(selem) = self.mixer.find_selem("Width", 0) {
             if let Ok(v) = selem.get_playback_volume(mono) {
                 self.settings.width = v as f32 / 100.0;
@@ -1410,9 +1468,11 @@ impl RmeDevice for BabyfacePro {
                 pitch_percent: 0.0,
                 ms_proc: false,
                 an12: false,
-                eq_for_record: false,
+                eq_for_record: true,
                 optical_out_spdif: false,
                 dim: false,
+                dim_level_db: -20.0,
+                main_mono: false,
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,
@@ -2264,6 +2324,92 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
+    fn has_main_mono(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && self.mixer.find_selem("Main Mono", 0).is_some()
+    }
+
+    fn has_dim_level(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && self.mixer.find_selem("Dim Level", 0).is_some()
+    }
+
+    fn set_dim_level(&mut self, db: f32) -> Result<(), Error> {
+        self.require_proprietary("Dim level")?;
+        let db = db.clamp(-65.0, 0.0).round();
+        // The driver's "Dim Level" (kernel driver after v9) counts the cut
+        // in positive dB; an older one has no such control.
+        let selem = self
+            .mixer
+            .find_selem("Dim Level", 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no Dim Level".into()))?;
+        selem.set_playback_volume(SelemChannelId::mono(), (-db) as i64)?;
+        self.settings.dim_level_db = db;
+        Ok(())
+    }
+
+    fn set_main_mono(&mut self, on: bool) -> Result<(), Error> {
+        self.require_proprietary("Mono")?;
+        // The driver's "Main Mono Switch" (kernel driver after v9); an
+        // older one has no such control.
+        let selem = self
+            .mixer
+            .find_selem("Main Mono", 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no Main Mono Switch".into()))?;
+        selem.set_playback_switch(SelemChannelId::mono(), on as i32)?;
+        self.settings.main_mono = on;
+        Ok(())
+    }
+
+    fn has_fx_levels(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && self.mixer.find_selem(&fx_send_name(0), 0).is_some()
+    }
+
+    fn set_fx_send_of(&mut self, channel: ChannelId, db: f32) -> Result<(), Error> {
+        self.require_proprietary("FX send")?;
+        let name = fx_send_control(channel)
+            .ok_or_else(|| Error::InvalidChannel(format!("{channel} has no FX send")))?;
+        let selem = self
+            .mixer
+            .find_selem(&name, 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no per-strip FX sends".into()))?;
+        selem.set_playback_volume(SelemChannelId::mono(), fx_db_to_raw(db, FX_SEND_TOP))?;
+        Ok(())
+    }
+
+    fn fx_send_of(&self, channel: ChannelId) -> f32 {
+        let Some(name) = fx_send_control(channel) else {
+            return FX_LEVEL_OFF_DB;
+        };
+        self.mixer
+            .find_selem(&name, 0)
+            .and_then(|s| s.get_playback_volume(SelemChannelId::mono()).ok())
+            .map_or(FX_LEVEL_OFF_DB, |raw| fx_raw_to_db(raw, FX_SEND_TOP))
+    }
+
+    fn set_fx_return(&mut self, pair: usize, db: f32) -> Result<(), Error> {
+        self.require_proprietary("FX return")?;
+        let name = fx_return_name(pair)
+            .ok_or_else(|| Error::InvalidChannel(format!("Output pair {pair} has no FX return")))?;
+        let selem = self
+            .mixer
+            .find_selem(&name, 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no FX returns".into()))?;
+        selem.set_playback_volume(SelemChannelId::mono(), fx_db_to_raw(db, FX_RETURN_TOP))?;
+        Ok(())
+    }
+
+    fn fx_return(&self, pair: usize) -> f32 {
+        let Some(name) = fx_return_name(pair) else {
+            return FX_LEVEL_OFF_DB;
+        };
+        self.mixer
+            .find_selem(&name, 0)
+            .and_then(|s| s.get_playback_volume(SelemChannelId::mono()).ok())
+            .map_or(FX_LEVEL_OFF_DB, |raw| fx_raw_to_db(raw, FX_RETURN_TOP))
+    }
+
     fn set_width(&mut self, width: f32) -> Result<(), Error> {
         self.require_proprietary("Width")?;
         let clamped = width.clamp(-1.0, 1.0);
@@ -2520,18 +2666,34 @@ impl RmeDevice for BabyfacePro {
 mod tests {
     #[test]
     fn pan_split_and_join_round_trip_in_linear_levels() {
-        // The dB-converted crosspoints pan on linear levels, louder side
-        // at the volume: centre, both extremes and between, up to +6 dB.
+        // The dB-converted crosspoints pan on TotalMix's constant-power
+        // law: centre, both extremes and between, up to +6 dB.
         for &volume in &[0.25f32, 1.0, 1.5, 2.0] {
             for &pan in &[-100i8, -37, 0, 1, 64, 100] {
                 let (l, r) = pan_split(volume, pan);
-                assert!((l.max(r) - volume).abs() < 1e-6);
+                // Power is kept: the two sides always sum to the volume.
+                assert!((l.hypot(r) - volume).abs() < 1e-5);
                 let (v, p) = pan_join(l, r);
-                assert!((v - volume).abs() < 1e-6);
+                assert!((v - volume).abs() < 1e-5);
                 assert_eq!(p, pan, "volume {volume} pan {pan}");
             }
         }
         assert_eq!(pan_join(0.0, 0.0), (0.0, 0));
+    }
+
+    #[test]
+    fn a_centred_mono_source_sits_3_db_down_on_each_side() {
+        // TotalMix FX, 0 dB = 0x2000: centre 0x16a0, R22 0x1266 / 0x1a2e,
+        // L56 0x1e1b / 0x0ad7 (within a step of the hardware's rounding).
+        let raw = |x: f32| (x * 8192.0).round() as i32;
+        let (l, r) = pan_split(1.0, 0);
+        assert!((raw(l) - 0x16a0).abs() <= 2 && (raw(r) - 0x16a0).abs() <= 2);
+        let (l, r) = pan_split(1.0, 22);
+        assert!((raw(l) - 0x1266).abs() <= 3 && (raw(r) - 0x1a2e).abs() <= 3);
+        let (l, r) = pan_split(1.0, -56);
+        assert!((raw(l) - 0x1e1b).abs() <= 3 && (raw(r) - 0x0ad7).abs() <= 3);
+        let (l, r) = pan_split(1.0, 100);
+        assert!(l.abs() < 1e-6 && (r - 1.0).abs() < 1e-6);
     }
     use super::*;
 
@@ -2580,6 +2742,26 @@ mod tests {
     }
 
     #[test]
+    fn fx_levels_use_totalmixs_scales() {
+        // Send: 0 dB = 0x1000 (TotalMix FX at -1.5, -5.5 and -61.5 dB wrote
+        // 0x0d76, 0x087e and 0x0003).
+        assert_eq!(fx_db_to_raw(0.0, FX_SEND_TOP), 0x1000);
+        // TotalMix rounds down, and its knob's own float is a hair off the
+        // label, so allow one step.
+        assert!((fx_db_to_raw(-1.5, FX_SEND_TOP) - 0x0d76).abs() <= 1);
+        assert!((fx_db_to_raw(-5.5, FX_SEND_TOP) - 0x087e).abs() <= 1);
+        assert_eq!(fx_db_to_raw(-61.5, FX_SEND_TOP), 3);
+        assert_eq!(fx_db_to_raw(-65.0, FX_SEND_TOP), 0);
+        // Return: 0 dB = 0x4000 (-50 dB wrote 0x0033, -43 dB 0x0074).
+        assert_eq!(fx_db_to_raw(0.0, FX_RETURN_TOP), 0x4000);
+        assert!((fx_db_to_raw(-50.0, FX_RETURN_TOP) - 0x33).abs() <= 1);
+        assert!((fx_db_to_raw(-43.0, FX_RETURN_TOP) - 0x74).abs() <= 1);
+        // And back.
+        assert!((fx_raw_to_db(0x0d76, FX_SEND_TOP) + 1.5).abs() < 0.01);
+        assert_eq!(fx_raw_to_db(0, FX_SEND_TOP), FX_LEVEL_OFF_DB);
+    }
+
+    #[test]
     fn panel_enum_maps_to_the_usb_backend_selection() {
         assert_eq!(panel_enum_to_sel(0), None); // not known yet
         assert_eq!(panel_enum_to_sel(1), Some(0)); // Ch 1/2
@@ -2599,8 +2781,10 @@ mod tests {
 
     #[test]
     fn decode_center_pan_from_equal_raw_volumes() {
+        // Two sides at half scale are a centred source at -3 dB below
+        // full scale on the constant-power law: 0.5 * sqrt(2).
         let (volume, pan) = decode_volume_pan(32768, 32768, TEST_MAX);
-        assert!((volume - 0.5).abs() < 1e-4);
+        assert!((volume - 0.5 * std::f32::consts::SQRT_2).abs() < 1e-4);
         assert_eq!(pan, 0);
     }
 

@@ -116,9 +116,11 @@ impl Scene {
                 pitch_percent: 0.0,
                 ms_proc: false,
                 an12: false,
-                eq_for_record: false,
+                eq_for_record: true,
                 optical_out_spdif: false,
                 dim: false,
+                dim_level_db: -20.0,
+                main_mono: false,
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,
@@ -203,5 +205,25 @@ mod tests {
         // Our last_json unknown (UI restarted) but disk exists → other.
         save_auto_scene(&theirs).unwrap();
         assert!(auto_scene_written_by_other(None).is_some());
+    }
+
+    #[test]
+    fn eq_for_record_in_scenes_saved_before_the_polarity_fix_is_not_read_back() {
+        // Those scenes wrote `eq_for_record` with the opposite meaning: their
+        // default `false` was the unit's "on". Reading it into the field now
+        // would turn EQ for Record off on every recall.
+        let mut v: serde_json::Value =
+            serde_json::from_str(&Scene::new("old").to_json().unwrap()).unwrap();
+        let settings = v["settings"].as_object_mut().unwrap();
+        assert_eq!(settings.remove("eq_for_record_on"), Some(true.into()));
+        settings.insert("eq_for_record".into(), false.into());
+        let old = Scene::from_json(&v.to_string()).unwrap();
+        assert!(old.settings.eq_for_record);
+
+        // The new key round-trips.
+        let mut scene = Scene::new("new");
+        scene.settings.eq_for_record = false;
+        let back = Scene::from_json(&scene.to_json().unwrap()).unwrap();
+        assert!(!back.settings.eq_for_record);
     }
 }

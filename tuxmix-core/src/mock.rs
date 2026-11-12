@@ -40,6 +40,9 @@ pub struct MockBabyfacePro {
     playbacks: Vec<PlaybackChannel>,
     outputs: Vec<OutputChannel>,
     settings: DeviceSettings,
+    /// FX send per strip and FX return per output pair, in dB (absent = off).
+    fx_sends: std::collections::HashMap<ChannelId, f32>,
+    fx_returns: std::collections::HashMap<usize, f32>,
     input_meters: Vec<f32>,
     playback_meters: Vec<f32>,
     tick: u64,
@@ -260,6 +263,8 @@ impl RmeDevice for MockBabyfacePro {
             model_name: format!("{} (mock)", profile.model_name),
             profile,
             hardware: Default::default(),
+            fx_sends: Default::default(),
+            fx_returns: Default::default(),
             inputs,
             playbacks,
             outputs: profile.build_outputs(),
@@ -277,9 +282,11 @@ impl RmeDevice for MockBabyfacePro {
                 pitch_percent: 0.0,
                 ms_proc: false,
                 an12: false,
-                eq_for_record: false,
+                eq_for_record: true,
                 optical_out_spdif: false,
                 dim: false,
+                dim_level_db: -20.0,
+                main_mono: false,
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,
@@ -601,6 +608,54 @@ impl RmeDevice for MockBabyfacePro {
     fn set_dim(&mut self, on: bool) -> Result<(), Error> {
         self.settings.dim = on;
         Ok(())
+    }
+
+    fn has_main_mono(&self) -> bool {
+        true
+    }
+
+    fn set_main_mono(&mut self, on: bool) -> Result<(), Error> {
+        self.settings.main_mono = on;
+        Ok(())
+    }
+
+    fn has_dim_level(&self) -> bool {
+        true
+    }
+
+    fn set_dim_level(&mut self, db: f32) -> Result<(), Error> {
+        self.settings.dim_level_db = db.clamp(-65.0, 0.0).round();
+        Ok(())
+    }
+
+    fn has_fx_levels(&self) -> bool {
+        true
+    }
+
+    fn set_fx_send_of(&mut self, channel: ChannelId, db: f32) -> Result<(), Error> {
+        self.fx_sends
+            .insert(channel, db.clamp(crate::device::FX_LEVEL_OFF_DB, 0.0));
+        Ok(())
+    }
+
+    fn fx_send_of(&self, channel: ChannelId) -> f32 {
+        self.fx_sends
+            .get(&channel)
+            .copied()
+            .unwrap_or(crate::device::FX_LEVEL_OFF_DB)
+    }
+
+    fn set_fx_return(&mut self, pair: usize, db: f32) -> Result<(), Error> {
+        self.fx_returns
+            .insert(pair, db.clamp(crate::device::FX_LEVEL_OFF_DB, 0.0));
+        Ok(())
+    }
+
+    fn fx_return(&self, pair: usize) -> f32 {
+        self.fx_returns
+            .get(&pair)
+            .copied()
+            .unwrap_or(crate::device::FX_LEVEL_OFF_DB)
     }
 
     fn set_eq_for_record(&mut self, on: bool) -> Result<(), Error> {

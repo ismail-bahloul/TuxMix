@@ -129,7 +129,7 @@ pub struct BabyfaceUsb {
     /// setter that recomposed it from just its own flag, assuming the
     /// other two off, would silently reset whichever of the other two
     /// happened to be on. Defaults match the device's own power-on
-    /// state (`PROTOCOL.md`: "default (ADAT optical, EQ-record off,
+    /// state (`PROTOCOL.md`: "default (ADAT optical, EQ for Record on,
     /// clock Internal)").
     clock_optical: bool,
     eq_record: bool,
@@ -172,7 +172,7 @@ impl BabyfaceUsb {
             sample_rate: 48_000,
             dsp_claimed: false,
             clock_optical: false,
-            eq_record: false,
+            eq_record: true,
             spdif_out: false,
         })
     }
@@ -203,6 +203,25 @@ impl BabyfaceUsb {
     /// Set the volume of a source into an output (raw 16-bit scale).
     pub fn set_volume(&mut self, out: Output, src: Source, volume: u16) -> Result<(), Error> {
         let reqs = protocol::set_crosspoint_volume(out, src, volume, &mut self.flag);
+        self.send_all(&reqs)
+    }
+
+    /// Set the two sides of a source's crosspoint into an output
+    /// separately (a panned mono input), raw 16-bit scale.
+    pub fn set_pair(
+        &mut self,
+        out: Output,
+        src: Source,
+        left: u16,
+        right: u16,
+    ) -> Result<(), Error> {
+        let reqs = protocol::set_crosspoint_pair(out, src, left, right, &mut self.flag);
+        self.send_all(&reqs)
+    }
+
+    /// The AN1/2 low-map mirror of [`Self::set_pair`].
+    pub fn set_low_map_pair(&mut self, src: Source, left: u16, right: u16) -> Result<(), Error> {
+        let reqs = protocol::set_low_map_pair(src, left, right, &mut self.flag);
         self.send_all(&reqs)
     }
 
@@ -628,6 +647,17 @@ impl BabyfaceUsb {
             self.handle.release_interface(AUDIO_INTERFACE)?;
         }
         Ok(())
+    }
+}
+
+impl Drop for BabyfaceUsb {
+    /// The streams hold raw pointers to this device's libusb handle and
+    /// cancel their transfers when they drop. Fields drop in declaration
+    /// order, so without this `handle` was closed first and the streams
+    /// cancelled on a freed device: a segfault in `libusb_cancel_transfer`
+    /// whenever the backend was dropped with the audio running.
+    fn drop(&mut self) {
+        self.streams.take();
     }
 }
 

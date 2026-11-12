@@ -26,6 +26,8 @@ use crate::theme;
 /// not a small accent.
 const DIAMETER: f32 = 42.0;
 const BORDER_WIDTH: f32 = 1.5;
+/// How far the ring around the face reaches past it (its track, with the
+/// pad the canvas keeps so the ring is not clipped).
 const TICK_LEN: f32 = 5.0;
 /// The tick extends past `DIAMETER`'s own edge (see `draw`); the canvas
 /// element's actual box (see `knob()`) is padded by this on every side so
@@ -300,7 +302,6 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
             let center = frame.center();
             let radius = (DIAMETER / 2.0) * self.scale;
             let border_w = BORDER_WIDTH * self.scale;
-            let tick_len = TICK_LEN * self.scale;
 
                 let t = self.value_to_t(display_value);
             // Dims everything but the face (which is already dark enough not
@@ -334,47 +335,59 @@ impl<Message> canvas::Program<Message> for Knob<Message> {
                 Stroke::default().with_color(rim).with_width(border_w),
             );
 
-            // Orange arc from the centered (t=0.5) position round to the
-            // current value — the real TotalMix pan-knob signature (see
-            // `arc_from_center`'s doc comment). Skipped when `!interactive`
-            // even if `arc_from_center` is set — there's no real value behind
-            // it to point at (see `interactive`'s own doc comment), and an
-            // arc implies a live reading a dimmed, inert knob shouldn't.
-            if self.arc_from_center && self.interactive {
-                let center_angle = angle_of(0.5).0;
-                let value_angle = angle_of(t).0;
-                let (start_angle, end_angle) = if center_angle <= value_angle {
-                    (center_angle, value_angle)
-                } else {
-                    (value_angle, center_angle)
-                };
-                frame.stroke(
-                    &Path::new(|b| {
-                        b.arc(canvas::path::Arc {
-                            center,
-                            radius: radius - border_w,
-                            start_angle: Radians(start_angle),
-                            end_angle: Radians(end_angle),
-                        })
-                    }),
-                    Stroke::default()
-                        .with_color(self.tint.unwrap_or(theme::ACCENT))
-                        .with_width(2.5 * self.scale),
-                );
+            // The sweep as a ring around the disc: a track for the whole
+            // 270 degrees, so the knob reads against the card even when its
+            // face is as dark as the card (a bare dark disc vanished), and
+            // the value on top of it, from the centre for a knob with a
+            // centred default (pan, gain, width) and from the start for the
+            // rest (frequency, Q), as TotalMix draws them.
+            let ring_r = radius + 3.0 * self.scale;
+            let ring_w = 2.2 * self.scale;
+            let arc = |from: f32, to: f32| {
+                Path::new(|b| {
+                    b.arc(canvas::path::Arc {
+                        center,
+                        radius: ring_r,
+                        start_angle: Radians(from),
+                        end_angle: Radians(to),
+                    })
+                })
+            };
+            let track = theme::blend(theme::BORDER, theme::TEXT_SEC, 0.25);
+            frame.stroke(
+                &arc(angle_of(0.0).0, angle_of(1.0).0),
+                Stroke::default()
+                    .with_color(Color { a: dim, ..track })
+                    .with_width(ring_w)
+                    .with_line_cap(canvas::LineCap::Round),
+            );
+            if self.interactive {
+                let from = if self.arc_from_center { 0.5 } else { 0.0 };
+                let (lo, hi) = if from <= t { (from, t) } else { (t, from) };
+                if hi - lo > 0.002 {
+                    frame.stroke(
+                        &arc(angle_of(lo).0, angle_of(hi).0),
+                        Stroke::default()
+                            .with_color(self.tint.unwrap_or(if self.arc_from_center {
+                                theme::ACCENT
+                            } else {
+                                theme::TEXT_SEC
+                            }))
+                            .with_width(ring_w)
+                            .with_line_cap(canvas::LineCap::Round),
+                    );
+                }
             }
 
-            // A single tick at the current angle, poking out past the rim —
-            // the precise readout the label text backs up, not a full needle
-            // or arc fill (see `Bus_design.png`: just a mark at 12 o'clock
-            // when centered). No dragging-only color flip needed here or on
-            // the label below (see `face_color`'s own doc comment) — both
-            // stay their normal color regardless of drag state.
+            // A tick at the current angle, on the rim of the face, so the
+            // position still reads when the value is at the centre or the
+            // start and the ring above has nothing to show.
             let angle = angle_of(t).0;
             let (pc, ps) = (angle.cos(), angle.sin());
             frame.stroke(
                 &Path::line(
+                    iced::Point::new(center.x + pc * radius * 0.62, center.y + ps * radius * 0.62),
                     iced::Point::new(center.x + pc * (radius - border_w), center.y + ps * (radius - border_w)),
-                    iced::Point::new(center.x + pc * (radius + tick_len), center.y + ps * (radius + tick_len)),
                 ),
                 Stroke::default()
                     .with_color(match self.tint {

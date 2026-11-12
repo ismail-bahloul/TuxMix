@@ -341,6 +341,18 @@ impl RmeDevice for DeviceHandle {
     fn set_dim(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_dim(on))
     }
+    fn has_main_mono(&self) -> bool {
+        delegate!(self, has_main_mono())
+    }
+    fn set_main_mono(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_main_mono(on))
+    }
+    fn has_dim_level(&self) -> bool {
+        delegate!(self, has_dim_level())
+    }
+    fn set_dim_level(&mut self, db: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_dim_level(db))
+    }
     fn set_eq_for_record(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_eq_for_record(on))
     }
@@ -358,6 +370,21 @@ impl RmeDevice for DeviceHandle {
     }
     fn set_phase(&mut self, idx: usize, invert: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_phase(idx, invert))
+    }
+    fn has_fx_levels(&self) -> bool {
+        delegate!(self, has_fx_levels())
+    }
+    fn set_fx_send_of(&mut self, channel: ChannelId, db: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_fx_send_of(channel, db))
+    }
+    fn fx_send_of(&self, channel: ChannelId) -> f32 {
+        delegate!(self, fx_send_of(channel))
+    }
+    fn set_fx_return(&mut self, pair: usize, db: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_fx_return(pair, db))
+    }
+    fn fx_return(&self, pair: usize) -> f32 {
+        delegate!(self, fx_return(pair))
     }
     fn set_fx_send(&mut self, db: f32) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_fx_send(db))
@@ -775,6 +802,9 @@ pub enum Message {
     /// Double-click on a band handle: back to 1 kHz, Q 0.7, 0 dB.
     EqBandReset(usize, usize),
     EqLowCutFreq(usize, u16),
+    /// Applies an EQ preset to an input strip: `usize` is the strip, the
+    /// choice is a factory preset or Reset (see `eq_presets`).
+    EqPreset(usize, EqPresetChoice),
     /// The low cut's on/off switch: off is a frequency of 0 (see
     /// `InputEq::low_cut_freq_hz`), on brings back the frequency it had.
     EqLowCutEnabled(usize, bool),
@@ -794,6 +824,12 @@ pub enum Message {
     An12Changed(bool),
     InputLinkChanged(bool),
     EqForRecordChanged(bool),
+    /// A strip's FX send, in dB (-65..0).
+    FxSendChanged(ChannelId, f32),
+    /// An output pair's FX return, in dB (-65..0).
+    FxReturnChanged(usize, f32),
+    /// How much Dim takes off, in dB (-65..0).
+    DimLevelChanged(f32),
     OpticalOutFormatChanged(bool),
     /// The CUE button on an Output strip — exclusive across every
     /// output (see `RmeDevice::set_cue`'s own doc comment), so this
@@ -900,6 +936,8 @@ pub enum Message {
     /// Flips the hardware Dim (`RmeDevice::set_dim`), the same switch the
     /// front-panel DIM button toggles.
     DimToggle,
+    /// Control Room: flips Main Mono (`RmeDevice::set_main_mono`).
+    MonoToggle,
     /// One entry of TotalMix's Options > Reset Mix, see `ResetMix`.
     ResetMix(ResetMix),
     /// Control Room: remembers the Main volume for `RecallMain`.
@@ -2321,6 +2359,10 @@ fn is_undoable(message: &Message) -> bool {
             | Message::SidebarResize(_)
             | Message::SetRowMode(_)
             | Message::DimToggle
+            | Message::FxSendChanged(..)
+            | Message::FxReturnChanged(..)
+            | Message::MonoToggle
+            | Message::DimLevelChanged(_)
             | Message::MatrixHover(..)
             | Message::PointerPressed
             | Message::PointerReleased
@@ -2379,6 +2421,8 @@ fn needs_protocol_features(message: &Message) -> bool {
             | Message::InputLinkChanged(_)
             | Message::EqForRecordChanged(_)
             | Message::DimToggle
+            | Message::MonoToggle
+            | Message::DimLevelChanged(_)
             | Message::EqEnabled(..)
             | Message::EqBandType(..)
             | Message::EqBandFreq(..)
@@ -2387,6 +2431,9 @@ fn needs_protocol_features(message: &Message) -> bool {
             | Message::EqBandPoint(..)
             | Message::EqBandReset(..)
             | Message::EqLowCutFreq(..)
+            | Message::FxSendChanged(..)
+            | Message::FxReturnChanged(..)
+            | Message::EqPreset(..)
             | Message::EqLowCutSlope(..)
     )
 }
@@ -2948,6 +2995,43 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 fail(state, "set_eq_low_cut_slope", &e);
             }
         }
+        Message::EqPreset(idx, choice) => {
+            let preset = *choice.preset();
+            for (band, &(band_type, freq, q, gain)) in preset.bands.iter().enumerate() {
+                // Type first: a band that is off takes no gain.
+                if let Err(e) = state.device.set_eq_band_type(idx, band, band_type) {
+                    fail(state, "set_eq_band_type", &e);
+                }
+                if let Err(e) = state.device.set_eq_band_freq(idx, band, freq) {
+                    fail(state, "set_eq_band_freq", &e);
+                }
+                if let Err(e) = state.device.set_eq_band_q(idx, band, q) {
+                    fail(state, "set_eq_band_q", &e);
+                }
+                if let Err(e) = state.device.set_eq_band_gain(idx, band, gain) {
+                    fail(state, "set_eq_band_gain", &e);
+                }
+            }
+            if let Err(e) = state.device.set_eq_low_cut_slope(idx, preset.low_cut_slope) {
+                fail(state, "set_eq_low_cut_slope", &e);
+            }
+            // The low cut's switch stays as it is (TotalMix leaves it):
+            // an engaged one takes the new frequency, a switched-off one
+            // remembers it for the next time it is turned on.
+            let current = state
+                .device
+                .inputs()
+                .get(idx)
+                .and_then(|c| c.eq)
+                .map_or(0, |e| e.low_cut_freq_hz);
+            if current > 0 {
+                if let Err(e) = state.device.set_eq_low_cut_freq(idx, preset.low_cut_hz) {
+                    fail(state, "set_eq_low_cut_freq", &e);
+                }
+            } else {
+                state.eq_low_cut_memory.insert(idx, preset.low_cut_hz);
+            }
+        }
         Message::LoopbackChanged(i, on) => {
             let pair = if state.device.outputs_one_per_pair() {
                 i
@@ -2990,6 +3074,27 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::InputLinkChanged(on) => {
             if let Err(e) = state.device.set_input_link(on) {
                 fail(state, "set_input_link", &e);
+            }
+        }
+        Message::FxSendChanged(cid, db) => {
+            if let Err(e) = state
+                .device
+                .set_fx_send_of(cid, db.clamp(-65.0, 0.0).round())
+            {
+                fail(state, "set_fx_send", &e);
+            }
+        }
+        Message::FxReturnChanged(pair, db) => {
+            if let Err(e) = state
+                .device
+                .set_fx_return(pair, db.clamp(-65.0, 0.0).round())
+            {
+                fail(state, "set_fx_return", &e);
+            }
+        }
+        Message::DimLevelChanged(db) => {
+            if let Err(e) = state.device.set_dim_level(db) {
+                fail(state, "set_dim_level", &e);
             }
         }
         Message::EqForRecordChanged(on) => {
@@ -3464,6 +3569,12 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             let on = !state.device.settings().dim;
             if let Err(e) = state.device.set_dim(on) {
                 fail(state, "dim", &e);
+            }
+        }
+        Message::MonoToggle => {
+            let on = !state.device.settings().main_mono;
+            if let Err(e) = state.device.set_main_mono(on) {
+                fail(state, "mono", &e);
             }
         }
         Message::SnapshotClicked(n) => {
@@ -4316,44 +4427,60 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .into()
             };
-        let output = column![
-            section("OUTPUT"),
-            row![
-                knob_cell(
-                    "Pitch",
-                    knob(Knob {
-                        tint: None,
-                        value: settings.pitch_percent,
-                        range: (-5.0, 5.0),
-                        label: format!("{:+.1}%", settings.pitch_percent),
-                        arc_from_center: true,
-                        interactive: true,
-                        log_scale: false,
-                        modifiers,
-                        scale,
-                        on_change: Box::new(|v| Message::PitchChanged(v.clamp(-5.0, 5.0))),
-                        on_reset: Box::new(|| Message::PitchChanged(0.0)),
-                    }),
-                ),
-                knob_cell(
-                    "Width",
-                    knob(Knob {
-                        tint: None,
-                        value: settings.width,
-                        range: (-1.0, 1.0),
-                        label: format!("{:+.2}", settings.width),
-                        arc_from_center: true,
-                        interactive: true,
-                        log_scale: false,
-                        modifiers,
-                        scale,
-                        on_change: Box::new(|v| Message::WidthChanged(v.clamp(-1.0, 1.0))),
-                        on_reset: Box::new(|| Message::WidthChanged(0.0)),
-                    }),
-                ),
-            ],
-        ]
-        .spacing(theme::SPACE_MD * scale);
+        let mut output_knobs = row![
+            knob_cell(
+                "Pitch",
+                knob(Knob {
+                    tint: None,
+                    value: settings.pitch_percent,
+                    range: (-5.0, 5.0),
+                    label: format!("{:+.1}%", settings.pitch_percent),
+                    arc_from_center: true,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers,
+                    scale,
+                    on_change: Box::new(|v| Message::PitchChanged(v.clamp(-5.0, 5.0))),
+                    on_reset: Box::new(|| Message::PitchChanged(0.0)),
+                }),
+            ),
+            knob_cell(
+                "Width",
+                knob(Knob {
+                    tint: None,
+                    value: settings.width,
+                    range: (-1.0, 1.0),
+                    label: format!("{:+.2}", settings.width),
+                    arc_from_center: true,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers,
+                    scale,
+                    on_change: Box::new(|v| Message::WidthChanged(v.clamp(-1.0, 1.0))),
+                    on_reset: Box::new(|| Message::WidthChanged(0.0)),
+                }),
+            ),
+        ];
+        // Only with a driver that has a Dim Level: the knob would only fail.
+        if state.device.has_dim_level() {
+            output_knobs = output_knobs.push(knob_cell(
+                "Dim",
+                knob(Knob {
+                    tint: None,
+                    value: settings.dim_level_db,
+                    range: (-65.0, 0.0),
+                    label: format!("{:.0} dB", settings.dim_level_db),
+                    arc_from_center: false,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers,
+                    scale,
+                    on_change: Box::new(|v| Message::DimLevelChanged(v.clamp(-65.0, 0.0).round())),
+                    on_reset: Box::new(|| Message::DimLevelChanged(-20.0)),
+                }),
+            ));
+        }
+        let output = column![section("OUTPUT"), output_knobs].spacing(theme::SPACE_MD * scale);
 
         // The global flags as a two-column grid of equal toggles, the same
         // family as the sidebar's group cells.
@@ -4948,6 +5075,18 @@ fn playback_meter_available(state: &TuxMix, idx: usize) -> bool {
     }
 }
 
+/// The output pair an output channel index belongs to: a backend with one
+/// output per pair (the libusb one) indexes by pair, the others by channel,
+/// two to a pair. The FX return is per pair, so it goes through this rather
+/// than assuming either.
+fn output_pair_of(state: &TuxMix, out_idx: usize) -> usize {
+    if state.device.outputs_one_per_pair() {
+        out_idx
+    } else {
+        out_idx / 2
+    }
+}
+
 /// Whether an output's host-computed meter is complete: every source
 /// routed into that output pair must itself have a real meter. Inputs
 /// are all real with the updated ALSA driver; playbacks depend on the
@@ -5440,6 +5579,57 @@ fn settings_popover(
         scale,
     ));
 
+    // TotalMix FX's "send FX" (inputs, playback) and "return FX" (outputs)
+    // knobs, where the driver has them.
+    if state.device.has_fx_levels() {
+        let (label, db, on_change, on_reset): (&str, f32, Box<dyn Fn(f32) -> Message>, Message) =
+            match cid {
+                ChannelId::Output(o) => {
+                    let pair = output_pair_of(state, o);
+                    (
+                        "Return FX",
+                        state.device.fx_return(pair),
+                        Box::new(move |v| Message::FxReturnChanged(pair, v)),
+                        Message::FxReturnChanged(pair, tuxmix_core::device::FX_LEVEL_OFF_DB),
+                    )
+                }
+                _ => (
+                    "Send FX",
+                    state.device.fx_send_of(cid),
+                    Box::new(move |v| Message::FxSendChanged(cid, v)),
+                    Message::FxSendChanged(cid, tuxmix_core::device::FX_LEVEL_OFF_DB),
+                ),
+            };
+        col = col.push(
+            row![
+                text(label)
+                    .size(theme::TEXT_SM * scale)
+                    .color(theme::TEXT_SEC),
+                container(knob(Knob {
+                    tint: None,
+                    value: db,
+                    range: (-65.0, 0.0),
+                    label: if db <= tuxmix_core::device::FX_LEVEL_OFF_DB {
+                        "-\u{221e}".to_string()
+                    } else {
+                        format!("{db:.0}")
+                    },
+                    arc_from_center: false,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers: p.modifiers,
+                    scale,
+                    on_change: Box::new(move |v| on_change(v.round())),
+                    on_reset: Box::new(move || on_reset.clone()),
+                }))
+                .width(Length::Fill)
+                .align_x(iced::Alignment::End),
+            ]
+            .align_y(iced::Alignment::Center)
+            .width(Length::Fill),
+        );
+    }
+
     let ChannelId::Input(idx) = cid else {
         return flyout_card(col, width, scale);
     };
@@ -5576,6 +5766,37 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Eleme
     flyout_card(col, width, scale)
 }
 
+/// An entry of the EQ preset menu: one of TotalMix FX's factory presets
+/// (an index into `eq_presets::FACTORY`) or Reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EqPresetChoice {
+    Factory(usize),
+    Reset,
+}
+
+impl EqPresetChoice {
+    fn preset(self) -> &'static tuxmix_core::eq_presets::EqPreset {
+        match self {
+            Self::Factory(i) => &tuxmix_core::eq_presets::FACTORY[i],
+            Self::Reset => &tuxmix_core::eq_presets::RESET,
+        }
+    }
+}
+
+impl std::fmt::Display for EqPresetChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.preset().name)
+    }
+}
+
+/// The preset menu's entries: the fourteen factory presets, then Reset.
+fn eq_preset_choices() -> Vec<EqPresetChoice> {
+    (0..tuxmix_core::eq_presets::FACTORY.len())
+        .map(EqPresetChoice::Factory)
+        .chain([EqPresetChoice::Reset])
+        .collect()
+}
+
 /// A band's color on its knobs, dimmed while the band is off: the same
 /// red, green and azure as its curve in the plot and its type button.
 fn eq_band_tint(band_type: EqBandType, band: usize) -> Color {
@@ -5653,7 +5874,28 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
             on_low_cut: Box::new(move |freq| Message::EqLowCutFreq(idx, freq)),
         },
     );
-    col = col.push(stack![plot, eq_toggle]);
+    // The preset menu mirrors the EQ button in the plot's other corner.
+    let presets = container(
+        pick_list(eq_preset_choices(), None::<EqPresetChoice>, move |c| {
+            Message::EqPreset(idx, c)
+        })
+        .placeholder("Presets")
+        .style(theme::pick_list)
+        .menu_style(theme::menu)
+        .padding([1.0 * scale, theme::SPACE_SM * scale])
+        .text_size(theme::TEXT_XS * scale)
+        .width(Length::Fixed(170.0 * scale)),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(iced::Alignment::Start)
+    .align_y(iced::Alignment::Start)
+    .padding(iced::Padding {
+        top: (eq_plot::MARGIN_TOP + 2.0) * scale,
+        left: (eq_plot::MARGIN_LEFT + 2.0) * scale,
+        ..iced::Padding::ZERO
+    });
+    col = col.push(stack![plot, eq_toggle, presets]);
 
     let label = |content: &'static str| {
         container(
@@ -6494,6 +6736,7 @@ fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
     // A card as tall as the Main strip beside it, like TotalMix's Control
     // Room column: the monitoring buttons at the top, Store (which only
     // sets what Recall goes back to) apart at the bottom.
+    let has_mono = state.device.has_main_mono();
     let monitoring = column![
         cell("dim")
             .style(theme::toggle_button(
@@ -6504,6 +6747,13 @@ fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
         cell("recall")
             .style(theme::toggle_button(false, theme::ACCENT))
             .on_press_maybe(state.main_recall.map(|_| Message::RecallMain)),
+        cell("mono")
+            .style(theme::toggle_button(
+                state.device.settings().main_mono,
+                theme::ACCENT,
+            ))
+            // Dimmed, not pressable, on a driver without a Main Mono Switch.
+            .on_press_maybe(has_mono.then_some(Message::MonoToggle)),
     ]
     .spacing(theme::SPACE_SM * scale);
     let store = cell("store")
@@ -6937,7 +7187,10 @@ mod tests {
         assert_eq!(out, vec![1.0, 0.0]);
         an1.pans = vec![0];
         let out = power_sum_output_meters(&[an1.side_levels()], &[1.0], &[], &[], 2);
-        assert_eq!(out, vec![1.0, 1.0]);
+        // Centred, a mono input is 3 dB down on each side (TotalMix's
+        // constant-power pan), so the pair carries the same power.
+        let side = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(out.iter().all(|&v| (v - side).abs() < 1e-6), "{out:?}");
     }
 
     #[test]
@@ -7451,18 +7704,19 @@ mod tests {
     #[test]
     fn eq_for_record_and_optical_out_format_toggles_reach_device_settings() {
         let mut state = new(true, None, None);
-        assert!(!state.device.settings().eq_for_record);
+        // The unit's default: the EQ also acts on the recorded signal.
+        assert!(state.device.settings().eq_for_record);
         assert!(!state.device.settings().optical_out_spdif);
 
-        let _ = update(&mut state, Message::EqForRecordChanged(true));
-        assert!(state.device.settings().eq_for_record);
+        let _ = update(&mut state, Message::EqForRecordChanged(false));
+        assert!(!state.device.settings().eq_for_record);
         assert!(!state.device.settings().optical_out_spdif);
 
         let _ = update(&mut state, Message::OpticalOutFormatChanged(true));
         assert!(state.device.settings().optical_out_spdif);
 
-        let _ = update(&mut state, Message::EqForRecordChanged(false));
-        assert!(!state.device.settings().eq_for_record);
+        let _ = update(&mut state, Message::EqForRecordChanged(true));
+        assert!(state.device.settings().eq_for_record);
         assert!(
             state.device.settings().optical_out_spdif,
             "toggling EQ-for-Record must not stomp the SPDIF flag (shared settings-word register)"
@@ -8649,6 +8903,79 @@ mod tests {
     }
 
     #[test]
+    fn an_output_channel_maps_to_its_pair_by_the_backends_indexing() {
+        // The mock (like the ALSA backend) has two output channels per
+        // pair; a backend with one per pair indexes by pair instead.
+        let state = new(true, None, None);
+        assert!(!state.device.outputs_one_per_pair());
+        let pairs: Vec<_> = (0..4).map(|o| super::output_pair_of(&state, o)).collect();
+        assert_eq!(pairs, [0, 0, 1, 1]);
+    }
+
+    #[test]
+    fn fx_send_and_return_knobs_set_the_levels_and_stay_out_of_undo() {
+        let mut state = new(true, None, None);
+        let pb = ChannelId::Playback(0);
+        assert!(state.device.has_fx_levels());
+        assert_eq!(state.device.fx_send_of(pb), -65.0);
+        let _ = update(&mut state, Message::FxSendChanged(pb, -6.0));
+        assert_eq!(state.device.fx_send_of(pb), -6.0);
+        let _ = update(&mut state, Message::FxReturnChanged(1, -10.0));
+        assert_eq!(state.device.fx_return(1), -10.0);
+        // Held to the knob's range.
+        let _ = update(&mut state, Message::FxSendChanged(pb, 12.0));
+        assert_eq!(state.device.fx_send_of(pb), 0.0);
+        assert!(state.undo_stack.is_empty(), "FX levels are not in a scene");
+    }
+
+    #[test]
+    fn an_eq_preset_sets_the_bands_and_the_low_cut() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, false));
+        let _ = update(
+            &mut state,
+            Message::EqPreset(0, super::EqPresetChoice::Factory(10)),
+        );
+        let eq = state.device.inputs()[0].eq.expect("AN1 has an EQ");
+        // Live Vocal Mic: bell, bell, then a high shelf at 13.8 kHz.
+        assert_eq!(
+            eq.bands[0].band_type,
+            tuxmix_core::channel::EqBandType::Bell
+        );
+        assert_eq!(
+            eq.bands[2].band_type,
+            tuxmix_core::channel::EqBandType::HighShelf
+        );
+        assert_eq!(eq.bands[2].freq_hz, 13_800);
+        assert!((eq.bands[2].gain_db + 10.5).abs() < 0.05);
+        assert_eq!(eq.low_cut_slope_db_oct, 24);
+        // The low cut was off: it stays off and remembers 80 Hz.
+        assert_eq!(eq.low_cut_freq_hz, 0);
+        assert_eq!(state.eq_low_cut_memory.get(&0), Some(&80));
+        // An engaged low cut takes the preset's frequency instead.
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, true));
+        let _ = update(
+            &mut state,
+            Message::EqPreset(0, super::EqPresetChoice::Factory(5)),
+        );
+        assert_eq!(state.device.inputs()[0].eq.unwrap().low_cut_freq_hz, 500);
+        // Reset puts TotalMix's flat bands back.
+        let _ = update(
+            &mut state,
+            Message::EqPreset(0, super::EqPresetChoice::Reset),
+        );
+        let eq = state.device.inputs()[0].eq.unwrap();
+        assert_eq!(
+            eq.bands[0].band_type,
+            tuxmix_core::channel::EqBandType::LowShelf
+        );
+        assert_eq!(eq.bands[0].freq_hz, 50);
+        assert_eq!(eq.bands[2].freq_hz, 10_000);
+        assert!(eq.bands.iter().all(|b| b.gain_db == 0.0));
+        assert_eq!(eq.low_cut_slope_db_oct, 12);
+    }
+
+    #[test]
     fn dim_toggle_flips_the_device_dim() {
         let mut state = new(true, None, None);
         assert!(!state.device.settings().dim);
@@ -8657,6 +8984,32 @@ mod tests {
         let _ = update(&mut state, Message::DimToggle);
         assert!(!state.device.settings().dim);
         assert!(state.undo_stack.is_empty(), "Dim is not part of a scene");
+    }
+
+    #[test]
+    fn dim_level_knob_sets_the_cut_and_resets_to_minus_20() {
+        let mut state = new(true, None, None);
+        assert_eq!(state.device.settings().dim_level_db, -20.0);
+        let _ = update(&mut state, Message::DimLevelChanged(-9.0));
+        assert_eq!(state.device.settings().dim_level_db, -9.0);
+        // Out of range values are held to -65..0 by the backend.
+        let _ = update(&mut state, Message::DimLevelChanged(-80.0));
+        assert_eq!(state.device.settings().dim_level_db, -65.0);
+        assert!(
+            state.undo_stack.is_empty(),
+            "the Dim level is not part of a scene"
+        );
+    }
+
+    #[test]
+    fn mono_toggle_flips_the_main_mono_and_stays_out_of_scenes() {
+        let mut state = new(true, None, None);
+        assert!(!state.device.settings().main_mono);
+        let _ = update(&mut state, Message::MonoToggle);
+        assert!(state.device.settings().main_mono);
+        let _ = update(&mut state, Message::MonoToggle);
+        assert!(!state.device.settings().main_mono);
+        assert!(state.undo_stack.is_empty(), "Mono is not part of a scene");
     }
 
     #[test]

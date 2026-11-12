@@ -3,6 +3,28 @@
 ## Unreleased
 
 ### Added
+- A Presets menu in the EQ panel of an analog input, with TotalMix FX's
+  fourteen factory presets (Modern Bass Treble, Telephone, Live Vocal Mic,
+  Notch and the rest) and its Reset (flat bands at 50 Hz, 1 kHz and 10 kHz,
+  12 dB/oct low cut). A preset sets the three bands and the low cut's
+  frequency and slope, and leaves the EQ and low-cut switches as they were,
+  as TotalMix does. The band types were read off TotalMix FX on a Babyface
+  Pro.
+- A mono button in the Control Room card, as in TotalMix FX: it sums the
+  stereo sources into the Main pair. TotalMix writes the Main crosspoints of
+  a playback pair at half level on both sides, which the kernel driver's new
+  `Main Mono Switch` does; it needs a driver that has it. The 0.3.7 notes
+  said Mono writes nothing over USB, which was wrong.
+- A Dim knob in the device panel's Output section sets how much Dim takes
+  off, from -65 to 0 dB (-20 by default), like "Main Out Dim" in TotalMix
+  FX's Mixer Settings; double-click resets it. It drives the kernel driver's
+  new `Dim Level`, so it needs a driver that has it.
+- A "Send FX" knob in the settings panel of every input and playback strip
+  and a "Return FX" knob in that of every output pair, as in TotalMix FX
+  (-65 to 0 dB; double-click turns it off). They drive the kernel driver's
+  new `<source> FX Send` and `<output> FX Return` controls, so they only
+  show with a driver that has them. TotalMix's scales were measured with
+  usbmon: a send has 0 dB at 0x1000, a return at 0x4000.
 - A numeric peak readout over each meter, as TotalMix prints it: the
   loudest level of the last two seconds in whole dBFS, "OVR" once the
   channel has clipped and "UFL" for silence. A linked pair shows one value
@@ -14,8 +36,34 @@
   Babyface Pro in class-compliant mode is told how to switch back.
 
 ### Changed
+- The knobs draw their sweep as a ring around the face: a track for the
+  whole turn and the value on top of it (from the centre for pan, gain and
+  width, from the start for frequency and Q), as TotalMix does. A bare dark
+  disc was hard to tell from the card, and the tick now sits inside the
+  face.
 - An input strip whose output pair has Loop on is tagged LOOP instead of its
   type: its meter shows that output, not the input (#23).
+
+### Fixed
+- With the proprietary USB backend, closing it while the audio streams were
+  running crashed (a segfault in `libusb_cancel_transfer`): the device handle
+  was closed before the streams that use it. The streams are now stopped
+  first.
+- EQ for Record was inverted on the libusb backend: the toggle set bit 6 of
+  the settings word when ticked, and the unit takes that bit as "EQ for
+  Record off". It is now on by default, as in RME's settings dialog, and
+  clearing it writes bit 6 (`0x0041`), checked against RME's driver and
+  TotalMix FX. Scenes saved before this keep the unit's default instead of
+  reading their old value back, since it meant the opposite.
+- A mono input's pan follows TotalMix FX's constant-power law instead of a
+  linear one: centred, each side sits 3 dB down (0x16a0 at 0 dB, measured on
+  the real TotalMix), and a hard pan gives the whole level to one side. A
+  centred source used to come out 3 dB louder than in TotalMix. The Matrix
+  view and the output meters use the same split.
+- With the proprietary USB backend, the pan of the analog inputs (AN1, AN2,
+  Instr 3/4) now reaches the unit: it used to be ignored. Both crosspoints of
+  the pair are written on TotalMix FX's constant-power law (centred 0x16a0 per
+  side at 0 dB), and moving the fader or the phase switch keeps the pan.
 
 ## 0.3.7 (2026-11-09)
 
@@ -24,7 +72,7 @@
   in TotalMix FX on this unit: PH3/4 becomes Main, beside a card of Dim and
   Recall, with Store apart at the bottom. Recall is host-side, as in
   TotalMix, and lasts until the app closes. Mono, Ext. Input, Mute FX and
-  Talkback are left out: they write nothing over USB.
+  Talkback are left out (Mono does write over USB: see Unreleased).
 
 ### Changed
 - Every source file now carries an `SPDX-License-Identifier` and the

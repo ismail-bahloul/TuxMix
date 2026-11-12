@@ -32,7 +32,7 @@ use crate::theme;
 /// 64 until the EQ on/off button moved onto the plot (`eq_popover`): the
 /// row it freed went to the curve.
 const PLOT_H: f32 = 82.0;
-const MARGIN_LEFT: f32 = 26.0;
+pub(crate) const MARGIN_LEFT: f32 = 26.0;
 pub(crate) const MARGIN_RIGHT: f32 = 6.0;
 pub(crate) const MARGIN_TOP: f32 = 6.0;
 const MARGIN_BOTTOM: f32 = 14.0;
