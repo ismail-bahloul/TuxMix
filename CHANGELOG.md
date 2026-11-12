@@ -8,6 +8,14 @@
   it is not supported yet, instead of only asking to check the cable. A
   Babyface Pro in class-compliant mode is told how to switch back.
 
+### Fixed
+- EQ for Record was inverted on the libusb backend: the toggle set bit 6 of
+  the settings word when ticked, and the unit takes that bit as "EQ for
+  Record off". It is now on by default, as in RME's settings dialog, and
+  clearing it writes bit 6 (`0x0041`), checked against RME's driver and
+  TotalMix FX. Scenes saved before this keep the unit's default instead of
+  reading their old value back, since it meant the opposite.
+
 ### Changed
 - An input strip whose output pair has Loop on is tagged LOOP instead of its
   type: its meter shows that output, not the input (#23).
