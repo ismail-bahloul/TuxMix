@@ -10,7 +10,7 @@ use log::info;
 use crate::channel::OutputChannel;
 use crate::channel::*;
 use crate::curves::{fader_db_to_raw, fader_raw_to_db};
-use crate::device::{DeviceSettings, RmeDevice};
+use crate::device::{DeviceSettings, RmeDevice, FX_LEVEL_OFF_DB};
 use crate::error::Error;
 use crate::mixer::AlsaMixer;
 use crate::profile::DeviceProfile;
@@ -71,6 +71,49 @@ pub enum ControlGrammar {
     /// `2a39:3fb0`). Routing, preamps and clock work; the DSP features
     /// that live in RME's own protocol do not exist here.
     ClassCompliant,
+}
+
+/// The driver's FX send is the source's level into the FX bus, 0 dB =
+/// 0x1000; an output's FX return has 0 dB = 0x4000 (TotalMix FX's own
+/// scales, checked with usbmon). Both are linear in amplitude.
+const FX_SEND_TOP: i64 = 0x1000;
+const FX_RETURN_TOP: i64 = 0x4000;
+
+/// The driver's FX send control for a strip: one per source, so the two
+/// channels of a stereo pair share it.
+fn fx_send_control(channel: ChannelId) -> Option<String> {
+    let src = match channel {
+        ChannelId::Input(i) => input_crosspoint_slot(i)?.0,
+        ChannelId::Playback(i) => playback_crosspoint_slot(i)?.0,
+        ChannelId::Output(_) => return None,
+    };
+    Some(fx_send_name(src))
+}
+
+fn fx_send_name(src: usize) -> String {
+    format!("{} FX Send", BF_SOURCES[src])
+}
+
+fn fx_return_name(pair: usize) -> Option<String> {
+    PAIR_LABELS.get(pair).map(|l| format!("{l} FX Return"))
+}
+
+/// A level in dB (-65..0, at or below -65 off) as the raw value of a
+/// control whose 0 dB is `top`.
+fn fx_db_to_raw(db: f32, top: i64) -> i64 {
+    if db <= FX_LEVEL_OFF_DB {
+        0
+    } else {
+        ((top as f32) * 10f32.powf(db.min(0.0) / 20.0) + 0.01).floor() as i64
+    }
+}
+
+fn fx_raw_to_db(raw: i64, top: i64) -> f32 {
+    if raw <= 0 {
+        FX_LEVEL_OFF_DB
+    } else {
+        (20.0 * (raw as f32 / top as f32).log10()).clamp(FX_LEVEL_OFF_DB, 0.0)
+    }
 }
 
 /// A crosspoint source's name in the class-compliant grammar, for
@@ -2318,6 +2361,55 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
+    fn has_fx_levels(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && self.mixer.find_selem(&fx_send_name(0), 0).is_some()
+    }
+
+    fn set_fx_send_of(&mut self, channel: ChannelId, db: f32) -> Result<(), Error> {
+        self.require_proprietary("FX send")?;
+        let name = fx_send_control(channel)
+            .ok_or_else(|| Error::InvalidChannel(format!("{channel} has no FX send")))?;
+        let selem = self
+            .mixer
+            .find_selem(&name, 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no per-strip FX sends".into()))?;
+        selem.set_playback_volume(SelemChannelId::mono(), fx_db_to_raw(db, FX_SEND_TOP))?;
+        Ok(())
+    }
+
+    fn fx_send_of(&self, channel: ChannelId) -> f32 {
+        let Some(name) = fx_send_control(channel) else {
+            return FX_LEVEL_OFF_DB;
+        };
+        self.mixer
+            .find_selem(&name, 0)
+            .and_then(|s| s.get_playback_volume(SelemChannelId::mono()).ok())
+            .map_or(FX_LEVEL_OFF_DB, |raw| fx_raw_to_db(raw, FX_SEND_TOP))
+    }
+
+    fn set_fx_return(&mut self, pair: usize, db: f32) -> Result<(), Error> {
+        self.require_proprietary("FX return")?;
+        let name = fx_return_name(pair)
+            .ok_or_else(|| Error::InvalidChannel(format!("Output pair {pair} has no FX return")))?;
+        let selem = self
+            .mixer
+            .find_selem(&name, 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no FX returns".into()))?;
+        selem.set_playback_volume(SelemChannelId::mono(), fx_db_to_raw(db, FX_RETURN_TOP))?;
+        Ok(())
+    }
+
+    fn fx_return(&self, pair: usize) -> f32 {
+        let Some(name) = fx_return_name(pair) else {
+            return FX_LEVEL_OFF_DB;
+        };
+        self.mixer
+            .find_selem(&name, 0)
+            .and_then(|s| s.get_playback_volume(SelemChannelId::mono()).ok())
+            .map_or(FX_LEVEL_OFF_DB, |raw| fx_raw_to_db(raw, FX_RETURN_TOP))
+    }
+
     fn set_width(&mut self, width: f32) -> Result<(), Error> {
         self.require_proprietary("Width")?;
         let clamped = width.clamp(-1.0, 1.0);
@@ -2647,6 +2739,26 @@ mod tests {
         // top -> 0 is one press, top -> 1 two.
         assert!(dim_presses_toggle(top, 0));
         assert!(!dim_presses_toggle(top, 1));
+    }
+
+    #[test]
+    fn fx_levels_use_totalmixs_scales() {
+        // Send: 0 dB = 0x1000 (TotalMix FX at -1.5, -5.5 and -61.5 dB wrote
+        // 0x0d76, 0x087e and 0x0003).
+        assert_eq!(fx_db_to_raw(0.0, FX_SEND_TOP), 0x1000);
+        // TotalMix rounds down, and its knob's own float is a hair off the
+        // label, so allow one step.
+        assert!((fx_db_to_raw(-1.5, FX_SEND_TOP) - 0x0d76).abs() <= 1);
+        assert!((fx_db_to_raw(-5.5, FX_SEND_TOP) - 0x087e).abs() <= 1);
+        assert_eq!(fx_db_to_raw(-61.5, FX_SEND_TOP), 3);
+        assert_eq!(fx_db_to_raw(-65.0, FX_SEND_TOP), 0);
+        // Return: 0 dB = 0x4000 (-50 dB wrote 0x0033, -43 dB 0x0074).
+        assert_eq!(fx_db_to_raw(0.0, FX_RETURN_TOP), 0x4000);
+        assert!((fx_db_to_raw(-50.0, FX_RETURN_TOP) - 0x33).abs() <= 1);
+        assert!((fx_db_to_raw(-43.0, FX_RETURN_TOP) - 0x74).abs() <= 1);
+        // And back.
+        assert!((fx_raw_to_db(0x0d76, FX_SEND_TOP) + 1.5).abs() < 0.01);
+        assert_eq!(fx_raw_to_db(0, FX_SEND_TOP), FX_LEVEL_OFF_DB);
     }
 
     #[test]

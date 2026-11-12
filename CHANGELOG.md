@@ -19,6 +19,12 @@
   off, from -65 to 0 dB (-20 by default), like "Main Out Dim" in TotalMix
   FX's Mixer Settings; double-click resets it. It drives the kernel driver's
   new `Dim Level`, so it needs a driver that has it.
+- A "Send FX" knob in the settings panel of every input and playback strip
+  and a "Return FX" knob in that of every output pair, as in TotalMix FX
+  (-65 to 0 dB; double-click turns it off). They drive the kernel driver's
+  new `<source> FX Send` and `<output> FX Return` controls, so they only
+  show with a driver that has them. TotalMix's scales were measured with
+  usbmon: a send has 0 dB at 0x1000, a return at 0x4000.
 - With no supported device, the waiting screen names an RME unit it finds on
   the USB bus (Fireface UC, UCX or any other under RME's vendor ID) and says
   it is not supported yet, instead of only asking to check the cable. A
