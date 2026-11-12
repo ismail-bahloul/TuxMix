@@ -115,6 +115,41 @@ pub fn set_crosspoint_volume(
     ]
 }
 
+/// The two crosspoint registers of `src` into `out` with their own levels:
+/// a mono input panned off centre sends a different level to each side of
+/// the pair (TotalMix FX writes both: centred at 0 dB 0x16a0 / 0x16a0, R22
+/// 0x1266 / 0x1a2e).  Like [`set_crosspoint_volume`], one flag value for
+/// both.
+pub fn set_crosspoint_pair(
+    out: Output,
+    src: Source,
+    left: u16,
+    right: u16,
+    flag: &mut FlagCounter,
+) -> [VendorRequest; 2] {
+    let f = flag.current();
+    flag.advance();
+    [
+        VendorRequest::new(0x12, left, (map::crosspoint_l(out, src) as u16) | f),
+        VendorRequest::new(0x12, right, (map::crosspoint_r(out, src) as u16) | f),
+    ]
+}
+
+/// Low-map mirror of [`set_crosspoint_pair`] (AN1/2 submix shadow).
+pub fn set_low_map_pair(
+    src: Source,
+    left: u16,
+    right: u16,
+    flag: &mut FlagCounter,
+) -> [VendorRequest; 2] {
+    let f = flag.current();
+    flag.advance();
+    [
+        VendorRequest::new(0x12, left, (map::low_map_l(src) as u16) | f),
+        VendorRequest::new(0x12, right, (map::low_map_r(src) as u16) | f),
+    ]
+}
+
 /// Low-map mirror of [`set_crosspoint_volume`] (AN1/2 submix shadow).
 pub fn set_low_map_volume(src: Source, volume: u16, flag: &mut FlagCounter) -> [VendorRequest; 2] {
     let f = flag.current();

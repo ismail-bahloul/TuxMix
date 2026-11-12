@@ -12,6 +12,12 @@
 - An input strip whose output pair has Loop on is tagged LOOP instead of its
   type: its meter shows that output, not the input (#23).
 
+### Fixed
+- With the proprietary USB backend, the pan of the analog inputs (AN1, AN2,
+  Instr 3/4) now reaches the unit: it used to be ignored. Both crosspoints of
+  the pair are written on TotalMix FX's constant-power law (centred 0x16a0 per
+  side at 0 dB), and moving the fader or the phase switch keeps the pan.
+
 ## 0.3.7 (2026-11-09)
 
 ### Added
