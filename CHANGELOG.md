@@ -26,6 +26,10 @@
   the real TotalMix), and a hard pan gives the whole level to one side. A
   centred source used to come out 3 dB louder than in TotalMix. The Matrix
   view and the output meters use the same split.
+- With the proprietary USB backend, the pan of the analog inputs (AN1, AN2,
+  Instr 3/4) now reaches the unit: it used to be ignored. Both crosspoints of
+  the pair are written on TotalMix FX's constant-power law (centred 0x16a0 per
+  side at 0 dB), and moving the fader or the phase switch keeps the pan.
 
 ## 0.3.7 (2026-11-09)
 

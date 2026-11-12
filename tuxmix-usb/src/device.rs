@@ -206,6 +206,25 @@ impl BabyfaceUsb {
         self.send_all(&reqs)
     }
 
+    /// Set the two sides of a source's crosspoint into an output
+    /// separately (a panned mono input), raw 16-bit scale.
+    pub fn set_pair(
+        &mut self,
+        out: Output,
+        src: Source,
+        left: u16,
+        right: u16,
+    ) -> Result<(), Error> {
+        let reqs = protocol::set_crosspoint_pair(out, src, left, right, &mut self.flag);
+        self.send_all(&reqs)
+    }
+
+    /// The AN1/2 low-map mirror of [`Self::set_pair`].
+    pub fn set_low_map_pair(&mut self, src: Source, left: u16, right: u16) -> Result<(), Error> {
+        let reqs = protocol::set_low_map_pair(src, left, right, &mut self.flag);
+        self.send_all(&reqs)
+    }
+
     /// Write the AN1/2 low-map mirror of a crosspoint.
     pub fn set_low_map_volume(&mut self, src: Source, volume: u16) -> Result<(), Error> {
         let reqs = protocol::set_low_map_volume(src, volume, &mut self.flag);
