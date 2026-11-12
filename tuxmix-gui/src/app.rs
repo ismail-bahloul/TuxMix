@@ -5571,8 +5571,6 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Eleme
     flyout_card(col, width, scale)
 }
 
-/// A band's color on its knobs, dimmed while the band is off: the same
-/// red, green and azure as its curve in the plot and its type button.
 /// An entry of the EQ preset menu: one of TotalMix FX's factory presets
 /// (an index into `eq_presets::FACTORY`) or Reset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5604,6 +5602,8 @@ fn eq_preset_choices() -> Vec<EqPresetChoice> {
         .collect()
 }
 
+/// A band's color on its knobs, dimmed while the band is off: the same
+/// red, green and azure as its curve in the plot and its type button.
 fn eq_band_tint(band_type: EqBandType, band: usize) -> Color {
     let c = theme::EQ_BAND[band];
     if band_type == EqBandType::Off {
