@@ -381,11 +381,18 @@ pub fn set_panel_gain(mic: usize, value: u8) -> Vec<VendorRequest> {
 
 /// The `0x10 wIdx=0x05CF` host settings-state word (FULLY DECODED
 /// 2026-08-22, cap_clk/cap_opt/cap_eqr): bit 0 = clock Internal,
-/// bit 2 = clock Optical, bit 6 = EQ for Record, bit 10 = Optical Out
-/// SPDIF (0 = ADAT). The ~3 s keepalive doubles as this command word.
+/// bit 2 = clock Optical, bit 6 = EQ for Record turned OFF (clear = on,
+/// the default), bit 10 = Optical Out SPDIF (0 = ADAT). The ~3 s keepalive
+/// doubles as this command word.
+///
+/// `eq_record` is the setting as the user sees it: `true` = the EQ also acts
+/// on the recorded signal. Bit 6 is the opposite, set when the box is
+/// cleared (checked on the unit against RME's own settings dialog and
+/// TotalMix FX, 2026-11-11: cleared = `0x0041`, ticked = `0x0001`). The
+/// first decoding had it the other way round.
 pub fn settings_word(clock_optical: bool, eq_record: bool, spdif_out: bool) -> u16 {
     let mut w = if clock_optical { 0x0004 } else { 0x0001 };
-    if eq_record {
+    if !eq_record {
         w |= 0x0040;
     }
     if spdif_out {
@@ -1077,10 +1084,14 @@ mod tests {
         // cap_clk/cap_opt/cap_eqr: default 0x0001, optical 0x0004,
         // SPDIF 0x0401, EQ-record 0x0041 — additive bits over the
         // clock word.
-        assert_eq!(settings_word(false, false, false), 0x0001);
-        assert_eq!(settings_word(true, false, false), 0x0004);
-        assert_eq!(settings_word(false, false, true), 0x0401);
-        assert_eq!(settings_word(false, true, false), 0x0041);
+        // The default is EQ for Record ON, which is bit 6 clear.
+        assert_eq!(settings_word(false, true, false), 0x0001);
+        assert_eq!(settings_word(true, true, false), 0x0004);
+        assert_eq!(settings_word(false, true, true), 0x0401);
+        // EQ for Record cleared in the Windows dialog writes bit 6.
+        assert_eq!(settings_word(false, false, false), 0x0041);
+        assert_eq!(settings_word(false, false, true), 0x0441);
+        assert_eq!(settings_word(true, false, false), 0x0044);
         assert_eq!(
             settings_keepalive(0x0004),
             VendorRequest::new(0x10, 0x0004, 0x05CF)

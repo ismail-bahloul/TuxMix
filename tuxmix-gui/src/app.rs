@@ -7405,18 +7405,19 @@ mod tests {
     #[test]
     fn eq_for_record_and_optical_out_format_toggles_reach_device_settings() {
         let mut state = new(true, None, None);
-        assert!(!state.device.settings().eq_for_record);
+        // The unit's default: the EQ also acts on the recorded signal.
+        assert!(state.device.settings().eq_for_record);
         assert!(!state.device.settings().optical_out_spdif);
 
-        let _ = update(&mut state, Message::EqForRecordChanged(true));
-        assert!(state.device.settings().eq_for_record);
+        let _ = update(&mut state, Message::EqForRecordChanged(false));
+        assert!(!state.device.settings().eq_for_record);
         assert!(!state.device.settings().optical_out_spdif);
 
         let _ = update(&mut state, Message::OpticalOutFormatChanged(true));
         assert!(state.device.settings().optical_out_spdif);
 
-        let _ = update(&mut state, Message::EqForRecordChanged(false));
-        assert!(!state.device.settings().eq_for_record);
+        let _ = update(&mut state, Message::EqForRecordChanged(true));
+        assert!(state.device.settings().eq_for_record);
         assert!(
             state.device.settings().optical_out_spdif,
             "toggling EQ-for-Record must not stomp the SPDIF flag (shared settings-word register)"
