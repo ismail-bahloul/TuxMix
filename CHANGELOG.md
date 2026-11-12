@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+- With the proprietary USB backend, closing it while the audio streams were
+  running crashed (a segfault in `libusb_cancel_transfer`): the device handle
+  was closed before the streams that use it. The streams are now stopped
+  first.
+
 ### Added
 - A Presets menu in the EQ panel of an analog input, with TotalMix FX's
   fourteen factory presets (Modern Bass Treble, Telephone, Live Vocal Mic,
