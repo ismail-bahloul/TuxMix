@@ -75,6 +75,11 @@ pub struct DeviceSettings {
     /// [`RmeDevice::set_dim`].
     #[serde(default)]
     pub dim: bool,
+    /// How much Dim takes off, in dB (-65..0, TotalMix FX's "Main Out
+    /// Dim", -20 by default). Not part of a scene. See
+    /// [`RmeDevice::set_dim_level`].
+    #[serde(default = "default_dim_level")]
+    pub dim_level_db: f32,
     /// Main Mono: the stereo sources are summed into the Main pair, as
     /// the mono button of TotalMix's control room does. Not part of a
     /// scene (like Dim). See [`RmeDevice::set_main_mono`].
@@ -124,6 +129,10 @@ pub struct DeviceSettings {
 }
 
 /// Serde default for [`DeviceSettings::sample_rate`].
+fn default_dim_level() -> f32 {
+    -20.0
+}
+
 fn default_sample_rate() -> u32 {
     48_000
 }
@@ -367,6 +376,21 @@ pub trait RmeDevice {
     /// Switch). The control room's mono button is dimmed without it.
     fn has_main_mono(&self) -> bool {
         false
+    }
+
+    /// Whether the driver has a Dim Level. The Dim knob is hidden without
+    /// it.
+    fn has_dim_level(&self) -> bool {
+        false
+    }
+
+    /// How much Dim takes off, in dB (-65..0; TotalMix FX's default is
+    /// -20). Applies to the next Dim press, and to an engaged one at once.
+    fn set_dim_level(&mut self, db: f32) -> Result<(), Error> {
+        let _ = db;
+        Err(Error::InvalidChannel(
+            "The Dim level is not supported on this backend".into(),
+        ))
     }
 
     /// Control-room mono: sum the stereo sources into the Main pair

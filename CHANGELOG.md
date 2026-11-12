@@ -8,6 +8,10 @@
   a playback pair at half level on both sides, which the kernel driver's new
   `Main Mono Switch` does; it needs a driver that has it. The 0.3.7 notes
   said Mono writes nothing over USB, which was wrong.
+- A Dim knob in the device panel's Output section sets how much Dim takes
+  off, from -65 to 0 dB (-20 by default), like "Main Out Dim" in TotalMix
+  FX's Mixer Settings; double-click resets it. It drives the kernel driver's
+  new `Dim Level`, so it needs a driver that has it.
 - With no supported device, the waiting screen names an RME unit it finds on
   the USB bus (Fireface UC, UCX or any other under RME's vendor ID) and says
   it is not supported yet, instead of only asking to check the cable. A

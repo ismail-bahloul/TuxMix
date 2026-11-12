@@ -1112,6 +1112,12 @@ impl BabyfacePro {
                 self.settings.dim = v != 0;
             }
         }
+        if let Some(selem) = self.mixer.find_selem("Dim Level", 0) {
+            // The driver counts the cut in positive dB.
+            if let Ok(v) = selem.get_playback_volume(mono) {
+                self.settings.dim_level_db = -(v as f32);
+            }
+        }
         if let Some(selem) = self.mixer.find_selem("Main Mono", 0) {
             if let Ok(v) = selem.get_playback_switch(mono) {
                 self.settings.main_mono = v != 0;
@@ -1418,6 +1424,7 @@ impl RmeDevice for BabyfacePro {
                 eq_for_record: false,
                 optical_out_spdif: false,
                 dim: false,
+                dim_level_db: -20.0,
                 main_mono: false,
                 fx_send_db: None,
                 width: 0.0,
@@ -2273,6 +2280,25 @@ impl RmeDevice for BabyfacePro {
     fn has_main_mono(&self) -> bool {
         self.grammar == ControlGrammar::Proprietary
             && self.mixer.find_selem("Main Mono", 0).is_some()
+    }
+
+    fn has_dim_level(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && self.mixer.find_selem("Dim Level", 0).is_some()
+    }
+
+    fn set_dim_level(&mut self, db: f32) -> Result<(), Error> {
+        self.require_proprietary("Dim level")?;
+        let db = db.clamp(-65.0, 0.0).round();
+        // The driver's "Dim Level" (kernel driver after v9) counts the cut
+        // in positive dB; an older one has no such control.
+        let selem = self
+            .mixer
+            .find_selem("Dim Level", 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no Dim Level".into()))?;
+        selem.set_playback_volume(SelemChannelId::mono(), (-db) as i64)?;
+        self.settings.dim_level_db = db;
+        Ok(())
     }
 
     fn set_main_mono(&mut self, on: bool) -> Result<(), Error> {
