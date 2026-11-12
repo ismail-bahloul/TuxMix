@@ -4943,6 +4943,18 @@ fn playback_meter_available(state: &TuxMix, idx: usize) -> bool {
     }
 }
 
+/// The output pair an output channel index belongs to: a backend with one
+/// output per pair (the libusb one) indexes by pair, the others by channel,
+/// two to a pair. The FX return is per pair, so it goes through this rather
+/// than assuming either.
+fn output_pair_of(state: &TuxMix, out_idx: usize) -> usize {
+    if state.device.outputs_one_per_pair() {
+        out_idx
+    } else {
+        out_idx / 2
+    }
+}
+
 /// Whether an output's host-computed meter is complete: every source
 /// routed into that output pair must itself have a real meter. Inputs
 /// are all real with the updated ALSA driver; playbacks depend on the
@@ -5439,7 +5451,7 @@ fn settings_popover(
         let (label, db, on_change, on_reset): (&str, f32, Box<dyn Fn(f32) -> Message>, Message) =
             match cid {
                 ChannelId::Output(o) => {
-                    let pair = o / 2;
+                    let pair = output_pair_of(state, o);
                     (
                         "Return FX",
                         state.device.fx_return(pair),
@@ -8671,6 +8683,16 @@ mod tests {
             crate::sidebar::clock_line(&state, "Internal"),
             "48 kHz \u{00b7} 256 smp \u{00b7} Internal"
         );
+    }
+
+    #[test]
+    fn an_output_channel_maps_to_its_pair_by_the_backends_indexing() {
+        // The mock (like the ALSA backend) has two output channels per
+        // pair; a backend with one per pair indexes by pair instead.
+        let state = new(true, None, None);
+        assert!(!state.device.outputs_one_per_pair());
+        let pairs: Vec<_> = (0..4).map(|o| super::output_pair_of(&state, o)).collect();
+        assert_eq!(pairs, [0, 0, 1, 1]);
     }
 
     #[test]
