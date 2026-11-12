@@ -189,14 +189,7 @@ fn playback_row_groups(state: &TuxMix) -> Vec<RowGroup> {
 /// A mono source's (volume, pan) decoded into what reaches the left and
 /// right outputs of a pair.
 fn mono_sides(vol: f32, pan: i8) -> (f32, f32) {
-    let pf = pan as f32 / 100.0;
-    if pan == 0 {
-        (vol, vol)
-    } else if pf < 0.0 {
-        (vol, vol * (1.0 + pf))
-    } else {
-        (vol * (1.0 - pf), vol)
-    }
+    tuxmix_core::channel::pan_split(vol, pan)
 }
 
 /// What one source row needs from the device model.
@@ -635,17 +628,17 @@ mod tests {
 
     #[test]
     fn a_mono_source_is_split_by_its_pan() {
-        assert_eq!(mono_sides(1.0, 0), (1.0, 1.0));
-        let (l, r) = mono_sides(1.0, -50);
-        assert_eq!(l, 1.0);
-        assert!((r - 0.5).abs() < 1e-6);
+        let (l, r) = mono_sides(1.0, 0);
+        assert!((l - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6 && l == r);
+        let (l, r) = mono_sides(1.0, -100);
+        assert!((l - 1.0).abs() < 1e-6 && r.abs() < 1e-6);
         let src = RowSource {
             volumes: vec![1.0],
             pans: Some(vec![100]),
             muted: false,
             phase: false,
         };
-        assert_eq!(shown_gain(&src, 0, 0), Some(0.0));
-        assert_eq!(shown_gain(&src, 0, 1), Some(1.0));
+        assert!(shown_gain(&src, 0, 0).unwrap().abs() < 1e-6);
+        assert!((shown_gain(&src, 0, 1).unwrap() - 1.0).abs() < 1e-6);
     }
 }

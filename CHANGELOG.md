@@ -12,6 +12,13 @@
 - An input strip whose output pair has Loop on is tagged LOOP instead of its
   type: its meter shows that output, not the input (#23).
 
+### Fixed
+- A mono input's pan follows TotalMix FX's constant-power law instead of a
+  linear one: centred, each side sits 3 dB down (0x16a0 at 0 dB, measured on
+  the real TotalMix), and a hard pan gives the whole level to one side. A
+  centred source used to come out 3 dB louder than in TotalMix. The Matrix
+  view and the output meters use the same split.
+
 ## 0.3.7 (2026-11-09)
 
 ### Added
