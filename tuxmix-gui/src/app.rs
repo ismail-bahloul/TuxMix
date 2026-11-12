@@ -1427,7 +1427,15 @@ pub struct MeterAnim {
     /// was last cleared. Set from the raw reading, not the smoothed
     /// `value`, which would ride over a clip of a few milliseconds.
     pub clipped: bool,
+    /// The loudest raw reading in the last `PEAK_HOLD` (or the latest one
+    /// once that has passed): the number TotalMix prints over each meter.
+    peak: f32,
+    peak_at: Instant,
 }
+
+/// How long the numeric peak keeps its value (TotalMix FX's "Peak hold"
+/// preference, 2.0 s by default).
+const PEAK_HOLD: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// A raw reading at or above this is a clip: 0 dBFS, give or take the
 /// float rounding of a full-scale sample.
@@ -1441,7 +1449,22 @@ impl MeterAnim {
             last_step_at: Instant::now(),
             release_elapsed_ms: METER_RELEASE_MS,
             clipped: false,
+            peak: 0.0,
+            peak_at: Instant::now(),
         }
+    }
+
+    /// The peak as TotalMix prints it over a meter: whole dBFS, "OVR" when
+    /// the channel clipped since its LED was cleared, "UFL" for digital
+    /// silence.
+    pub fn peak_label(&self) -> String {
+        if self.clipped {
+            return "OVR".to_string();
+        }
+        if self.peak < 1e-7 {
+            return "UFL".to_string();
+        }
+        format!("{:.0}", (20.0 * self.peak.log10()).max(-120.0))
     }
 
     pub fn frame(&self) -> fader::MeterFrame {
@@ -1472,6 +1495,11 @@ impl MeterAnim {
     fn step_for(&mut self, target: f32, dt_ms: f32) {
         if target >= CLIP_LEVEL {
             self.clipped = true;
+        }
+        let now = Instant::now();
+        if target >= self.peak || now.duration_since(self.peak_at) > PEAK_HOLD {
+            self.peak = target;
+            self.peak_at = now;
         }
         self.prev_value = self.value;
         let ratio = dt_ms / METER_TICK_MS;
@@ -1826,6 +1854,22 @@ fn finish_params<'a>(state: &'a TuxMix, mut p: strip::StripParams<'a>) -> strip:
     if let Some(label) = user_label(state, p.cid) {
         p.name = label.to_string();
     }
+    // The peak readout over the meter(s): blank where there is no real
+    // reading, so every strip keeps the same height.
+    let (meters, idx) = match p.cid {
+        ChannelId::Input(i) => (&state.input_meters, i),
+        ChannelId::Playback(i) => (&state.playback_meters, i),
+        ChannelId::Output(i) => (&state.output_meters, i),
+    };
+    let label = |i: usize, available: bool| {
+        meters
+            .get(i)
+            .filter(|_| available)
+            .map(MeterAnim::peak_label)
+            .unwrap_or_default()
+    };
+    p.peak = label(idx, p.meter_available);
+    p.peak2 = p.meter2.map(|_| label(idx + 1, p.meter2_available));
     p.renaming = state.renaming == Some(p.cid);
     p.mute_armed = mute_armed(state, p.cid);
     p.solo_armed = solo_armed(state, p.cid);
@@ -5105,6 +5149,8 @@ fn strip_params<'a>(
         meter2_available: false,
         clip: false,
         clip2: false,
+        peak: String::new(),
+        peak2: None,
         has_48v: false,
         has_pad: false,
         phantom: false,
@@ -6214,7 +6260,7 @@ fn mixer_view(state: &TuxMix) -> Element<'_, Message> {
 /// them text, so it is not derived on paper). Only used to work out how
 /// much room is left for the faders: erring high leaves a few pixels
 /// unused, erring low would make the page scroll.
-const STRIP_CARD_H: f32 = 318.0;
+const STRIP_CARD_H: f32 = 331.0;
 /// A section header's height at scale 1 (`section_header`).
 const SECTION_HEADER_H: f32 = 18.0;
 /// The submix hint's height at scale 1 (`TEXT_XS` on one line).
@@ -7890,6 +7936,25 @@ mod tests {
             Some(Message::ToggleFlyout(b, strip::FlyoutKind::Route)),
         );
         assert!(!route_popover_open(&state));
+    }
+
+    #[test]
+    fn the_peak_readout_holds_and_names_silence_and_overs() {
+        let mut m = MeterAnim::new();
+        assert_eq!(m.peak_label(), "UFL", "digital silence");
+        m.step(0.1);
+        assert_eq!(m.peak_label(), "-20");
+        // A quieter reading does not lower it inside the hold time.
+        m.step(0.01);
+        assert_eq!(m.peak_label(), "-20");
+        // Past the hold it follows the level again.
+        m.peak_at -= super::PEAK_HOLD + std::time::Duration::from_millis(10);
+        m.step(0.01);
+        assert_eq!(m.peak_label(), "-40");
+        m.step(1.0);
+        assert_eq!(m.peak_label(), "OVR");
+        m.clipped = false;
+        assert_eq!(m.peak_label(), "0");
     }
 
     #[test]

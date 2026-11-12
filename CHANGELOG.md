@@ -2,12 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-- With the proprietary USB backend, closing it while the audio streams were
-  running crashed (a segfault in `libusb_cancel_transfer`): the device handle
-  was closed before the streams that use it. The streams are now stopped
-  first.
-
 ### Added
 - A Presets menu in the EQ panel of an analog input, with TotalMix FX's
   fourteen factory presets (Modern Bass Treble, Telephone, Live Vocal Mic,
@@ -31,18 +25,15 @@
   new `<source> FX Send` and `<output> FX Return` controls, so they only
   show with a driver that has them. TotalMix's scales were measured with
   usbmon: a send has 0 dB at 0x1000, a return at 0x4000.
+- A numeric peak readout over each meter, as TotalMix prints it: the
+  loudest level of the last two seconds in whole dBFS, "OVR" once the
+  channel has clipped and "UFL" for silence. A linked pair shows one value
+  per channel; a strip without a real meter leaves the row blank so the
+  faders stay level.
 - With no supported device, the waiting screen names an RME unit it finds on
   the USB bus (Fireface UC, UCX or any other under RME's vendor ID) and says
   it is not supported yet, instead of only asking to check the cable. A
   Babyface Pro in class-compliant mode is told how to switch back.
-
-### Fixed
-- EQ for Record was inverted on the libusb backend: the toggle set bit 6 of
-  the settings word when ticked, and the unit takes that bit as "EQ for
-  Record off". It is now on by default, as in RME's settings dialog, and
-  clearing it writes bit 6 (`0x0041`), checked against RME's driver and
-  TotalMix FX. Scenes saved before this keep the unit's default instead of
-  reading their old value back, since it meant the opposite.
 
 ### Changed
 - The knobs draw their sweep as a ring around the face: a track for the
@@ -54,6 +45,16 @@
   type: its meter shows that output, not the input (#23).
 
 ### Fixed
+- With the proprietary USB backend, closing it while the audio streams were
+  running crashed (a segfault in `libusb_cancel_transfer`): the device handle
+  was closed before the streams that use it. The streams are now stopped
+  first.
+- EQ for Record was inverted on the libusb backend: the toggle set bit 6 of
+  the settings word when ticked, and the unit takes that bit as "EQ for
+  Record off". It is now on by default, as in RME's settings dialog, and
+  clearing it writes bit 6 (`0x0041`), checked against RME's driver and
+  TotalMix FX. Scenes saved before this keep the unit's default instead of
+  reading their old value back, since it meant the opposite.
 - A mono input's pan follows TotalMix FX's constant-power law instead of a
   linear one: centred, each side sits 3 dB down (0x16a0 at 0 dB, measured on
   the real TotalMix), and a hard pan gives the whole level to one side. A

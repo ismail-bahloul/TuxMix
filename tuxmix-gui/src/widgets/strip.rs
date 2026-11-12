@@ -41,6 +41,9 @@ pub(crate) const STRIP_W: f32 = 96.0;
 /// original number was (pixel-measuring a collapsed and an adjacent full
 /// strip side by side in a live screenshot), not derived on paper.
 const COLLAPSED_METER_H: f32 = FADER_H + 30.0;
+/// The numeric peak readout's row above the meter, at scale 1.
+const PEAK_ROW_H: f32 = 12.0;
+
 /// What a full strip stacks above its fader: the name line, the pan knob
 /// and the M/S row (`full_strip`, at scale 1, hairline spacings aside).
 /// A collapsed strip gives its name and M/S the same band, so its meter
@@ -181,6 +184,11 @@ pub struct StripParams<'a> {
     /// The clip LED of `meter` / `meter2` is held lit (see `Fader::clip`).
     pub clip: bool,
     pub clip2: bool,
+    /// The numeric peak over `meter` / `meter2` ("-18", "OVR", "UFL"),
+    /// blank where the meter is not a real reading. Filled by
+    /// `app::finish_params`.
+    pub peak: String,
+    pub peak2: Option<String>,
     pub has_48v: bool,
     pub has_pad: bool,
     pub phantom: bool,
@@ -722,6 +730,35 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     );
 
     rows = rows.push(ms_row);
+
+    // The peak readout over the meter(s), as TotalMix prints it ("-18",
+    // "OVR", "UFL"): one value, or one per channel of a linked pair. The
+    // row is there on every strip, blank without a real meter, so the
+    // faders stay level across the row.
+    let peak_text = |label: &str| -> Element<'static, Message> {
+        let color = if label == "OVR" {
+            theme::MRED
+        } else {
+            theme::TEXT_SEC
+        };
+        container(
+            text(label.to_string())
+                .size(theme::TEXT_MICRO * scale)
+                .color(color),
+        )
+        .width(Length::Fill)
+        .center_x(Length::Fill)
+        .into()
+    };
+    let mut peak_row = row![peak_text(&p.peak)].spacing(theme::SPACE_TIGHT);
+    if let Some(second) = &p.peak2 {
+        peak_row = peak_row.push(peak_text(second));
+    }
+    rows = rows.push(
+        container(peak_row)
+            .width(Length::Fill)
+            .height(Length::Fixed(PEAK_ROW_H * scale)),
+    );
     // 48V/PAD/Sensitivity/Gain all live in the gear flyout now (see
     // `app.rs::settings_popover`), not inline here — keeps every strip's
     // own height fixed regardless of channel type, and matches the route
