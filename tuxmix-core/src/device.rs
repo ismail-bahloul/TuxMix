@@ -55,11 +55,16 @@ pub struct DeviceSettings {
     #[serde(default)]
     pub an12: bool,
     /// EQ for Record: whether the hardware DSP EQ is applied to the
-    /// recorded signal too, not just the monitor mix. Settings
-    /// keepalive bit 6 (`PROTOCOL.md`'s `cap_eqr.pcap`, hardware-
-    /// verified) — an RME-specific setting, distinct from the generic
-    /// `spdif_*` fields above.
-    #[serde(default)]
+    /// recorded signal too, not just the monitor mix. On by default, as in
+    /// RME's settings dialog. Bit 6 of the settings keepalive word is set
+    /// when this is OFF (checked against RME's driver, 2026-11-11) — an
+    /// RME-specific setting, distinct from the generic `spdif_*` fields
+    /// above.
+    ///
+    /// Stored under its own key: scenes saved before that fix wrote their
+    /// `eq_for_record` with the opposite meaning (the default `false` was
+    /// the unit's "on"), so they must not be read back into this field.
+    #[serde(default = "default_eq_for_record", rename = "eq_for_record_on")]
     pub eq_for_record: bool,
     /// Optical Out format: `true` = SPDIF (2-channel), `false` = ADAT
     /// (8-channel, the device default). Settings keepalive bit 10
@@ -140,6 +145,12 @@ fn default_sample_rate() -> u32 {
 /// Serde default for [`DeviceSettings::input_link`] (TotalMix's own
 /// default is linked).
 fn default_input_link() -> bool {
+    true
+}
+
+/// Serde default for [`DeviceSettings::eq_for_record`] (the unit's own
+/// default is on).
+fn default_eq_for_record() -> bool {
     true
 }
 

@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- A Presets menu in the EQ panel of an analog input, with TotalMix FX's
+  fourteen factory presets (Modern Bass Treble, Telephone, Live Vocal Mic,
+  Notch and the rest) and its Reset (flat bands at 50 Hz, 1 kHz and 10 kHz,
+  12 dB/oct low cut). A preset sets the three bands and the low cut's
+  frequency and slope, and leaves the EQ and low-cut switches as they were,
+  as TotalMix does. The band types were read off TotalMix FX on a Babyface
+  Pro.
 - A mono button in the Control Room card, as in TotalMix FX: it sums the
   stereo sources into the Main pair. TotalMix writes the Main crosspoints of
   a playback pair at half level on both sides, which the kernel driver's new
@@ -17,9 +24,28 @@
   it is not supported yet, instead of only asking to check the cable. A
   Babyface Pro in class-compliant mode is told how to switch back.
 
+### Fixed
+- EQ for Record was inverted on the libusb backend: the toggle set bit 6 of
+  the settings word when ticked, and the unit takes that bit as "EQ for
+  Record off". It is now on by default, as in RME's settings dialog, and
+  clearing it writes bit 6 (`0x0041`), checked against RME's driver and
+  TotalMix FX. Scenes saved before this keep the unit's default instead of
+  reading their old value back, since it meant the opposite.
+
 ### Changed
 - An input strip whose output pair has Loop on is tagged LOOP instead of its
   type: its meter shows that output, not the input (#23).
+
+### Fixed
+- A mono input's pan follows TotalMix FX's constant-power law instead of a
+  linear one: centred, each side sits 3 dB down (0x16a0 at 0 dB, measured on
+  the real TotalMix), and a hard pan gives the whole level to one side. A
+  centred source used to come out 3 dB louder than in TotalMix. The Matrix
+  view and the output meters use the same split.
+- With the proprietary USB backend, the pan of the analog inputs (AN1, AN2,
+  Instr 3/4) now reaches the unit: it used to be ignored. Both crosspoints of
+  the pair are written on TotalMix FX's constant-power law (centred 0x16a0 per
+  side at 0 dB), and moving the fader or the phase switch keeps the pan.
 
 ## 0.3.7 (2026-11-09)
 

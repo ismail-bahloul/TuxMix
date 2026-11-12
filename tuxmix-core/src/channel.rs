@@ -251,15 +251,17 @@ impl PlaybackChannel {
 }
 
 /// The linear left and right levels of a mono source at `volume` and
-/// `pan` (-100 = left only, +100 = right only): the louder side carries the
-/// volume and the other is attenuated by the pan.
+/// `pan` (-100 = left only, +100 = right only), on TotalMix's constant-power
+/// law: `L = volume * cos(a)`, `R = volume * sin(a)` with `a` running from 0
+/// to a quarter turn across the pan range.  Centred, each side is
+/// `volume / sqrt(2)` (-3 dB); at an extreme one side carries the whole
+/// volume.  Measured on TotalMix FX: a centred mono input at 0 dB writes
+/// 0x16a0 per side, R22 writes 0x1266 / 0x1a2e, L56 writes 0x1e1b / 0x0ad7
+/// (0 dB = 0x2000).
 pub fn pan_split(volume: f32, pan: i8) -> (f32, f32) {
     let p = (pan.clamp(-100, 100) as f32) / 100.0;
-    if p <= 0.0 {
-        (volume, volume * (1.0 + p))
-    } else {
-        (volume * (1.0 - p), volume)
-    }
+    let a = (p + 1.0) * std::f32::consts::FRAC_PI_4;
+    (volume * a.cos(), volume * a.sin())
 }
 
 /// The linear levels a source channel sends into the left and right
