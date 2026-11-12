@@ -129,7 +129,7 @@ pub struct BabyfaceUsb {
     /// setter that recomposed it from just its own flag, assuming the
     /// other two off, would silently reset whichever of the other two
     /// happened to be on. Defaults match the device's own power-on
-    /// state (`PROTOCOL.md`: "default (ADAT optical, EQ-record off,
+    /// state (`PROTOCOL.md`: "default (ADAT optical, EQ for Record on,
     /// clock Internal)").
     clock_optical: bool,
     eq_record: bool,
@@ -172,7 +172,7 @@ impl BabyfaceUsb {
             sample_rate: 48_000,
             dsp_claimed: false,
             clock_optical: false,
-            eq_record: false,
+            eq_record: true,
             spdif_out: false,
         })
     }
