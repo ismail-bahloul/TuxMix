@@ -347,6 +347,12 @@ impl RmeDevice for DeviceHandle {
     fn set_main_mono(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_main_mono(on))
     }
+    fn has_dim_level(&self) -> bool {
+        delegate!(self, has_dim_level())
+    }
+    fn set_dim_level(&mut self, db: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_dim_level(db))
+    }
     fn set_eq_for_record(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_eq_for_record(on))
     }
@@ -803,6 +809,8 @@ pub enum Message {
     An12Changed(bool),
     InputLinkChanged(bool),
     EqForRecordChanged(bool),
+    /// How much Dim takes off, in dB (-65..0).
+    DimLevelChanged(f32),
     OpticalOutFormatChanged(bool),
     /// The CUE button on an Output strip — exclusive across every
     /// output (see `RmeDevice::set_cue`'s own doc comment), so this
@@ -2289,6 +2297,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::SetRowMode(_)
             | Message::DimToggle
             | Message::MonoToggle
+            | Message::DimLevelChanged(_)
             | Message::MatrixHover(..)
             | Message::PointerPressed
             | Message::PointerReleased
@@ -2348,6 +2357,7 @@ fn needs_protocol_features(message: &Message) -> bool {
             | Message::EqForRecordChanged(_)
             | Message::DimToggle
             | Message::MonoToggle
+            | Message::DimLevelChanged(_)
             | Message::EqEnabled(..)
             | Message::EqBandType(..)
             | Message::EqBandFreq(..)
@@ -2997,6 +3007,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::InputLinkChanged(on) => {
             if let Err(e) = state.device.set_input_link(on) {
                 fail(state, "set_input_link", &e);
+            }
+        }
+        Message::DimLevelChanged(db) => {
+            if let Err(e) = state.device.set_dim_level(db) {
+                fail(state, "set_dim_level", &e);
             }
         }
         Message::EqForRecordChanged(on) => {
@@ -4329,44 +4344,60 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                 .width(Length::Fill)
                 .into()
             };
-        let output = column![
-            section("OUTPUT"),
-            row![
-                knob_cell(
-                    "Pitch",
-                    knob(Knob {
-                        tint: None,
-                        value: settings.pitch_percent,
-                        range: (-5.0, 5.0),
-                        label: format!("{:+.1}%", settings.pitch_percent),
-                        arc_from_center: true,
-                        interactive: true,
-                        log_scale: false,
-                        modifiers,
-                        scale,
-                        on_change: Box::new(|v| Message::PitchChanged(v.clamp(-5.0, 5.0))),
-                        on_reset: Box::new(|| Message::PitchChanged(0.0)),
-                    }),
-                ),
-                knob_cell(
-                    "Width",
-                    knob(Knob {
-                        tint: None,
-                        value: settings.width,
-                        range: (-1.0, 1.0),
-                        label: format!("{:+.2}", settings.width),
-                        arc_from_center: true,
-                        interactive: true,
-                        log_scale: false,
-                        modifiers,
-                        scale,
-                        on_change: Box::new(|v| Message::WidthChanged(v.clamp(-1.0, 1.0))),
-                        on_reset: Box::new(|| Message::WidthChanged(0.0)),
-                    }),
-                ),
-            ],
-        ]
-        .spacing(theme::SPACE_MD * scale);
+        let mut output_knobs = row![
+            knob_cell(
+                "Pitch",
+                knob(Knob {
+                    tint: None,
+                    value: settings.pitch_percent,
+                    range: (-5.0, 5.0),
+                    label: format!("{:+.1}%", settings.pitch_percent),
+                    arc_from_center: true,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers,
+                    scale,
+                    on_change: Box::new(|v| Message::PitchChanged(v.clamp(-5.0, 5.0))),
+                    on_reset: Box::new(|| Message::PitchChanged(0.0)),
+                }),
+            ),
+            knob_cell(
+                "Width",
+                knob(Knob {
+                    tint: None,
+                    value: settings.width,
+                    range: (-1.0, 1.0),
+                    label: format!("{:+.2}", settings.width),
+                    arc_from_center: true,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers,
+                    scale,
+                    on_change: Box::new(|v| Message::WidthChanged(v.clamp(-1.0, 1.0))),
+                    on_reset: Box::new(|| Message::WidthChanged(0.0)),
+                }),
+            ),
+        ];
+        // Only with a driver that has a Dim Level: the knob would only fail.
+        if state.device.has_dim_level() {
+            output_knobs = output_knobs.push(knob_cell(
+                "Dim",
+                knob(Knob {
+                    tint: None,
+                    value: settings.dim_level_db,
+                    range: (-65.0, 0.0),
+                    label: format!("{:.0} dB", settings.dim_level_db),
+                    arc_from_center: false,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers,
+                    scale,
+                    on_change: Box::new(|v| Message::DimLevelChanged(v.clamp(-65.0, 0.0).round())),
+                    on_reset: Box::new(|| Message::DimLevelChanged(-20.0)),
+                }),
+            ));
+        }
+        let output = column![section("OUTPUT"), output_knobs].spacing(theme::SPACE_MD * scale);
 
         // The global flags as a two-column grid of equal toggles, the same
         // family as the sidebar's group cells.
@@ -8760,6 +8791,21 @@ mod tests {
         let _ = update(&mut state, Message::DimToggle);
         assert!(!state.device.settings().dim);
         assert!(state.undo_stack.is_empty(), "Dim is not part of a scene");
+    }
+
+    #[test]
+    fn dim_level_knob_sets_the_cut_and_resets_to_minus_20() {
+        let mut state = new(true, None, None);
+        assert_eq!(state.device.settings().dim_level_db, -20.0);
+        let _ = update(&mut state, Message::DimLevelChanged(-9.0));
+        assert_eq!(state.device.settings().dim_level_db, -9.0);
+        // Out of range values are held to -65..0 by the backend.
+        let _ = update(&mut state, Message::DimLevelChanged(-80.0));
+        assert_eq!(state.device.settings().dim_level_db, -65.0);
+        assert!(
+            state.undo_stack.is_empty(),
+            "the Dim level is not part of a scene"
+        );
     }
 
     #[test]

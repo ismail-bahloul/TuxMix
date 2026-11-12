@@ -315,6 +315,7 @@ impl BabyfaceProUsb {
             eq_for_record: true,
             optical_out_spdif: false,
             dim: false,
+            dim_level_db: -20.0,
             main_mono: false,
             fx_send_db: None,
             width: 0.0,
