@@ -36,6 +36,9 @@
   Babyface Pro in class-compliant mode is told how to switch back.
 
 ### Changed
+- Role colours, after TotalMix FX: the tick in front of a mixer row's title
+  is red for the hardware inputs, blue for the software playback and green
+  for the hardware outputs. The theme stays dark.
 - The knobs draw their sweep as a ring around the face: a track for the
   whole turn and the value on top of it (from the centre for pan, gain and
   width, from the start for frequency and Q), as TotalMix does. A bare dark

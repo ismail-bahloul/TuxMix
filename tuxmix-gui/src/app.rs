@@ -4857,13 +4857,19 @@ const POPOVER_TOP: f32 = theme::TOP_BAR_H;
 /// tick and a rule trailing off to the right, instead of bare gray text that
 /// blends into the background.
 fn section_header(label: &str, scale: f32) -> Element<'_, Message> {
+    let role = match label {
+        "HARDWARE INPUTS" => theme::ROLE_INPUT,
+        "SOFTWARE PLAYBACK" => theme::ROLE_PLAYBACK,
+        "HARDWARE OUTPUTS" => theme::ROLE_OUTPUT,
+        _ => theme::ACCENT,
+    };
     row![
         container(
             iced::widget::Space::new()
                 .width(3.0 * scale)
                 .height(12.0 * scale)
         )
-        .style(theme::accent_bar),
+        .style(move |_: &iced::Theme| theme::tinted_bar(role)),
         text(label)
             .color(theme::TEXT_PRIMARY)
             .size(theme::TEXT_MD * scale),
