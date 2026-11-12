@@ -119,6 +119,7 @@ impl Scene {
                 eq_for_record: true,
                 optical_out_spdif: false,
                 dim: false,
+                main_mono: false,
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,

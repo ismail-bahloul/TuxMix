@@ -341,6 +341,12 @@ impl RmeDevice for DeviceHandle {
     fn set_dim(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_dim(on))
     }
+    fn has_main_mono(&self) -> bool {
+        delegate!(self, has_main_mono())
+    }
+    fn set_main_mono(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_main_mono(on))
+    }
     fn set_eq_for_record(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_eq_for_record(on))
     }
@@ -903,6 +909,8 @@ pub enum Message {
     /// Flips the hardware Dim (`RmeDevice::set_dim`), the same switch the
     /// front-panel DIM button toggles.
     DimToggle,
+    /// Control Room: flips Main Mono (`RmeDevice::set_main_mono`).
+    MonoToggle,
     /// One entry of TotalMix's Options > Reset Mix, see `ResetMix`.
     ResetMix(ResetMix),
     /// Control Room: remembers the Main volume for `RecallMain`.
@@ -2280,6 +2288,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::SidebarResize(_)
             | Message::SetRowMode(_)
             | Message::DimToggle
+            | Message::MonoToggle
             | Message::MatrixHover(..)
             | Message::PointerPressed
             | Message::PointerReleased
@@ -2338,6 +2347,7 @@ fn needs_protocol_features(message: &Message) -> bool {
             | Message::InputLinkChanged(_)
             | Message::EqForRecordChanged(_)
             | Message::DimToggle
+            | Message::MonoToggle
             | Message::EqEnabled(..)
             | Message::EqBandType(..)
             | Message::EqBandFreq(..)
@@ -3461,6 +3471,12 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             let on = !state.device.settings().dim;
             if let Err(e) = state.device.set_dim(on) {
                 fail(state, "dim", &e);
+            }
+        }
+        Message::MonoToggle => {
+            let on = !state.device.settings().main_mono;
+            if let Err(e) = state.device.set_main_mono(on) {
+                fail(state, "mono", &e);
             }
         }
         Message::SnapshotClicked(n) => {
@@ -6541,6 +6557,7 @@ fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
     // A card as tall as the Main strip beside it, like TotalMix's Control
     // Room column: the monitoring buttons at the top, Store (which only
     // sets what Recall goes back to) apart at the bottom.
+    let has_mono = state.device.has_main_mono();
     let monitoring = column![
         cell("dim")
             .style(theme::toggle_button(
@@ -6551,6 +6568,13 @@ fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
         cell("recall")
             .style(theme::toggle_button(false, theme::ACCENT))
             .on_press_maybe(state.main_recall.map(|_| Message::RecallMain)),
+        cell("mono")
+            .style(theme::toggle_button(
+                state.device.settings().main_mono,
+                theme::ACCENT,
+            ))
+            // Dimmed, not pressable, on a driver without a Main Mono Switch.
+            .on_press_maybe(has_mono.then_some(Message::MonoToggle)),
     ]
     .spacing(theme::SPACE_SM * scale);
     let store = cell("store")
@@ -8736,6 +8760,17 @@ mod tests {
         let _ = update(&mut state, Message::DimToggle);
         assert!(!state.device.settings().dim);
         assert!(state.undo_stack.is_empty(), "Dim is not part of a scene");
+    }
+
+    #[test]
+    fn mono_toggle_flips_the_main_mono_and_stays_out_of_scenes() {
+        let mut state = new(true, None, None);
+        assert!(!state.device.settings().main_mono);
+        let _ = update(&mut state, Message::MonoToggle);
+        assert!(state.device.settings().main_mono);
+        let _ = update(&mut state, Message::MonoToggle);
+        assert!(!state.device.settings().main_mono);
+        assert!(state.undo_stack.is_empty(), "Mono is not part of a scene");
     }
 
     #[test]

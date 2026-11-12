@@ -1116,6 +1116,11 @@ impl BabyfacePro {
                 self.settings.dim = v != 0;
             }
         }
+        if let Some(selem) = self.mixer.find_selem("Main Mono", 0) {
+            if let Ok(v) = selem.get_playback_switch(mono) {
+                self.settings.main_mono = v != 0;
+            }
+        }
         if let Some(selem) = self.mixer.find_selem("Width", 0) {
             if let Ok(v) = selem.get_playback_volume(mono) {
                 self.settings.width = v as f32 / 100.0;
@@ -1417,6 +1422,7 @@ impl RmeDevice for BabyfacePro {
                 eq_for_record: true,
                 optical_out_spdif: false,
                 dim: false,
+                main_mono: false,
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,
@@ -2265,6 +2271,24 @@ impl RmeDevice for BabyfacePro {
             selem.set_playback_switch(SelemChannelId::mono(), on as i32)?;
         }
         self.settings.dim = on;
+        Ok(())
+    }
+
+    fn has_main_mono(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && self.mixer.find_selem("Main Mono", 0).is_some()
+    }
+
+    fn set_main_mono(&mut self, on: bool) -> Result<(), Error> {
+        self.require_proprietary("Mono")?;
+        // The driver's "Main Mono Switch" (kernel driver after v9); an
+        // older one has no such control.
+        let selem = self
+            .mixer
+            .find_selem("Main Mono", 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no Main Mono Switch".into()))?;
+        selem.set_playback_switch(SelemChannelId::mono(), on as i32)?;
+        self.settings.main_mono = on;
         Ok(())
     }
 
