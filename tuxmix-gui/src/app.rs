@@ -5600,12 +5600,12 @@ fn settings_popover(
                     Message::FxSendChanged(cid, tuxmix_core::device::FX_LEVEL_OFF_DB),
                 ),
             };
+        // The knob over its caption, centred: beside a label it did not fit
+        // the panel's width ("Return FX" and the knob ran past the edge and
+        // were clipped).
         col = col.push(
-            row![
-                text(label)
-                    .size(theme::TEXT_SM * scale)
-                    .color(theme::TEXT_SEC),
-                container(knob(Knob {
+            column![
+                knob(Knob {
                     tint: None,
                     value: db,
                     range: (-65.0, 0.0),
@@ -5621,11 +5621,13 @@ fn settings_popover(
                     scale,
                     on_change: Box::new(move |v| on_change(v.round())),
                     on_reset: Box::new(move || on_reset.clone()),
-                }))
-                .width(Length::Fill)
-                .align_x(iced::Alignment::End),
+                }),
+                text(label)
+                    .size(theme::TEXT_XS * scale)
+                    .color(theme::TEXT_SEC),
             ]
-            .align_y(iced::Alignment::Center)
+            .spacing(theme::SPACE_TIGHT * scale)
+            .align_x(iced::Alignment::Center)
             .width(Length::Fill),
         );
     }

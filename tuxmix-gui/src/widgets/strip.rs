@@ -732,32 +732,36 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     rows = rows.push(ms_row);
 
     // The peak readout over the meter(s), as TotalMix prints it ("-18",
-    // "OVR", "UFL"): one value, or one per channel of a linked pair. The
-    // row is there on every strip, blank without a real meter, so the
-    // faders stay level across the row.
+    // "OVR", "UFL"): one value, or one per channel of a linked pair, side by
+    // side over the pair of thin bars. It is centred on the meter, not on
+    // the strip, so it sits right above what it reads. The row is there on
+    // every strip, blank without a real meter, so the faders stay level.
     let peak_text = |label: &str| -> Element<'static, Message> {
         let color = if label == "OVR" {
             theme::MRED
         } else {
             theme::TEXT_SEC
         };
-        container(
-            text(label.to_string())
-                .size(theme::TEXT_MICRO * scale)
-                .color(color),
-        )
-        .width(Length::Fill)
-        .center_x(Length::Fill)
-        .into()
+        text(label.to_string())
+            .size(theme::TEXT_MICRO * scale)
+            .color(color)
+            .into()
     };
-    let mut peak_row = row![peak_text(&p.peak)].spacing(theme::SPACE_TIGHT);
+    let mut peak_row = row![peak_text(&p.peak)].spacing(theme::SPACE_SM * scale);
     if let Some(second) = &p.peak2 {
         peak_row = peak_row.push(peak_text(second));
     }
     rows = rows.push(
         container(peak_row)
             .width(Length::Fill)
-            .height(Length::Fixed(PEAK_ROW_H * scale)),
+            .height(Length::Fixed(PEAK_ROW_H * scale))
+            .center_x(Length::Fill)
+            // Centring in a narrower box shifts the content left by half
+            // the padding: twice the meter's offset puts it over the meter.
+            .padding(iced::Padding {
+                right: 2.0 * super::fader::meter_centre_offset(scale),
+                ..iced::Padding::ZERO
+            }),
     );
     // 48V/PAD/Sensitivity/Gain all live in the gear flyout now (see
     // `app.rs::settings_popover`), not inline here — keeps every strip's

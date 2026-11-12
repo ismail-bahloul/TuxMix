@@ -124,6 +124,13 @@ const RULER_LANE_W: f32 = 12.0;
 const METER_RULER_W: f32 = METER_W + LANE_GAP + RULER_LANE_W;
 const GAP: f32 = 4.0;
 const TRACK_W: f32 = 26.0;
+
+/// How far the meter's centre sits to the left of the centre of a strip's
+/// content (the fader track is centred on it, see `Fader::layout_x`), in
+/// pixels at `scale`. The peak readout above the meter is centred on it.
+pub fn meter_centre_offset(scale: f32) -> f32 {
+    (TRACK_W / 2.0 + GAP + METER_RULER_W - METER_W / 2.0) * scale
+}
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Gap after the last `WheelScrolled` event that means "this is a new
 /// gesture" rather than a continuation — wheel scrolling has no

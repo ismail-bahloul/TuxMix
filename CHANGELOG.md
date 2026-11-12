@@ -45,6 +45,12 @@
   type: its meter shows that output, not the input (#23).
 
 ### Fixed
+- The peak readout of a stereo strip sits over its pair of meter bars (the
+  two values side by side, centred on the meter) instead of one value in
+  each half of the strip, one of them far from the bar it reads.
+- The Send FX and Return FX knobs of the strip settings panel no longer run
+  past the panel's edge: the knob is centred over its caption instead of
+  beside a label that left it no room.
 - With the proprietary USB backend, closing it while the audio streams were
   running crashed (a segfault in `libusb_cancel_transfer`): the device handle
   was closed before the streams that use it. The streams are now stopped
