@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+- With the proprietary USB backend, closing it while the audio streams were
+  running crashed (a segfault in `libusb_cancel_transfer`): the device handle
+  was closed before the streams that use it. The streams are now stopped
+  first.
+
 ### Added
 - With no supported device, the waiting screen names an RME unit it finds on
   the USB bus (Fireface UC, UCX or any other under RME's vendor ID) and says

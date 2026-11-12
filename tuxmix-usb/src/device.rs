@@ -631,6 +631,17 @@ impl BabyfaceUsb {
     }
 }
 
+impl Drop for BabyfaceUsb {
+    /// The streams hold raw pointers to this device's libusb handle and
+    /// cancel their transfers when they drop. Fields drop in declaration
+    /// order, so without this `handle` was closed first and the streams
+    /// cancelled on a freed device: a segfault in `libusb_cancel_transfer`
+    /// whenever the backend was dropped with the audio running.
+    fn drop(&mut self) {
+        self.streams.take();
+    }
+}
+
 /// Convenience: open + session test (run with `--example probe`).
 #[cfg(test)]
 mod tests {
