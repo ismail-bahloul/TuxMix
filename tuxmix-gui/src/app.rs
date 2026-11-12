@@ -341,6 +341,9 @@ impl RmeDevice for DeviceHandle {
     fn set_dim(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_dim(on))
     }
+    fn has_main_mono(&self) -> bool {
+        delegate!(self, has_main_mono())
+    }
     fn set_main_mono(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_main_mono(on))
     }
@@ -6461,6 +6464,7 @@ fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
     // A card as tall as the Main strip beside it, like TotalMix's Control
     // Room column: the monitoring buttons at the top, Store (which only
     // sets what Recall goes back to) apart at the bottom.
+    let has_mono = state.device.has_main_mono();
     let monitoring = column![
         cell("dim")
             .style(theme::toggle_button(
@@ -6476,7 +6480,8 @@ fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
                 state.device.settings().main_mono,
                 theme::ACCENT,
             ))
-            .on_press(Message::MonoToggle),
+            // Dimmed, not pressable, on a driver without a Main Mono Switch.
+            .on_press_maybe(has_mono.then_some(Message::MonoToggle)),
     ]
     .spacing(theme::SPACE_SM * scale);
     let store = cell("store")

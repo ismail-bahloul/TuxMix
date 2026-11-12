@@ -363,6 +363,12 @@ pub trait RmeDevice {
         ))
     }
 
+    /// Whether the card can do Main Mono (the driver has a Main Mono
+    /// Switch). The control room's mono button is dimmed without it.
+    fn has_main_mono(&self) -> bool {
+        false
+    }
+
     /// Control-room mono: sum the stereo sources into the Main pair
     /// (PH3/4) - TotalMix writes their Main crosspoints at half level on
     /// both sides, and restores them when it is switched off.

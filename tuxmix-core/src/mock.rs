@@ -604,6 +604,10 @@ impl RmeDevice for MockBabyfacePro {
         Ok(())
     }
 
+    fn has_main_mono(&self) -> bool {
+        true
+    }
+
     fn set_main_mono(&mut self, on: bool) -> Result<(), Error> {
         self.settings.main_mono = on;
         Ok(())

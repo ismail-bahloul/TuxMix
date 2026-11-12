@@ -2270,6 +2270,11 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
+    fn has_main_mono(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && self.mixer.find_selem("Main Mono", 0).is_some()
+    }
+
     fn set_main_mono(&mut self, on: bool) -> Result<(), Error> {
         self.require_proprietary("Mono")?;
         // The driver's "Main Mono Switch" (kernel driver after v9); an
