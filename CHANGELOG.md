@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- A numeric peak readout over each meter, as TotalMix prints it: the
+  loudest level of the last two seconds in whole dBFS, "OVR" once the
+  channel has clipped and "UFL" for silence. A linked pair shows one value
+  per channel; a strip without a real meter leaves the row blank so the
+  faders stay level.
 - With no supported device, the waiting screen names an RME unit it finds on
   the USB bus (Fireface UC, UCX or any other under RME's vendor ID) and says
   it is not supported yet, instead of only asking to check the cable. A
