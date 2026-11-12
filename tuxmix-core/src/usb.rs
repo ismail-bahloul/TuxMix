@@ -195,6 +195,20 @@ pub fn volume_to_raw(v: f32) -> u16 {
     fader_db_to_raw(db)
 }
 
+/// The two raw crosspoint levels of a mono input whose centred fader value
+/// is `raw` (see [`volume_to_raw`]: 0 dB = 0x16A0) panned to `pan`
+/// (-100..=100), on TotalMix FX's constant-power law.  The fader value is
+/// already the centred, -3 dB-per-side level, so a side is
+/// `raw * sqrt(2) * cos(a)` / `sin(a)`: R22 at 0 dB gives 0x1266 / 0x1a2e, a
+/// hard pan gives 0x2000 on one side (0 dB) and 0 on the other.
+pub fn mono_pair_raw(raw: u16, pan: i8) -> (u16, u16) {
+    let p = f32::from(pan.clamp(-100, 100)) / 100.0;
+    let a = (p + 1.0) * std::f32::consts::FRAC_PI_4;
+    let full = f32::from(raw) * std::f32::consts::SQRT_2;
+    let side = |x: f32| (full * x).round().clamp(0.0, f32::from(u16::MAX)) as u16;
+    (side(a.cos()), side(a.sin()))
+}
+
 /// raw 16-bit crosspoint-fader value → f32 volume (0.0-1.0, 1.0 = 0 dB).
 pub fn raw_to_volume(raw: u16) -> f32 {
     if raw <= FADER_MUTE_RAW || raw < FADER_CURVE[0].1 {
@@ -298,7 +312,7 @@ impl BabyfaceProUsb {
             pitch_percent: 0.0,
             ms_proc: false,
             an12: false,
-            eq_for_record: false,
+            eq_for_record: true,
             optical_out_spdif: false,
             dim: false,
             main_mono: false,
@@ -418,6 +432,26 @@ impl BabyfaceProUsb {
     /// one). Fixed by only calling `protocol::set_phase` (which always
     /// negates) when `phase` is true, and writing the plain value
     /// directly otherwise, matching the non-An12 branch below.
+    /// Writes a mono input's crosspoint pair into `out` at the centred
+    /// fader value `raw` and `pan`, with the AN1/2 low-map mirror and the
+    /// phase negation of the left register (see [`Self::set_phase`]).
+    fn write_mono_pair(
+        &mut self,
+        out: Output,
+        src: Source,
+        raw: u16,
+        pan: i8,
+        phase: bool,
+    ) -> Result<(), Error> {
+        let (l, r) = mono_pair_raw(raw, pan);
+        let l = if phase { !l } else { l };
+        if out == Output::An12 {
+            self.dev.set_low_map_pair(src, l, r)?;
+        }
+        self.dev.set_pair(out, src, l, r)?;
+        Ok(())
+    }
+
     fn write_l_with_phase(
         &mut self,
         out: Output,
@@ -626,6 +660,14 @@ impl RmeDevice for BabyfaceProUsb {
             ChannelId::Output(_) => unreachable!("handled above"),
         };
         let raw = volume_to_raw(volume);
+        if let ChannelId::Input(i @ 0..=3) = channel {
+            // A mono input: the level reaches each side of the pair
+            // through its pan, so a fader move keeps the pan.
+            let pan = self.inputs[i].pans[output];
+            self.write_mono_pair(out, src, raw, pan, self.inputs[i].phase)?;
+            self.inputs[i].volumes[output] = volume;
+            return Ok(());
+        }
         self.dev.set_volume(out, src, raw)?;
         // Keep the AN1/2 low-map mirror in sync (TotalMix writes both).
         if out == Output::An12 {
@@ -663,8 +705,15 @@ impl RmeDevice for BabyfaceProUsb {
         let balance = (pan.clamp(-100, 100) as f32) / 100.0;
         let (src, fixed_is_left) = match channel {
             ChannelId::Input(i) => {
-                // Mono inputs have no pan (observed: no writes emitted).
+                // A mono input: TotalMix FX writes both crosspoints of the
+                // pair for its pan (constant-power law, centred 0x16a0 per
+                // side at 0 dB).
                 if (0..4).contains(&i) {
+                    let pan = pan.clamp(-100, 100);
+                    let raw = volume_to_raw(self.inputs[i].volumes[output]);
+                    let phase = self.inputs[i].phase;
+                    self.write_mono_pair(out, input_source(i)?, raw, pan, phase)?;
+                    self.inputs[i].pans[output] = pan;
                     return Ok(());
                 }
                 (input_source(i)?, i % 2 == 0)
@@ -1065,6 +1114,12 @@ impl RmeDevice for BabyfaceProUsb {
         for o in 0..self.output_pair_count() {
             let raw = volume_to_raw(self.inputs[idx].volumes[o]);
             let out = output_for(o)?;
+            if idx < 4 {
+                // A mono input keeps its pan: write both sides.
+                let pan = self.inputs[idx].pans[o];
+                self.write_mono_pair(out, src, raw, pan, invert)?;
+                continue;
+            }
             self.write_l_with_phase(out, src, raw, invert)?;
         }
         Ok(())
@@ -1597,6 +1652,24 @@ impl BabyfaceProUsb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panned_mono_input_matches_what_totalmix_writes() {
+        // TotalMix FX, mono input at 0 dB (centred raw 0x16a0), measured
+        // with usbmon: centre, R22, L56 and the hard pans.
+        let near = |a: u16, b: u16| a.abs_diff(b) <= 3;
+        let (l, r) = mono_pair_raw(0x16a0, 0);
+        assert!(near(l, 0x16a0) && near(r, 0x16a0), "{l:#x} {r:#x}");
+        let (l, r) = mono_pair_raw(0x16a0, 22);
+        assert!(near(l, 0x1266) && near(r, 0x1a2e), "{l:#x} {r:#x}");
+        let (l, r) = mono_pair_raw(0x16a0, -56);
+        assert!(near(l, 0x1e1b) && near(r, 0x0ad7), "{l:#x} {r:#x}");
+        let (l, r) = mono_pair_raw(0x16a0, 100);
+        assert!(l <= 1 && near(r, 0x2000), "{l:#x} {r:#x}");
+        // +6 dB (0x2d41) at a hard pan reaches the register's 0x4000 top.
+        let (l, r) = mono_pair_raw(0x2d41, -100);
+        assert!(near(l, 0x4000) && r <= 1, "{l:#x} {r:#x}");
+    }
 
     #[test]
     fn cue_engaged_mutes_every_pair_except_the_dedicated_source() {

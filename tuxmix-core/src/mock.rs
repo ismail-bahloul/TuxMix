@@ -277,7 +277,7 @@ impl RmeDevice for MockBabyfacePro {
                 pitch_percent: 0.0,
                 ms_proc: false,
                 an12: false,
-                eq_for_record: false,
+                eq_for_record: true,
                 optical_out_spdif: false,
                 dim: false,
                 main_mono: false,

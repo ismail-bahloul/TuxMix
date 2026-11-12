@@ -781,6 +781,9 @@ pub enum Message {
     /// Double-click on a band handle: back to 1 kHz, Q 0.7, 0 dB.
     EqBandReset(usize, usize),
     EqLowCutFreq(usize, u16),
+    /// Applies an EQ preset to an input strip: `usize` is the strip, the
+    /// choice is a factory preset or Reset (see `eq_presets`).
+    EqPreset(usize, EqPresetChoice),
     /// The low cut's on/off switch: off is a frequency of 0 (see
     /// `InputEq::low_cut_freq_hz`), on brings back the frequency it had.
     EqLowCutEnabled(usize, bool),
@@ -2353,6 +2356,7 @@ fn needs_protocol_features(message: &Message) -> bool {
             | Message::EqBandPoint(..)
             | Message::EqBandReset(..)
             | Message::EqLowCutFreq(..)
+            | Message::EqPreset(..)
             | Message::EqLowCutSlope(..)
     )
 }
@@ -2912,6 +2916,43 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::EqLowCutSlope(idx, slope) => {
             if let Err(e) = state.device.set_eq_low_cut_slope(idx, slope) {
                 fail(state, "set_eq_low_cut_slope", &e);
+            }
+        }
+        Message::EqPreset(idx, choice) => {
+            let preset = *choice.preset();
+            for (band, &(band_type, freq, q, gain)) in preset.bands.iter().enumerate() {
+                // Type first: a band that is off takes no gain.
+                if let Err(e) = state.device.set_eq_band_type(idx, band, band_type) {
+                    fail(state, "set_eq_band_type", &e);
+                }
+                if let Err(e) = state.device.set_eq_band_freq(idx, band, freq) {
+                    fail(state, "set_eq_band_freq", &e);
+                }
+                if let Err(e) = state.device.set_eq_band_q(idx, band, q) {
+                    fail(state, "set_eq_band_q", &e);
+                }
+                if let Err(e) = state.device.set_eq_band_gain(idx, band, gain) {
+                    fail(state, "set_eq_band_gain", &e);
+                }
+            }
+            if let Err(e) = state.device.set_eq_low_cut_slope(idx, preset.low_cut_slope) {
+                fail(state, "set_eq_low_cut_slope", &e);
+            }
+            // The low cut's switch stays as it is (TotalMix leaves it):
+            // an engaged one takes the new frequency, a switched-off one
+            // remembers it for the next time it is turned on.
+            let current = state
+                .device
+                .inputs()
+                .get(idx)
+                .and_then(|c| c.eq)
+                .map_or(0, |e| e.low_cut_freq_hz);
+            if current > 0 {
+                if let Err(e) = state.device.set_eq_low_cut_freq(idx, preset.low_cut_hz) {
+                    fail(state, "set_eq_low_cut_freq", &e);
+                }
+            } else {
+                state.eq_low_cut_memory.insert(idx, preset.low_cut_hz);
             }
         }
         Message::LoopbackChanged(i, on) => {
@@ -5546,6 +5587,37 @@ fn trim_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Eleme
     flyout_card(col, width, scale)
 }
 
+/// An entry of the EQ preset menu: one of TotalMix FX's factory presets
+/// (an index into `eq_presets::FACTORY`) or Reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EqPresetChoice {
+    Factory(usize),
+    Reset,
+}
+
+impl EqPresetChoice {
+    fn preset(self) -> &'static tuxmix_core::eq_presets::EqPreset {
+        match self {
+            Self::Factory(i) => &tuxmix_core::eq_presets::FACTORY[i],
+            Self::Reset => &tuxmix_core::eq_presets::RESET,
+        }
+    }
+}
+
+impl std::fmt::Display for EqPresetChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.preset().name)
+    }
+}
+
+/// The preset menu's entries: the fourteen factory presets, then Reset.
+fn eq_preset_choices() -> Vec<EqPresetChoice> {
+    (0..tuxmix_core::eq_presets::FACTORY.len())
+        .map(EqPresetChoice::Factory)
+        .chain([EqPresetChoice::Reset])
+        .collect()
+}
+
 /// A band's color on its knobs, dimmed while the band is off: the same
 /// red, green and azure as its curve in the plot and its type button.
 fn eq_band_tint(band_type: EqBandType, band: usize) -> Color {
@@ -5623,7 +5695,28 @@ fn eq_popover(state: &TuxMix, cid: ChannelId, width: f32, scale: f32) -> Element
             on_low_cut: Box::new(move |freq| Message::EqLowCutFreq(idx, freq)),
         },
     );
-    col = col.push(stack![plot, eq_toggle]);
+    // The preset menu mirrors the EQ button in the plot's other corner.
+    let presets = container(
+        pick_list(eq_preset_choices(), None::<EqPresetChoice>, move |c| {
+            Message::EqPreset(idx, c)
+        })
+        .placeholder("Presets")
+        .style(theme::pick_list)
+        .menu_style(theme::menu)
+        .padding([1.0 * scale, theme::SPACE_SM * scale])
+        .text_size(theme::TEXT_XS * scale)
+        .width(Length::Fixed(170.0 * scale)),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(iced::Alignment::Start)
+    .align_y(iced::Alignment::Start)
+    .padding(iced::Padding {
+        top: (eq_plot::MARGIN_TOP + 2.0) * scale,
+        left: (eq_plot::MARGIN_LEFT + 2.0) * scale,
+        ..iced::Padding::ZERO
+    });
+    col = col.push(stack![plot, eq_toggle, presets]);
 
     let label = |content: &'static str| {
         container(
@@ -6915,7 +7008,10 @@ mod tests {
         assert_eq!(out, vec![1.0, 0.0]);
         an1.pans = vec![0];
         let out = power_sum_output_meters(&[an1.side_levels()], &[1.0], &[], &[], 2);
-        assert_eq!(out, vec![1.0, 1.0]);
+        // Centred, a mono input is 3 dB down on each side (TotalMix's
+        // constant-power pan), so the pair carries the same power.
+        let side = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(out.iter().all(|&v| (v - side).abs() < 1e-6), "{out:?}");
     }
 
     #[test]
@@ -7429,18 +7525,19 @@ mod tests {
     #[test]
     fn eq_for_record_and_optical_out_format_toggles_reach_device_settings() {
         let mut state = new(true, None, None);
-        assert!(!state.device.settings().eq_for_record);
+        // The unit's default: the EQ also acts on the recorded signal.
+        assert!(state.device.settings().eq_for_record);
         assert!(!state.device.settings().optical_out_spdif);
 
-        let _ = update(&mut state, Message::EqForRecordChanged(true));
-        assert!(state.device.settings().eq_for_record);
+        let _ = update(&mut state, Message::EqForRecordChanged(false));
+        assert!(!state.device.settings().eq_for_record);
         assert!(!state.device.settings().optical_out_spdif);
 
         let _ = update(&mut state, Message::OpticalOutFormatChanged(true));
         assert!(state.device.settings().optical_out_spdif);
 
-        let _ = update(&mut state, Message::EqForRecordChanged(false));
-        assert!(!state.device.settings().eq_for_record);
+        let _ = update(&mut state, Message::EqForRecordChanged(true));
+        assert!(state.device.settings().eq_for_record);
         assert!(
             state.device.settings().optical_out_spdif,
             "toggling EQ-for-Record must not stomp the SPDIF flag (shared settings-word register)"
@@ -8605,6 +8702,53 @@ mod tests {
             crate::sidebar::clock_line(&state, "Internal"),
             "48 kHz \u{00b7} 256 smp \u{00b7} Internal"
         );
+    }
+
+    #[test]
+    fn an_eq_preset_sets_the_bands_and_the_low_cut() {
+        let mut state = new(true, None, None);
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, false));
+        let _ = update(
+            &mut state,
+            Message::EqPreset(0, super::EqPresetChoice::Factory(10)),
+        );
+        let eq = state.device.inputs()[0].eq.expect("AN1 has an EQ");
+        // Live Vocal Mic: bell, bell, then a high shelf at 13.8 kHz.
+        assert_eq!(
+            eq.bands[0].band_type,
+            tuxmix_core::channel::EqBandType::Bell
+        );
+        assert_eq!(
+            eq.bands[2].band_type,
+            tuxmix_core::channel::EqBandType::HighShelf
+        );
+        assert_eq!(eq.bands[2].freq_hz, 13_800);
+        assert!((eq.bands[2].gain_db + 10.5).abs() < 0.05);
+        assert_eq!(eq.low_cut_slope_db_oct, 24);
+        // The low cut was off: it stays off and remembers 80 Hz.
+        assert_eq!(eq.low_cut_freq_hz, 0);
+        assert_eq!(state.eq_low_cut_memory.get(&0), Some(&80));
+        // An engaged low cut takes the preset's frequency instead.
+        let _ = update(&mut state, Message::EqLowCutEnabled(0, true));
+        let _ = update(
+            &mut state,
+            Message::EqPreset(0, super::EqPresetChoice::Factory(5)),
+        );
+        assert_eq!(state.device.inputs()[0].eq.unwrap().low_cut_freq_hz, 500);
+        // Reset puts TotalMix's flat bands back.
+        let _ = update(
+            &mut state,
+            Message::EqPreset(0, super::EqPresetChoice::Reset),
+        );
+        let eq = state.device.inputs()[0].eq.unwrap();
+        assert_eq!(
+            eq.bands[0].band_type,
+            tuxmix_core::channel::EqBandType::LowShelf
+        );
+        assert_eq!(eq.bands[0].freq_hz, 50);
+        assert_eq!(eq.bands[2].freq_hz, 10_000);
+        assert!(eq.bands.iter().all(|b| b.gain_db == 0.0));
+        assert_eq!(eq.low_cut_slope_db_oct, 12);
     }
 
     #[test]
