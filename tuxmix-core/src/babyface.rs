@@ -292,11 +292,15 @@ fn decode_volume_pan(l_raw: i64, r_raw: i64, max: f32) -> (f32, i8) {
     pan_join(l_raw as f32 / max, r_raw as f32 / max)
 }
 
-/// The inverse of [`pan_split`].
+/// The inverse of [`pan_split`]: the volume is the power sum of the two
+/// sides and the pan is their angle.
 fn pan_join(l: f32, r: f32) -> (f32, i8) {
-    let volume = l.max(r);
+    let volume = l.hypot(r);
     let pan = if volume > 0.0 {
-        (((r - l) / volume) * 100.0).round().clamp(-100.0, 100.0) as i8
+        let a = r.atan2(l);
+        ((a / std::f32::consts::FRAC_PI_4 - 1.0) * 100.0)
+            .round()
+            .clamp(-100.0, 100.0) as i8
     } else {
         0
     };
@@ -1155,6 +1159,17 @@ impl BabyfacePro {
                 self.settings.dim = v != 0;
             }
         }
+        if let Some(selem) = self.mixer.find_selem("Dim Level", 0) {
+            // The driver counts the cut in positive dB.
+            if let Ok(v) = selem.get_playback_volume(mono) {
+                self.settings.dim_level_db = -(v as f32);
+            }
+        }
+        if let Some(selem) = self.mixer.find_selem("Main Mono", 0) {
+            if let Ok(v) = selem.get_playback_switch(mono) {
+                self.settings.main_mono = v != 0;
+            }
+        }
         if let Some(selem) = self.mixer.find_selem("Width", 0) {
             if let Ok(v) = selem.get_playback_volume(mono) {
                 self.settings.width = v as f32 / 100.0;
@@ -1453,9 +1468,11 @@ impl RmeDevice for BabyfacePro {
                 pitch_percent: 0.0,
                 ms_proc: false,
                 an12: false,
-                eq_for_record: false,
+                eq_for_record: true,
                 optical_out_spdif: false,
                 dim: false,
+                dim_level_db: -20.0,
+                main_mono: false,
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,
@@ -2307,6 +2324,43 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
+    fn has_main_mono(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && self.mixer.find_selem("Main Mono", 0).is_some()
+    }
+
+    fn has_dim_level(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && self.mixer.find_selem("Dim Level", 0).is_some()
+    }
+
+    fn set_dim_level(&mut self, db: f32) -> Result<(), Error> {
+        self.require_proprietary("Dim level")?;
+        let db = db.clamp(-65.0, 0.0).round();
+        // The driver's "Dim Level" (kernel driver after v9) counts the cut
+        // in positive dB; an older one has no such control.
+        let selem = self
+            .mixer
+            .find_selem("Dim Level", 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no Dim Level".into()))?;
+        selem.set_playback_volume(SelemChannelId::mono(), (-db) as i64)?;
+        self.settings.dim_level_db = db;
+        Ok(())
+    }
+
+    fn set_main_mono(&mut self, on: bool) -> Result<(), Error> {
+        self.require_proprietary("Mono")?;
+        // The driver's "Main Mono Switch" (kernel driver after v9); an
+        // older one has no such control.
+        let selem = self
+            .mixer
+            .find_selem("Main Mono", 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no Main Mono Switch".into()))?;
+        selem.set_playback_switch(SelemChannelId::mono(), on as i32)?;
+        self.settings.main_mono = on;
+        Ok(())
+    }
+
     fn has_fx_levels(&self) -> bool {
         self.grammar == ControlGrammar::Proprietary
             && self.mixer.find_selem(&fx_send_name(0), 0).is_some()
@@ -2612,18 +2666,34 @@ impl RmeDevice for BabyfacePro {
 mod tests {
     #[test]
     fn pan_split_and_join_round_trip_in_linear_levels() {
-        // The dB-converted crosspoints pan on linear levels, louder side
-        // at the volume: centre, both extremes and between, up to +6 dB.
+        // The dB-converted crosspoints pan on TotalMix's constant-power
+        // law: centre, both extremes and between, up to +6 dB.
         for &volume in &[0.25f32, 1.0, 1.5, 2.0] {
             for &pan in &[-100i8, -37, 0, 1, 64, 100] {
                 let (l, r) = pan_split(volume, pan);
-                assert!((l.max(r) - volume).abs() < 1e-6);
+                // Power is kept: the two sides always sum to the volume.
+                assert!((l.hypot(r) - volume).abs() < 1e-5);
                 let (v, p) = pan_join(l, r);
-                assert!((v - volume).abs() < 1e-6);
+                assert!((v - volume).abs() < 1e-5);
                 assert_eq!(p, pan, "volume {volume} pan {pan}");
             }
         }
         assert_eq!(pan_join(0.0, 0.0), (0.0, 0));
+    }
+
+    #[test]
+    fn a_centred_mono_source_sits_3_db_down_on_each_side() {
+        // TotalMix FX, 0 dB = 0x2000: centre 0x16a0, R22 0x1266 / 0x1a2e,
+        // L56 0x1e1b / 0x0ad7 (within a step of the hardware's rounding).
+        let raw = |x: f32| (x * 8192.0).round() as i32;
+        let (l, r) = pan_split(1.0, 0);
+        assert!((raw(l) - 0x16a0).abs() <= 2 && (raw(r) - 0x16a0).abs() <= 2);
+        let (l, r) = pan_split(1.0, 22);
+        assert!((raw(l) - 0x1266).abs() <= 3 && (raw(r) - 0x1a2e).abs() <= 3);
+        let (l, r) = pan_split(1.0, -56);
+        assert!((raw(l) - 0x1e1b).abs() <= 3 && (raw(r) - 0x0ad7).abs() <= 3);
+        let (l, r) = pan_split(1.0, 100);
+        assert!(l.abs() < 1e-6 && (r - 1.0).abs() < 1e-6);
     }
     use super::*;
 
@@ -2711,8 +2781,10 @@ mod tests {
 
     #[test]
     fn decode_center_pan_from_equal_raw_volumes() {
+        // Two sides at half scale are a centred source at -3 dB below
+        // full scale on the constant-power law: 0.5 * sqrt(2).
         let (volume, pan) = decode_volume_pan(32768, 32768, TEST_MAX);
-        assert!((volume - 0.5).abs() < 1e-4);
+        assert!((volume - 0.5 * std::f32::consts::SQRT_2).abs() < 1e-4);
         assert_eq!(pan, 0);
     }
 

@@ -282,9 +282,11 @@ impl RmeDevice for MockBabyfacePro {
                 pitch_percent: 0.0,
                 ms_proc: false,
                 an12: false,
-                eq_for_record: false,
+                eq_for_record: true,
                 optical_out_spdif: false,
                 dim: false,
+                dim_level_db: -20.0,
+                main_mono: false,
                 fx_send_db: None,
                 width: 0.0,
                 sample_rate: 48_000,
@@ -605,6 +607,24 @@ impl RmeDevice for MockBabyfacePro {
 
     fn set_dim(&mut self, on: bool) -> Result<(), Error> {
         self.settings.dim = on;
+        Ok(())
+    }
+
+    fn has_main_mono(&self) -> bool {
+        true
+    }
+
+    fn set_main_mono(&mut self, on: bool) -> Result<(), Error> {
+        self.settings.main_mono = on;
+        Ok(())
+    }
+
+    fn has_dim_level(&self) -> bool {
+        true
+    }
+
+    fn set_dim_level(&mut self, db: f32) -> Result<(), Error> {
+        self.settings.dim_level_db = db.clamp(-65.0, 0.0).round();
         Ok(())
     }
 
