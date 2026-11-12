@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- A Presets menu in the EQ panel of an analog input, with TotalMix FX's
+  fourteen factory presets (Modern Bass Treble, Telephone, Live Vocal Mic,
+  Notch and the rest) and its Reset (flat bands at 50 Hz, 1 kHz and 10 kHz,
+  12 dB/oct low cut). A preset sets the three bands and the low cut's
+  frequency and slope, and leaves the EQ and low-cut switches as they were,
+  as TotalMix does. The band types were read off TotalMix FX on a Babyface
+  Pro.
 - With no supported device, the waiting screen names an RME unit it finds on
   the USB bus (Fireface UC, UCX or any other under RME's vendor ID) and says
   it is not supported yet, instead of only asking to check the cable. A

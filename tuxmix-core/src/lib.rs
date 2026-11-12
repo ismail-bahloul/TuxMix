@@ -23,6 +23,7 @@ pub(crate) mod capture_meter;
 pub mod channel;
 pub(crate) mod curves;
 pub mod device;
+pub mod eq_presets;
 pub mod error;
 #[cfg(feature = "alsa")]
 pub mod mixer;
