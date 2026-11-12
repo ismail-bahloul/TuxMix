@@ -45,6 +45,11 @@
   reading their old value back, since it meant the opposite.
 
 ### Changed
+- The knobs draw their sweep as a ring around the face: a track for the
+  whole turn and the value on top of it (from the centre for pan, gain and
+  width, from the start for frequency and Q), as TotalMix does. A bare dark
+  disc was hard to tell from the card, and the tick now sits inside the
+  face.
 - An input strip whose output pair has Loop on is tagged LOOP instead of its
   type: its meter shows that output, not the input (#23).
 
