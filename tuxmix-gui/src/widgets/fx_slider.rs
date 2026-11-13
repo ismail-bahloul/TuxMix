@@ -6,8 +6,8 @@
 //! return of the effects into an output. -65 .. 0 dB, linear in dB;
 //! double-click turns it off, the wheel nudges it a dB at a time.
 
-use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path, Stroke};
-use iced::{mouse, Element, Length, Point, Rectangle, Renderer, Size, Theme};
+use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path};
+use iced::{mouse, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
 
 use crate::theme;
 
@@ -122,27 +122,43 @@ impl<Message: Clone> canvas::Program<Message> for FxSlider<Message> {
             frame.fill(&fill, theme::FX_COLOR);
         }
 
+        // The same cap as the strip's main fader, smaller: a grey body with
+        // three grip lines, the middle one bright, in a dark outline.
         let hot = state.dragging || cursor.is_over(bounds);
+        let outline = Path::rounded_rectangle(
+            Point::new(x - cap_w / 2.0 - s, cap_y - s),
+            Size::new(cap_w + 2.0 * s, cap_h + 2.0 * s),
+            (3.0 * s).into(),
+        );
+        frame.fill(&outline, theme::BORDER);
         let cap = Path::rounded_rectangle(
             Point::new(x - cap_w / 2.0, cap_y),
             Size::new(cap_w, cap_h),
-            (3.0 * s).into(),
+            (2.0 * s).into(),
         );
-        frame.fill(&cap, theme::SURFACE_HI);
-        frame.stroke(
+        frame.fill(
             &cap,
-            Stroke::default()
-                .with_width(1.0)
-                .with_color(if hot { theme::FADER } else { theme::TEXT_SEC }),
+            if hot {
+                Color::from_rgb8(0xf0, 0xf1, 0xf4)
+            } else {
+                theme::FADER
+            },
         );
-        let mid = Path::line(
-            Point::new(x - 3.0 * s, cap_y + cap_h / 2.0),
-            Point::new(x + 3.0 * s, cap_y + cap_h / 2.0),
-        );
-        frame.stroke(
-            &mid,
-            Stroke::default().with_width(1.0).with_color(theme::FADER),
-        );
+        for i in 1..=3 {
+            let y = cap_y + (cap_h / 4.0) * i as f32;
+            let color = if i == 2 {
+                Color::from_rgba8(0xff, 0xff, 0xff, 0.65)
+            } else {
+                Color::from_rgba8(0x00, 0x00, 0x00, 0.25)
+            };
+            frame.fill(
+                &Path::rectangle(
+                    Point::new(x - cap_w / 2.0 + 2.5 * s, y - 0.5),
+                    Size::new(cap_w - 5.0 * s, 1.0),
+                ),
+                color,
+            );
+        }
         vec![frame.into_geometry()]
     }
 
