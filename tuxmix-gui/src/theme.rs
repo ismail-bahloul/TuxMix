@@ -63,6 +63,13 @@ pub const FX_COLOR: Color = Color::from_rgb8(0xe0, 0x8a, 0x3c);
 /// steel grey-blue instead of the neutral grey of the rest of the app.
 pub const STRIP_LABEL: Color = Color::from_rgb8(0x8a, 0xa3, 0xb3);
 pub const SOLO_COLOR: Color = Color::from_rgb8(0xf0, 0xb4, 0x29);
+/// Role colours, after TotalMix's own scheme, for the tick in front of a
+/// section title: hardware inputs red, software playback blue, hardware
+/// outputs green.
+pub const ROLE_INPUT: Color = Color::from_rgb8(0xe5, 0x48, 0x4d);
+pub const ROLE_PLAYBACK: Color = Color::from_rgb8(0x3d, 0x9d, 0xf6);
+pub const ROLE_OUTPUT: Color = Color::from_rgb8(0x3d, 0xd6, 0x8c);
+
 /// Text on an engaged (white) toggle and on the active nav pill: the
 /// near-black of the tile behind the mark.
 pub const ON_ACTIVE: Color = Color::from_rgb8(0x10, 0x10, 0x12);
@@ -744,8 +751,13 @@ pub fn ghost_button(_theme: &iced::Theme, status: button::Status) -> button::Sty
 
 /// The small white tick to the left of a section header label.
 pub fn accent_bar(_theme: &iced::Theme) -> container::Style {
+    tinted_bar(ACCENT)
+}
+
+/// `accent_bar` in a role colour (the right-hand panels' headers).
+pub fn tinted_bar(color: Color) -> container::Style {
     container::Style {
-        background: Some(Background::Color(ACCENT)),
+        background: Some(Background::Color(color)),
         border: Border {
             radius: RADIUS_XS.into(),
             ..Border::default()
