@@ -4,6 +4,7 @@
 pub mod crosspoint;
 pub mod eq_plot;
 pub mod fader;
+pub mod fx_slider;
 pub mod knob;
 pub mod panel_icon;
 pub mod splitter;

@@ -918,21 +918,16 @@ fn draw_track(
     let raw_y = pos_of(value);
     let cap_y = safe_clamp(raw_y, r.y + half_cap, r.y + r.height - half_cap);
 
-    // Groove — the full-length rail, unfilled color.
+    // Groove — a dark slot with a faint lit edge, as TotalMix draws its rail.
     let groove = Path::rectangle(
         Point::new(cx - rail_w / 2.0, r.y),
         Size::new(rail_w, r.height),
     );
-    frame.fill(&groove, theme::BORDER);
-
-    // Filled portion of the rail, from the bottom up to the cap.
-    if raw_y < r.y + r.height {
-        let fill = Path::rectangle(
-            Point::new(cx - rail_w / 2.0, cap_y),
-            Size::new(rail_w, r.y + r.height - cap_y),
-        );
-        frame.fill(&fill, theme::FADER);
-    }
+    frame.fill(&groove, theme::BG_DEEP);
+    frame.stroke(
+        &groove,
+        Stroke::default().with_color(theme::BORDER).with_width(1.0),
+    );
 
     // Unity/default reference — a tick crossing the rail, like the 0 dB
     // mark on a real console strip (a dot read as a blob at this scale;

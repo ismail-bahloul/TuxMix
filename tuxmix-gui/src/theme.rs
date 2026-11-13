@@ -57,6 +57,11 @@ pub const MUTE_COLOR: Color = Color::from_rgb8(0x3d, 0x9d, 0xf6);
 /// handles in the response plot. These reuse the palette's red/green/
 /// azure, but inside the EQ they mean band 1/2/3, not clip/signal/mute.
 pub const EQ_BAND: [Color; 3] = [MRED, MGREEN, MUTE_COLOR];
+/// The FX send / return knobs, orange as in TotalMix.
+pub const FX_COLOR: Color = Color::from_rgb8(0xe0, 0x8a, 0x3c);
+/// The label of an idle strip button (M, S, T, Ø, gear, EQ): TotalMix's cool
+/// steel grey-blue instead of the neutral grey of the rest of the app.
+pub const STRIP_LABEL: Color = Color::from_rgb8(0x8a, 0xa3, 0xb3);
 pub const SOLO_COLOR: Color = Color::from_rgb8(0xf0, 0xb4, 0x29);
 /// Role colours, after TotalMix's own scheme, for the tick in front of a
 /// section title: hardware inputs red, software playback blue, hardware
@@ -331,6 +336,78 @@ pub fn toggle_button(
     active_color: Color,
 ) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
     armed_toggle_button(active, false, active_color)
+}
+
+/// `toggle_button` as one half of a joined pair (the M|S pill): the outer
+/// corners keep the radius, the inner ones are square. `left` picks the side.
+pub fn joined_toggle_button(
+    active: bool,
+    armed: bool,
+    active_color: Color,
+    left: bool,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    let inner = armed_toggle_button(active, armed, active_color);
+    move |theme, status| {
+        let mut style = inner(theme, status);
+        let r = RADIUS_SM;
+        style.border.radius = if left {
+            iced::border::Radius::new(0.0).left(r)
+        } else {
+            iced::border::Radius::new(0.0).right(r)
+        };
+        if !active && !armed {
+            style.text_color = strip_label(status);
+        }
+        style
+    }
+}
+
+fn strip_label(status: button::Status) -> Color {
+    match status {
+        button::Status::Hovered | button::Status::Pressed => TEXT_PRIMARY,
+        _ => STRIP_LABEL,
+    }
+}
+
+/// `toggle_button` for a strip's own small buttons (T, collapse): the same
+/// box, with the cool idle label of the strip's other controls.
+pub fn strip_toggle_button(
+    active: bool,
+    active_color: Color,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    let inner = toggle_button(active, active_color);
+    move |theme, status| {
+        let mut style = inner(theme, status);
+        if !active {
+            style.text_color = strip_label(status);
+        }
+        style
+    }
+}
+
+/// A strip's gear/EQ/Ø icon: bare glyph at rest, as TotalMix draws them,
+/// the usual lit toggle while on, a faint plate under the cursor.
+pub fn flat_icon_button(
+    active: bool,
+    active_color: Color,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    let lit = toggle_button(active, active_color);
+    move |theme, status| {
+        if active {
+            return lit(theme, status);
+        }
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: hovered.then_some(Background::Color(SURFACE_HI)),
+            text_color: strip_label(status),
+            border: Border {
+                radius: RADIUS_SM.into(),
+                ..Border::default()
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
 }
 
 /// `toggle_button` with a third, "armed" state: off right now, but set to

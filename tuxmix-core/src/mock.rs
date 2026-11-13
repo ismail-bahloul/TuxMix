@@ -342,7 +342,8 @@ impl RmeDevice for MockBabyfacePro {
 
     fn set_volume(&mut self, channel: ChannelId, output: usize, volume: f32) -> Result<(), Error> {
         self.hardware.remove(&(channel, output));
-        let vol = volume.clamp(0.0, 1.0);
+        // +6 dB (2.0) is the top, as on both real backends.
+        let vol = volume.clamp(0.0, 2.0);
         match channel {
             ChannelId::Input(idx) => {
                 let ch = self
@@ -1003,8 +1004,11 @@ mod tests {
     #[test]
     fn test_volume_clamps_to_range() {
         let mut dev = MockBabyfacePro::open().unwrap();
+        // Above 0 dB (1.0) up to +6 dB (2.0), the real backends' range.
         dev.set_volume(ChannelId::Input(0), 0, 1.5).unwrap();
-        assert!((dev.volume(ChannelId::Input(0), 0).unwrap() - 1.0).abs() < 1e-6);
+        assert!((dev.volume(ChannelId::Input(0), 0).unwrap() - 1.5).abs() < 1e-6);
+        dev.set_volume(ChannelId::Input(0), 0, 3.0).unwrap();
+        assert!((dev.volume(ChannelId::Input(0), 0).unwrap() - 2.0).abs() < 1e-6);
         dev.set_volume(ChannelId::Input(0), 0, -0.5).unwrap();
         assert!((dev.volume(ChannelId::Input(0), 0).unwrap() - 0.0).abs() < 1e-6);
     }
