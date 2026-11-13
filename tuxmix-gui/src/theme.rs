@@ -59,6 +59,9 @@ pub const MUTE_COLOR: Color = Color::from_rgb8(0x3d, 0x9d, 0xf6);
 pub const EQ_BAND: [Color; 3] = [MRED, MGREEN, MUTE_COLOR];
 /// The FX send / return knobs, orange as in TotalMix.
 pub const FX_COLOR: Color = Color::from_rgb8(0xe0, 0x8a, 0x3c);
+/// The label of an idle strip button (M, S, T, Ø, gear, EQ): TotalMix's cool
+/// steel grey-blue instead of the neutral grey of the rest of the app.
+pub const STRIP_LABEL: Color = Color::from_rgb8(0x8a, 0xa3, 0xb3);
 pub const SOLO_COLOR: Color = Color::from_rgb8(0xf0, 0xb4, 0x29);
 /// Text on an engaged (white) toggle and on the active nav pill: the
 /// near-black of the tile behind the mark.
@@ -345,6 +348,32 @@ pub fn joined_toggle_button(
         } else {
             iced::border::Radius::new(0.0).right(r)
         };
+        if !active && !armed {
+            style.text_color = strip_label(status);
+        }
+        style
+    }
+}
+
+fn strip_label(status: button::Status) -> Color {
+    match status {
+        button::Status::Hovered | button::Status::Pressed => TEXT_PRIMARY,
+        _ => STRIP_LABEL,
+    }
+}
+
+/// `toggle_button` for a strip's own small buttons (T, collapse): the same
+/// box, with the cool idle label of the strip's other controls.
+pub fn strip_toggle_button(
+    active: bool,
+    active_color: Color,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    let inner = toggle_button(active, active_color);
+    move |theme, status| {
+        let mut style = inner(theme, status);
+        if !active {
+            style.text_color = strip_label(status);
+        }
         style
     }
 }
@@ -363,7 +392,7 @@ pub fn flat_icon_button(
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
             background: hovered.then_some(Background::Color(SURFACE_HI)),
-            text_color: if hovered { TEXT_PRIMARY } else { TEXT_SEC },
+            text_color: strip_label(status),
             border: Border {
                 radius: RADIUS_SM.into(),
                 ..Border::default()

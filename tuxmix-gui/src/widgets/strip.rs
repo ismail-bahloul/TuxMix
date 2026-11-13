@@ -466,7 +466,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             .padding(0)
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::joined_toggle_button(p.mute, p.mute_armed, theme::MUTE_COLOR, true))
+            .style(theme::armed_toggle_button(p.mute, p.mute_armed, theme::MUTE_COLOR))
             .on_press(Message::Mute(cid, !p.mute)),
         if p.mute_armed {
             "Mute (switched off by the M master, which brings it back)"
@@ -480,7 +480,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             .padding(0)
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::joined_toggle_button(p.solo, p.solo_armed, theme::SOLO_COLOR, false))
+            .style(theme::armed_toggle_button(p.solo, p.solo_armed, theme::SOLO_COLOR))
             .on_press(Message::Solo(cid, !p.solo)),
         if p.solo_armed {
             "Solo (switched off by the S master, which brings it back)"
@@ -500,7 +500,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             .padding(0)
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::toggle_button(false, theme::ACCENT))
+            .style(theme::strip_toggle_button(false, theme::ACCENT))
             .on_press(Message::ToggleCollapse(cid)),
         "Expand",
         scale,
@@ -616,7 +616,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         button(centered_label("M", theme::TEXT_SM * scale))
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::armed_toggle_button(p.mute, p.mute_armed, theme::MUTE_COLOR))
+            .style(theme::joined_toggle_button(p.mute, p.mute_armed, theme::MUTE_COLOR, true))
             .on_press(Message::Mute(cid, !p.mute)),
         if p.mute_armed {
             "Mute (switched off by the M master, which brings it back)"
@@ -629,7 +629,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         button(centered_label("S", theme::TEXT_SM * scale))
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::armed_toggle_button(p.solo, p.solo_armed, theme::SOLO_COLOR))
+            .style(theme::joined_toggle_button(p.solo, p.solo_armed, theme::SOLO_COLOR, false))
             .on_press(Message::Solo(cid, !p.solo)),
         if p.solo_armed {
             "Solo (switched off by the S master, which brings it back)"
@@ -886,7 +886,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
                 // while its flyout is open — same "shows live state at a
                 // glance" idea as the EQ trigger's own `eq_open ||
                 // eq_enabled`.
-                .style(theme::toggle_button(trim_open || p.trim != 0.0, theme::ACCENT))
+                .style(theme::strip_toggle_button(trim_open || p.trim != 0.0, theme::ACCENT))
                 .on_press(Message::ToggleFlyout(cid, FlyoutKind::Trim)),
             if trim_open { "Hide trim" } else { "Show trim" },
             scale,

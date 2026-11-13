@@ -37,7 +37,8 @@
 
 ### Changed
 - A strip is closer to TotalMix FX: M and S are one joined pill, the Ø, gear
-  and EQ icons are bare glyphs until switched on, the dB readout is larger
+  and EQ icons are bare glyphs until switched on, the idle labels of M, S, T,
+  Ø, gear and EQ take TotalMix's steel grey-blue, the dB readout is larger
   and brighter, the route sits in a full-width dark field with a drop-down
   arrow, the fader's rail is a dark slot, and the cap no longer touches the
   readout below it. The peak readouts are larger, the left channel's at the
