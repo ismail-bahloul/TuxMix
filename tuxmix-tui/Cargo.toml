@@ -1,6 +1,6 @@
 [package]
 name = "tuxmix-tui"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2021"
 description = "TUI for TuxMix — control your RME interface from the terminal"
 license = "GPL-3.0-only"

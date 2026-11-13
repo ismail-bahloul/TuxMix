@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.8 (2026-11-13)
+
 ### Added
 - A Presets menu in the EQ panel of an analog input, with TotalMix FX's
   fourteen factory presets (Modern Bass Treble, Telephone, Live Vocal Mic,
