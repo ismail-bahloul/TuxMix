@@ -57,6 +57,8 @@ pub const MUTE_COLOR: Color = Color::from_rgb8(0x3d, 0x9d, 0xf6);
 /// handles in the response plot. These reuse the palette's red/green/
 /// azure, but inside the EQ they mean band 1/2/3, not clip/signal/mute.
 pub const EQ_BAND: [Color; 3] = [MRED, MGREEN, MUTE_COLOR];
+/// The FX send / return knobs, orange as in TotalMix.
+pub const FX_COLOR: Color = Color::from_rgb8(0xe0, 0x8a, 0x3c);
 pub const SOLO_COLOR: Color = Color::from_rgb8(0xf0, 0xb4, 0x29);
 /// Text on an engaged (white) toggle and on the active nav pill: the
 /// near-black of the tile behind the mark.
@@ -324,6 +326,52 @@ pub fn toggle_button(
     active_color: Color,
 ) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
     armed_toggle_button(active, false, active_color)
+}
+
+/// `toggle_button` as one half of a joined pair (the M|S pill): the outer
+/// corners keep the radius, the inner ones are square. `left` picks the side.
+pub fn joined_toggle_button(
+    active: bool,
+    armed: bool,
+    active_color: Color,
+    left: bool,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    let inner = armed_toggle_button(active, armed, active_color);
+    move |theme, status| {
+        let mut style = inner(theme, status);
+        let r = RADIUS_SM;
+        style.border.radius = if left {
+            iced::border::Radius::new(0.0).left(r)
+        } else {
+            iced::border::Radius::new(0.0).right(r)
+        };
+        style
+    }
+}
+
+/// A strip's gear/EQ/Ø icon: bare glyph at rest, as TotalMix draws them,
+/// the usual lit toggle while on, a faint plate under the cursor.
+pub fn flat_icon_button(
+    active: bool,
+    active_color: Color,
+) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    let lit = toggle_button(active, active_color);
+    move |theme, status| {
+        if active {
+            return lit(theme, status);
+        }
+        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: hovered.then_some(Background::Color(SURFACE_HI)),
+            text_color: if hovered { TEXT_PRIMARY } else { TEXT_SEC },
+            border: Border {
+                radius: RADIUS_SM.into(),
+                ..Border::default()
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
 }
 
 /// `toggle_button` with a third, "armed" state: off right now, but set to

@@ -15,6 +15,7 @@ use tuxmix_core::ChannelId;
 use crate::app::{db_text, short_label, Message};
 use crate::theme;
 use crate::widgets::fader::{fader, vu_meter, Fader, MeterFrame};
+use crate::widgets::fx_slider::fx_slider;
 use crate::widgets::knob::{knob, Knob};
 
 /// Base sizes at `scale == 1.0` (`theme::SCALE_DEFAULT`) — every dimension
@@ -43,6 +44,10 @@ pub(crate) const STRIP_W: f32 = 96.0;
 const COLLAPSED_METER_H: f32 = FADER_H + 30.0;
 /// The numeric peak readout's row above the meter, at scale 1.
 const PEAK_ROW_H: f32 = 12.0;
+/// Space between the bottom of the fader's travel and the dB readout.
+const FADER_BOTTOM_GAP: f32 = 5.0;
+/// Height of the thin FX fader in a strip's right column.
+const FX_SLIDER_H: f32 = 56.0;
 
 /// What a full strip stacks above its fader: the name line, the pan knob
 /// and the M/S row (`full_strip`, at scale 1, hairline spacings aside).
@@ -189,6 +194,12 @@ pub struct StripParams<'a> {
     /// `app::finish_params`.
     pub peak: String,
     pub peak2: Option<String>,
+    /// The strip's FX level in dB (send for inputs and playback, return for
+    /// outputs), `None` when the device has no such control. Drives the thin
+    /// FX fader at the top of the right column.
+    pub fx_db: Option<f32>,
+    /// The output pair an output strip's FX return belongs to.
+    pub fx_return_pair: usize,
     pub has_48v: bool,
     pub has_pad: bool,
     pub phantom: bool,
@@ -455,7 +466,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             .padding(0)
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::armed_toggle_button(p.mute, p.mute_armed, theme::MUTE_COLOR))
+            .style(theme::joined_toggle_button(p.mute, p.mute_armed, theme::MUTE_COLOR, true))
             .on_press(Message::Mute(cid, !p.mute)),
         if p.mute_armed {
             "Mute (switched off by the M master, which brings it back)"
@@ -469,7 +480,7 @@ fn collapsed_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             .padding(0)
             .width(Length::Fill)
             .height(btn_h)
-            .style(theme::armed_toggle_button(p.solo, p.solo_armed, theme::SOLO_COLOR))
+            .style(theme::joined_toggle_button(p.solo, p.solo_armed, theme::SOLO_COLOR, false))
             .on_press(Message::Solo(cid, !p.solo)),
         if p.solo_armed {
             "Solo (switched off by the S master, which brings it back)"
@@ -639,14 +650,14 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     } else {
         row![mute_btn, solo_btn]
     }
-    .spacing(theme::SPACE_TIGHT)
+    .spacing(theme::SPACE_HAIRLINE)
     .width(Length::Fill);
     if p.has_cue {
         ms_row = ms_row.push(hint(
             button(centered_label("C", theme::TEXT_SM * scale))
                 .width(Length::Fill)
                 .height(btn_h)
-                .style(theme::toggle_button(p.cue, theme::ACCENT))
+                .style(theme::joined_toggle_button(p.cue, false, theme::ACCENT, false))
                 .on_press(Message::CueChanged(cid, !p.cue)),
             "CUE — exclusively monitor this output's own playback feed through AN1/2",
             scale,
@@ -732,32 +743,32 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     rows = rows.push(ms_row);
 
     // The peak readout over the meter(s), as TotalMix prints it ("-18",
-    // "OVR", "UFL"): one value, or one per channel of a linked pair. The
-    // row is there on every strip, blank without a real meter, so the
-    // faders stay level across the row.
+    // "OVR", "UFL"): the left channel's value at the strip's left edge, over
+    // its meter, and a linked pair's right channel at the right edge, over
+    // its own bar. The row is there on every strip, blank without a real
+    // meter, so the faders stay level across the row.
     let peak_text = |label: &str| -> Element<'static, Message> {
         let color = if label == "OVR" {
             theme::MRED
         } else {
-            theme::TEXT_SEC
+            theme::TEXT_PRIMARY
         };
-        container(
-            text(label.to_string())
-                .size(theme::TEXT_MICRO * scale)
-                .color(color),
-        )
-        .width(Length::Fill)
-        .center_x(Length::Fill)
-        .into()
+        text(label.to_string())
+            .size(theme::TEXT_XS * scale)
+            .color(color)
+            .into()
     };
-    let mut peak_row = row![peak_text(&p.peak)].spacing(theme::SPACE_TIGHT);
+    let mut peak_row = row![peak_text(&p.peak)].width(Length::Fill);
     if let Some(second) = &p.peak2 {
-        peak_row = peak_row.push(peak_text(second));
+        peak_row = peak_row
+            .push(iced::widget::Space::new().width(Length::Fill))
+            .push(peak_text(second));
     }
     rows = rows.push(
         container(peak_row)
             .width(Length::Fill)
-            .height(Length::Fixed(PEAK_ROW_H * scale)),
+            .height(Length::Fixed(PEAK_ROW_H * scale))
+            .padding([0.0, theme::SPACE_SM * scale]),
     );
     // 48V/PAD/Sensitivity/Gain all live in the gear flyout now (see
     // `app.rs::settings_popover`), not inline here — keeps every strip's
@@ -770,7 +781,10 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // that failure mode doesn't apply and Gain moved in with the rest.
 
     let default_vol = p.default_vol;
-    let fader_h = FADER_H * scale + p.fader_extra;
+    // The cap at the bottom of its travel sat on the dB readout under it: the
+    // fader gives up a few pixels to a gap, and the row keeps its height.
+    let fader_gap = FADER_BOTTOM_GAP * scale;
+    let fader_h = FADER_H * scale + p.fader_extra - fader_gap;
     let fader_widget = fader(Fader {
         value: p.vol,
         range: p.drag_range.unwrap_or((0.0, 2.0)),
@@ -820,6 +834,37 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // its own doc comment) specifically so this column has room without
     // pushing the meter/ruler group past the fader canvas's own bounds.
     let mut icon_col = column![].spacing(theme::SPACE_SM * scale).align_x(iced::Alignment::Center);
+    // The thin FX fader heading the column, as in TotalMix: the strip's
+    // send into the effects, or an output's return from them.
+    if let Some(db) = p.fx_db {
+        let pair = p.fx_return_pair;
+        let off = tuxmix_core::device::FX_LEVEL_OFF_DB;
+        let (change, reset): (Box<dyn Fn(f32) -> Message>, Message) = match cid {
+            ChannelId::Output(_) => (
+                Box::new(move |v| Message::FxReturnChanged(pair, v)),
+                Message::FxReturnChanged(pair, off),
+            ),
+            _ => (
+                Box::new(move |v| Message::FxSendChanged(cid, v)),
+                Message::FxSendChanged(cid, off),
+            ),
+        };
+        icon_col = icon_col.push(hint(
+            fx_slider(
+                db,
+                SIDE_BTN_W * scale,
+                FX_SLIDER_H * scale,
+                scale,
+                change,
+                reset,
+            ),
+            match cid {
+                ChannelId::Output(_) => "Return FX — drag, scroll, or double-click to turn off",
+                _ => "Send FX — drag, scroll, or double-click to turn off",
+            },
+            scale,
+        ));
+    }
     // Trim ("T") sits above the gear icon — every hardware input has one
     // (confirmed via the reference: ADAT/AS strips show "T" same as the
     // analog ones, unlike Gain which only exists on Mic/Instrument), but
@@ -853,7 +898,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
                 .padding(0)
                 .width(SIDE_BTN_W * scale)
                 .height(SIDE_BTN_H * scale)
-                .style(theme::toggle_button(p.phase, theme::ACCENT))
+                .style(theme::flat_icon_button(p.phase, theme::ACCENT))
                 .on_press(Message::PhaseChanged(cid, !p.phase)),
             "Phase Ø invert",
             scale,
@@ -870,7 +915,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
                 .padding(0)
                 .width(SIDE_BTN_W * scale)
                 .height(SIDE_BTN_H * scale)
-                .style(theme::toggle_button(settings_open, theme::ACCENT))
+                .style(theme::flat_icon_button(settings_open, theme::ACCENT))
                 .on_press(Message::ToggleFlyout(cid, FlyoutKind::Settings)),
             if settings_open { "Hide settings" } else { "Show settings (48V/PAD/Sensitivity)" },
             scale,
@@ -883,7 +928,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
                 .padding(0)
                 .width(SIDE_BTN_W * scale)
                 .height(SIDE_BTN_H * scale)
-                .style(theme::toggle_button(eq_open || p.eq_enabled, theme::ACCENT))
+                .style(theme::flat_icon_button(eq_open || p.eq_enabled, theme::ACCENT))
                 .on_press(Message::ToggleFlyout(cid, FlyoutKind::Eq)),
             if eq_open { "Hide EQ" } else { "Show EQ (3-band + low cut)" },
             scale,
@@ -892,9 +937,10 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     rows = rows.push(
         row![fader_widget, icon_col]
             .spacing(theme::SPACE_TIGHT)
-            .align_y(iced::Alignment::Center)
+            .align_y(iced::Alignment::Start)
             .width(Length::Fill),
     );
+    rows = rows.push(iced::widget::Space::new().height(fader_gap));
 
     let db_display: Element<'a, Message> = if p.editing {
         text_input("", p.edit_buf)
@@ -913,8 +959,8 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
         };
         mouse_area(
             text(db_text(p.vol))
-                .color(theme::TEXT_SEC)
-                .size(theme::TEXT_XS * scale)
+                .color(theme::TEXT_PRIMARY)
+                .size(theme::TEXT_SM * scale)
                 .wrapping(advanced_text::Wrapping::None),
         )
         .on_double_click(Message::EditStart(cid, initial))
@@ -1013,12 +1059,14 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
                         text(p.out_label)
                             .size(theme::TEXT_XS * scale)
                             .wrapping(advanced_text::Wrapping::None),
-                        text("▸").size(theme::TEXT_XS * scale),
+                        iced::widget::Space::new().width(Length::Fill),
+                        text("\u{25BE}").size(theme::TEXT_XS * scale),
                     ]
                     .spacing(theme::SPACE_TIGHT),
                 )
-                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
-                .style(theme::toggle_button(p.open_flyout == Some(FlyoutKind::Route), theme::ACCENT))
+                .width(Length::Fill)
+                .padding([theme::SPACE_TIGHT * scale, theme::SPACE_MD * scale])
+                .style(theme::chip_button(p.open_flyout == Some(FlyoutKind::Route)))
                 .on_press(Message::ToggleFlyout(cid, FlyoutKind::Route)),
                 "Change output bus",
                 scale,

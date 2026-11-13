@@ -1870,6 +1870,16 @@ fn finish_params<'a>(state: &'a TuxMix, mut p: strip::StripParams<'a>) -> strip:
     };
     p.peak = label(idx, p.meter_available);
     p.peak2 = p.meter2.map(|_| label(idx + 1, p.meter2_available));
+    if state.device.has_fx_levels() {
+        match p.cid {
+            ChannelId::Output(o) => {
+                let pair = output_pair_of(state, o);
+                p.fx_db = Some(state.device.fx_return(pair));
+                p.fx_return_pair = pair;
+            }
+            cid => p.fx_db = Some(state.device.fx_send_of(cid)),
+        }
+    }
     p.renaming = state.renaming == Some(p.cid);
     p.mute_armed = mute_armed(state, p.cid);
     p.solo_armed = solo_armed(state, p.cid);
@@ -5151,6 +5161,8 @@ fn strip_params<'a>(
         clip2: false,
         peak: String::new(),
         peak2: None,
+        fx_db: None,
+        fx_return_pair: 0,
         has_48v: false,
         has_pad: false,
         phantom: false,
@@ -5600,13 +5612,19 @@ fn settings_popover(
                     Message::FxSendChanged(cid, tuxmix_core::device::FX_LEVEL_OFF_DB),
                 ),
             };
+        // TotalMix's layout: the caption on two lines ("Send / FX") left of an
+        // orange knob. Small enough that "Return" and the knob fit the
+        // panel's width (a wider label pushed the knob past the edge, where
+        // the panel clips it).
+        let caption = label.replacen(' ', "\n", 1);
         col = col.push(
             row![
-                text(label)
-                    .size(theme::TEXT_SM * scale)
-                    .color(theme::TEXT_SEC),
+                text(caption)
+                    .size(theme::TEXT_MICRO * scale)
+                    .color(theme::TEXT_SEC)
+                    .wrapping(iced::widget::text::Wrapping::None),
                 container(knob(Knob {
-                    tint: None,
+                    tint: Some(theme::FX_COLOR),
                     value: db,
                     range: (-65.0, 0.0),
                     label: if db <= tuxmix_core::device::FX_LEVEL_OFF_DB {

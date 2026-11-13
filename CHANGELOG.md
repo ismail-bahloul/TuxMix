@@ -36,6 +36,17 @@
   Babyface Pro in class-compliant mode is told how to switch back.
 
 ### Changed
+- A strip is closer to TotalMix FX: M and S are one joined pill, the Ø, gear
+  and EQ icons are bare glyphs until switched on, the dB readout is larger
+  and brighter, the route sits in a full-width dark field with a drop-down
+  arrow, the fader's rail is a dark slot, and the cap no longer touches the
+  readout below it. The peak readouts are larger, the left channel's at the
+  strip's left edge and a linked pair's right channel's at its right edge.
+- Every strip has a thin FX fader at the top of its right column, as in
+  TotalMix FX: the send into the effects on inputs and playback, the return
+  from them on outputs. It drives the same level as the knob in the strip's
+  settings panel, which now has its caption on two lines beside an orange
+  knob and fits the panel's width.
 - The knobs draw their sweep as a ring around the face: a track for the
   whole turn and the value on top of it (from the centre for pan, gain and
   width, from the start for frequency and Q), as TotalMix does. A bare dark
@@ -45,6 +56,8 @@
   type: its meter shows that output, not the input (#23).
 
 ### Fixed
+- The simulated device (`--mock`) capped a fader at 0 dB; it now goes up to
+  +6 dB like both real backends.
 - With the proprietary USB backend, closing it while the audio streams were
   running crashed (a segfault in `libusb_cancel_transfer`): the device handle
   was closed before the streams that use it. The streams are now stopped
