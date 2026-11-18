@@ -1636,12 +1636,17 @@ fn render_strips(
         let col = i as u16 % cols;
         let row = i as u16 / cols;
         let w = inner.width / cols;
+        // Rows past the panel's bottom are cut, not drawn over the next
+        // panel or outside the terminal: the 3-line minimum row height
+        // overflows short panels, and a unit with many channels (94 on a
+        // UFX+) has more rows than any panel holds.
         let cell = Rect::new(
             inner.left() + col * w,
             inner.top() + row * row_h,
             w.saturating_sub(1),
             row_h.saturating_sub(1),
-        );
+        )
+        .intersection(inner);
         if cell.width < 8 || cell.height < 2 {
             continue;
         }
