@@ -6717,7 +6717,14 @@ fn mixer_body(state: &TuxMix, height: f32) -> Element<'_, Message> {
                     .width(outputs_width),
                 column![
                     section_header("CONTROL ROOM", scale),
-                    row![main_strips, control_room_buttons(state, buttons_w)]
+                    row![
+                        main_strips,
+                        control_room_buttons(
+                            state,
+                            buttons_w,
+                            row_width <= available_width,
+                        )
+                    ]
                         .spacing(theme::SPACE_MD),
                 ]
                 .spacing(theme::SPACE_LG)
@@ -6748,7 +6755,15 @@ const CONTROL_ROOM_BUTTONS_W: f32 = 64.0;
 /// The buttons beside Main. Only what does something on this unit: TotalMix's
 /// Mono, Ext. Input, Mute FX and Talkback write nothing over USB, they are
 /// its own processing on the host (`PROTOCOL.md`, cap_ctrl3.pcap).
-fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
+///
+/// `stretch` makes the card as tall as the Main strip beside it. A row that
+/// scrolls sideways cannot offer that: iced's horizontal `scrollable` lays
+/// its content out with the page's unbounded height and forgets that the
+/// page compresses `Fill` to its siblings, so a `Fill` height there comes out
+/// infinite (and its scrollbar, drawn at that height, off screen, which
+/// the software renderer cannot even build). Such a row gets the card at its
+/// natural height instead.
+fn control_room_buttons(state: &TuxMix, width: f32, stretch: bool) -> Element<'_, Message> {
     let scale = state.ui_scale;
     let cell = move |label: &'static str| {
         button(
@@ -6785,17 +6800,18 @@ fn control_room_buttons(state: &TuxMix, width: f32) -> Element<'_, Message> {
     let store = cell("store")
         .style(theme::toggle_button(false, theme::ACCENT))
         .on_press(Message::StoreRecall);
+    let gap = if stretch {
+        Length::Fill
+    } else {
+        Length::Fixed(theme::SPACE_XL * scale)
+    };
+    let height = if stretch { Length::Fill } else { Length::Shrink };
     container(
-        column![
-            monitoring,
-            iced::widget::Space::new().height(Length::Fill),
-            store
-        ]
-        .height(Length::Fill),
+        column![monitoring, iced::widget::Space::new().height(gap), store].height(height),
     )
     .padding(theme::SPACE_SM * scale)
     .width(Length::Fixed(width))
-    .height(Length::Fill)
+    .height(height)
     .style(theme::panel)
     .into()
 }
