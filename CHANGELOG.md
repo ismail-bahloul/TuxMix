@@ -7,8 +7,11 @@
   levels on bulk IN 0x85 (interface 1, left alone by the kernel driver).
   `tuxmix_core::babyface_meters` decodes them (inputs, playback, outputs,
   FX bus), with the scales and slot map checked on a unit, and
-  `tools/probes/babyface-meters.c` prints them. Nothing in the GUI uses
-  them yet: the meters still come from PipeWire.
+  `tools/probes/babyface-meters.c` prints them. `tuxmix_usb::HwMeters`
+  reads the stream on a thread, and the kernel-driver backend now meters
+  the twelve inputs from it when the `usb` feature is built and the unit's
+  interface 1 can be claimed, falling back to PipeWire or the capture PCM
+  otherwise (`TUXMIX_NO_HW_METERS=1` forces the fallback).
 - Device profiles describe what each input can do (preamp gain range, 48V,
   pad, Hi-Z, AutoSet, reference levels, EQ), the unit's USB IDs, its
   control protocol and whether a backend drives it. The strips and the

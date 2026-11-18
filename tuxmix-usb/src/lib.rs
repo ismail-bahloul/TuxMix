@@ -34,4 +34,4 @@ pub use map::{Input, Output, Playback, Source};
 pub use protocol::{FlagCounter, VendorRequest};
 
 #[cfg(feature = "driver")]
-pub use device::{BabyfaceUsb, Error as DeviceError, PID, VID};
+pub use device::{BabyfaceUsb, Error as DeviceError, HwMeters, PID, VID};

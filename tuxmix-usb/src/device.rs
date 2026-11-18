@@ -20,8 +20,10 @@ use rusb::UsbContext;
 use crate::map::{Output, Source};
 use crate::protocol::{self, FlagCounter, VendorRequest};
 
+mod hwmeters;
 mod iso;
 mod stream;
+pub use hwmeters::HwMeters;
 pub use iso::{IsoStats, IsoStream}; // superseded (isochronous) — kept for reference
 pub use stream::{AudioRing, EventFd, IntrStream, MeterAccum, StreamStats};
 

@@ -458,6 +458,10 @@ pub struct BabyfacePro {
     /// nice-to-have, not something that should keep the rest of the
     /// device from working.
     capture_meter: Option<crate::capture_meter::CaptureMeter>,
+    /// The unit's own meter stream (bulk IN 0x85), preferred over the two
+    /// above when it opens; see `crate::babyface_meters`.
+    #[cfg(feature = "usb")]
+    hw_meters: Option<tuxmix_usb::HwMeters>,
     /// The driver's "DIM Button Press Count" as last seen, `None` when the
     /// control does not exist (an older driver that applied DIM itself,
     /// or the class-compliant mode).  Since `babyface-pro-linux` 1597d28
@@ -484,6 +488,10 @@ impl BabyfacePro {
     /// we meter anything", so a failed PCM open does not read as a bank
     /// of silent-but-live inputs.
     pub fn meters_available(&self) -> bool {
+        #[cfg(feature = "usb")]
+        if self.hw_meters.is_some() {
+            return true;
+        }
         self.input_tap.is_some() || self.capture_meter.is_some()
     }
 
@@ -1434,10 +1442,24 @@ impl RmeDevice for BabyfacePro {
         // which is what made a fresh session lose its capture device and
         // report 1024 frames. The direct capture stays as the fallback
         // for a system without PipeWire.
-        let pipewire = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(|dir| std::path::Path::new(&dir).join("pipewire-0").exists())
-            .unwrap_or(false);
-        let (input_tap, capture_meter) = if pipewire {
+        // The unit's own meter stream comes first when it can be opened:
+        // it needs no audio stream at all and reads the hardware inputs.
+        #[cfg(feature = "usb")]
+        let hw_meters = std::env::var_os("TUXMIX_NO_HW_METERS")
+            .is_none()
+            .then(tuxmix_usb::HwMeters::start)
+            .flatten();
+        #[cfg(feature = "usb")]
+        let have_hw = hw_meters.is_some();
+        #[cfg(not(feature = "usb"))]
+        let have_hw = false;
+        let pipewire = !have_hw
+            && std::env::var_os("XDG_RUNTIME_DIR")
+                .map(|dir| std::path::Path::new(&dir).join("pipewire-0").exists())
+                .unwrap_or(false);
+        let (input_tap, capture_meter) = if have_hw {
+            (None, None)
+        } else if pipewire {
             (Some(crate::pw_meter::Tap::start_input()), None)
         } else {
             (
@@ -1445,7 +1467,7 @@ impl RmeDevice for BabyfacePro {
                 crate::capture_meter::CaptureMeter::start(mixer.card_name(), 48_000),
             )
         };
-        if input_tap.is_none() && capture_meter.is_none() {
+        if !have_hw && input_tap.is_none() && capture_meter.is_none() {
             log::warn!(
                 "Could not open input metering (PipeWire source or capture PCM); meters will read N/A"
             );
@@ -1482,6 +1504,8 @@ impl RmeDevice for BabyfacePro {
             },
             input_tap,
             capture_meter,
+            #[cfg(feature = "usb")]
+            hw_meters,
             linked: true,
             dim_press_count: None,
             panel: None,
@@ -2635,6 +2659,21 @@ impl RmeDevice for BabyfacePro {
     /// trait's own contract. See `capture_meter`'s module doc comment for
     /// the live mapping behind `INPUT_FOR_CAPTURE`.
     fn meters(&self) -> Option<Vec<f32>> {
+        #[cfg(feature = "usb")]
+        if let Some(hw) = &self.hw_meters {
+            if !hw.is_live() {
+                return None;
+            }
+            let raw = hw.drain();
+            let mut levels = vec![0.0; self.inputs.len()];
+            for (i, level) in levels.iter_mut().enumerate() {
+                if let Some(&v) = raw.get(crate::babyface_meters::INPUTS.start + i) {
+                    // Full scale is 2^27; the reader already dropped the flags.
+                    *level = v as f32 / (1u32 << 27) as f32;
+                }
+            }
+            return Some(levels);
+        }
         let peaks = if let Some(tap) = &self.input_tap {
             let (peaks, channels) = tap.drain();
             if channels == 0 {
