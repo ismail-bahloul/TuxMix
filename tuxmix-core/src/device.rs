@@ -962,6 +962,20 @@ pub trait RmeDevice {
     fn meters(&self) -> Option<Vec<f32>> {
         None
     }
+
+    /// Playback levels (0.0-1.0, one per playback channel) the unit itself
+    /// measured in the last [`Self::meters`] drain, or `None` when it does
+    /// not report them. Does not drain: call it after `meters`.
+    fn playback_levels(&self) -> Option<Vec<f32>> {
+        None
+    }
+
+    /// Output levels (0.0-1.0, one per output channel) measured by the
+    /// unit after its mixer, from the last [`Self::meters`] drain, or
+    /// `None` when it does not report them. Does not drain.
+    fn output_levels(&self) -> Option<Vec<f32>> {
+        None
+    }
 }
 
 /// The two channel pans of a linked pair panned to `pan`: see
