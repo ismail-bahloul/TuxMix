@@ -261,20 +261,12 @@ impl BabyfaceProUsb {
     /// Discover and open the Babyface Pro FS on the USB bus.
     pub fn open() -> Result<Self, Error> {
         let dev = BabyfaceUsb::open()?;
-        let inputs = vec![
-            InputChannel::new(0, "AN1", ChannelType::Mic, 6),
-            InputChannel::new(1, "AN2", ChannelType::Mic, 6),
-            InputChannel::new(2, "AN3", ChannelType::Instrument, 6),
-            InputChannel::new(3, "AN4", ChannelType::Instrument, 6),
-            InputChannel::new(4, "AS1", ChannelType::Line, 6),
-            InputChannel::new(5, "AS2", ChannelType::Line, 6),
-            InputChannel::new(6, "ADAT3", ChannelType::ADAT, 6),
-            InputChannel::new(7, "ADAT4", ChannelType::ADAT, 6),
-            InputChannel::new(8, "ADAT5", ChannelType::ADAT, 6),
-            InputChannel::new(9, "ADAT6", ChannelType::ADAT, 6),
-            InputChannel::new(10, "ADAT7", ChannelType::ADAT, 6),
-            InputChannel::new(11, "ADAT8", ChannelType::ADAT, 6),
-        ];
+        let mut inputs = crate::profiles::babyface_pro::PROFILE.build_inputs();
+        // This backend cannot read the reference level back, so it shows
+        // none until one is set rather than the profile's +4 dBu default.
+        for ch in &mut inputs {
+            ch.sensitivity = None;
+        }
         let playbacks: Vec<PlaybackChannel> = (0..12)
             .map(|i| PlaybackChannel::new(i, &format!("PB{}", i + 1), 6))
             .collect();
@@ -579,11 +571,9 @@ impl RmeDevice for BabyfaceProUsb {
     }
 
     /// Same physical device as `BabyfacePro` (the ALSA/kernel-driver
-    /// backend) — its own topology (`inputs` above) matches
-    /// `profiles::babyface_pro::PROFILE`'s channel count/types/order
-    /// exactly (only "AN3"/"AN4" vs "IN3"/"IN4" differ, a display label,
-    /// not a structural difference), so scenes should transfer between
-    /// the two backends rather than being rejected as "different models".
+    /// backend) — its inputs now come from
+    /// `profiles::babyface_pro::PROFILE`, so scenes transfer between the
+    /// two backends rather than being rejected as "different models".
     fn canonical_model(&self) -> &str {
         crate::profiles::babyface_pro::PROFILE.model_name
     }
