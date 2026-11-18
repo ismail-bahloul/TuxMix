@@ -462,6 +462,10 @@ pub struct BabyfacePro {
     /// above when it opens; see `crate::babyface_meters`.
     #[cfg(feature = "usb")]
     hw_meters: Option<tuxmix_usb::HwMeters>,
+    /// The raw peaks of the last hardware drain, for the playback and
+    /// output levels that `meters` does not return.
+    #[cfg(feature = "usb")]
+    hw_last: std::sync::Mutex<[u32; crate::babyface_meters::SLOTS]>,
     /// The driver's "DIM Button Press Count" as last seen, `None` when the
     /// control does not exist (an older driver that applied DIM itself,
     /// or the class-compliant mode).  Since `babyface-pro-linux` 1597d28
@@ -1506,6 +1510,8 @@ impl RmeDevice for BabyfacePro {
             capture_meter,
             #[cfg(feature = "usb")]
             hw_meters,
+            #[cfg(feature = "usb")]
+            hw_last: std::sync::Mutex::new([0; crate::babyface_meters::SLOTS]),
             linked: true,
             dim_press_count: None,
             panel: None,
@@ -2665,6 +2671,9 @@ impl RmeDevice for BabyfacePro {
                 return None;
             }
             let raw = hw.drain();
+            if let Ok(mut last) = self.hw_last.lock() {
+                *last = raw;
+            }
             let mut levels = vec![0.0; self.inputs.len()];
             for (i, level) in levels.iter_mut().enumerate() {
                 if let Some(&v) = raw.get(crate::babyface_meters::INPUTS.start + i) {
@@ -2698,6 +2707,37 @@ impl RmeDevice for BabyfacePro {
             }
         }
         Some(levels)
+    }
+
+    #[cfg(feature = "usb")]
+    fn playback_levels(&self) -> Option<Vec<f32>> {
+        self.hw_slice(crate::babyface_meters::PLAYBACK, self.playbacks.len())
+    }
+
+    #[cfg(feature = "usb")]
+    fn output_levels(&self) -> Option<Vec<f32>> {
+        self.hw_slice(crate::babyface_meters::OUTPUTS, self.outputs.len())
+    }
+}
+
+#[cfg(feature = "usb")]
+impl BabyfacePro {
+    /// `n` levels from `slots` of the last hardware drain, as fractions of
+    /// full scale; `None` without a live hardware stream.
+    fn hw_slice(&self, slots: std::ops::Range<usize>, n: usize) -> Option<Vec<f32>> {
+        if !self.hw_meters.as_ref()?.is_live() {
+            return None;
+        }
+        let last = self.hw_last.lock().ok()?;
+        Some(
+            (0..n)
+                .map(|i| {
+                    last.get(slots.start + i)
+                        .filter(|_| slots.start + i < slots.end)
+                        .map_or(0.0, |&v| v as f32 / (1u32 << 27) as f32)
+                })
+                .collect(),
+        )
     }
 }
 

@@ -11,7 +11,9 @@
   reads the stream on a thread, and the kernel-driver backend now meters
   the twelve inputs from it when the `usb` feature is built and the unit's
   interface 1 can be claimed, falling back to PipeWire or the capture PCM
-  otherwise (`TUXMIX_NO_HW_METERS=1` forces the fallback).
+  otherwise (`TUXMIX_NO_HW_METERS=1` forces the fallback). The playback and output
+  meters read the unit's own levels too, in place of the sink monitor and
+  the host-side power sum (`RmeDevice::playback_levels`/`output_levels`).
 - Device profiles describe what each input can do (preamp gain range, 48V,
   pad, Hi-Z, AutoSet, reference levels, EQ), the unit's USB IDs, its
   control protocol and whether a backend drives it. The strips and the
