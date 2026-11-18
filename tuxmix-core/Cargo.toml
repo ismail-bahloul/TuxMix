@@ -6,6 +6,7 @@ description = "Core library for controlling RME audio interfaces (ALSA and propr
 license = "MIT"
 
 [dependencies]
+libc = "0.2"
 log = "0.4"
 rand = "0.8"
 thiserror = "2"
@@ -29,3 +30,6 @@ required-features = ["alsa"]
 [[example]]
 name = "panel-watch"
 required-features = ["alsa"]
+
+[[example]]
+name = "ucx-probe"
