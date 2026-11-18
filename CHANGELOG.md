@@ -3,6 +3,21 @@
 ## Unreleased
 
 ### Added
+- Device profiles describe what each input can do (preamp gain range, 48V,
+  pad, Hi-Z, AutoSet, reference levels, EQ), the unit's USB IDs, its
+  control protocol and whether a backend drives it. The strips and the
+  simulation read these instead of guessing from the channel type.
+- Simulation profiles for the Fireface UCX, UCX II, 802, UFX, UFX II,
+  UFX III and UFX+, generated from oscmix's channel tables:
+  `TUXMIX_MOCK_MODEL=ucx2 tuxmix --mock` shows a UCX II. None of these
+  units is driven yet, and none of the tables was checked on a unit.
+- The no-device screen names more RME units (Fireface UC in every mode,
+  Babyface classic, UCX and UCX II in both modes, Digiface USB, ADI-2) and
+  says which project or driver supports each one meanwhile.
+- `tuxmix_core::latter`: the word format, mixer coefficient, meter packet
+  and write-safety rules of RME's "latter" protocol (Fireface UCX, 802,
+  UFX family, UCX II), tested against values measured on a UCX by other
+  projects. It sends nothing yet: the groundwork for a backend.
 - A Presets menu in the EQ panel of an analog input, with TotalMix FX's
   fourteen factory presets (Modern Bass Treble, Telephone, Live Vocal Mic,
   Notch and the rest) and its Reset (flat bands at 50 Hz, 1 kHz and 10 kHz,

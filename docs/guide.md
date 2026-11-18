@@ -125,7 +125,10 @@ the same files locally from `cargo build --release --workspace`. Then bump
 ## License
 
 MIT for the library and most of the tree: `tuxmix-core`, the tools and
-the docs, see [`LICENSE`](../LICENSE).
+the docs, see [`LICENSE`](../LICENSE). The channel tables of the
+`fireface_*` profiles in `tuxmix-core` are derived from oscmix and keep its
+ISC notice, see [`LICENSES/oscmix-ISC.txt`](../LICENSES/oscmix-ISC.txt);
+ISC is compatible with MIT.
 
 The rest is copyleft: `tuxmix-usb` is GPL-3.0-or-later and `tuxmix-sys` is
 GPL-3.0. The applications link both, so `tuxmix-gui` and `tuxmix-tui` are

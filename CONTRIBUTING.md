@@ -24,8 +24,9 @@ cargo test --workspace
 cargo run -p tuxmix-gui -- --mock
 cargo run -p tuxmix-tui -- --mock
 
-# The same simulation with the Fireface UCX's channel layout:
-TUXMIX_MOCK_MODEL=ucx cargo run -p tuxmix-gui -- --mock
+# The same simulation with another unit's channels and capabilities
+# (ucx, ucx2, ff802, ufx, ufx2, ufx3, ufxplus: see profiles::ALL):
+TUXMIX_MOCK_MODEL=ucx2 cargo run -p tuxmix-gui -- --mock
 ```
 
 Dependencies: `rustc`, `cargo`, `alsa-lib` (dev headers).
@@ -35,10 +36,9 @@ Dependencies: `rustc`, `cargo`, `alsa-lib` (dev headers).
 This is the highest-value contribution right now if you own an RME
 interface other than the Babyface Pro FS. It only covers **ALSA
 simple-mixer-element (selem) devices** — USB class-compliant interfaces
-like the Babyface family. RME's newer MIDI-SysEx-based models (Fireface
-UCX II, UFX+/III) need a different I/O backend entirely and aren't in
-scope for this recipe — see [Workspace](docs/guide.md#workspace) in the
-guide if you want to help with that instead.
+like the Babyface family. The Fireface UCX, 802, UFX family and UCX II
+speak RME's "latter" protocol in vendor mode and need another backend:
+see [Adding a unit with no ALSA mixer controls](#adding-a-unit-with-no-alsa-mixer-controls).
 
 1. **Get real `amixer scontents` output from your device.** Plug it in
    and run `amixer -c <card name> scontents > scontents.txt`. You'll need
@@ -49,11 +49,16 @@ guide if you want to help with that instead.
    DeviceProfile` to your device's real channel layout: `card_substring`
    (a substring of your card's name as it appears in
    `/proc/asound/cards`), `model_name`, one `InputSpec` per physical
-   input in channel-id order, one `OutputPairSpec` per stereo output
-   pair with the bus `label` the UIs show ("AN1/2"), and `main_pair`, the
-   pair TotalMix shows as Main in its Control Room (`None` if you don't
-   know: the Control Room is then hidden). Register the new module in
-   `profiles/mod.rs`.
+   input in channel-id order with its `InputCaps` (preamp gain range,
+   48V, pad, Hi-Z, AutoSet, reference levels, EQ), one `OutputPairSpec`
+   per stereo output pair with the bus `label` the UIs show ("AN1/2"),
+   and `main_pair`, the pair TotalMix shows as Main in its Control Room
+   (`None` if you don't know: the Control Room is then hidden). Fill
+   `usb` (the IDs `lsusb` shows in each mode), `protocol`, `features`,
+   `support` (`SimulationOnly` until a backend drives the unit) and
+   `source` (where the data comes from). The UIs read what a strip can do
+   from `InputCaps`, never from the model name. Register the new module
+   in `profiles/mod.rs` and add it to `profiles::ALL`.
 
 3. **Re-verify the ALSA control-naming grammar.** `babyface.rs`'s
    `selem_name`/`ch_type_str` helpers encode a specific naming pattern
@@ -79,15 +84,15 @@ guide if you want to help with that instead.
    planned but not built — happy to help design it once a second device
    is actually working.
 
-5. **Look at it in the simulation.** Add your profile to the
-   `TUXMIX_MOCK_MODEL` match in `MockBabyfacePro::open()` (`mock.rs`) and
-   run the GUI with `--mock`. Anything that still assumes the Babyface
-   Pro's layout shows up there before you need the hardware.
+5. **Look at it in the simulation.** Run the GUI with
+   `TUXMIX_MOCK_MODEL=<your profile id> ... --mock`. Anything that still
+   assumes the Babyface Pro's layout shows up there before you need the
+   hardware.
 
-6. **Add tests.** `mock.rs`'s existing suite (channel counts, output pair
-   count, phantom-power defaults, etc.) is the pattern to follow — it
-   should read straight off your new profile's data, the same way the
-   Babyface Pro FS ones do.
+6. **Add tests.** The suites in `profiles/mod.rs` and `mock.rs` already
+   run over every profile in `profiles::ALL` (channel counts, unique pair
+   labels, switches that answer only where `InputCaps` declares them);
+   add what is specific to your unit.
 
 7. **Open a PR** with your profile, the adjusted naming helpers if
    needed, and a note on which real device you tested against.
@@ -104,9 +109,16 @@ implements `RmeDevice` (`device.rs`) and is added to `DeviceHandle` in
 `tuxmix-gui` and `tuxmix-tui`.
 
 The UI side is ready for another layout: give the unit a `DeviceProfile`
-(step 2 above) and check it with `TUXMIX_MOCK_MODEL`. The Fireface UCX
-already has one, `profiles/fireface_ucx.rs`, from its public channel
-layout; it has not been checked on a unit.
+(step 2 above) and check it with `TUXMIX_MOCK_MODEL`. The Fireface UCX,
+UCX II, 802, UFX, UFX II, UFX III and UFX+ already have one
+(`profiles/fireface_*.rs`), generated from oscmix's channel tables by
+`tools/profiles/gen_oscmix_profiles.py`; none has been checked on a unit.
+
+For the latter units, `tuxmix-core/src/latter.rs` holds the
+transport-independent half of a backend: the 32-bit word with its parity,
+the mixer coefficient, the meter packet, and the rules a writer must
+follow (never the flash registers or requests, paced writes). It is tested
+against the values other projects measured on a UCX, and sends nothing.
 
 What only an owner can provide, in an issue:
 

@@ -49,6 +49,18 @@ Try it without hardware: `tuxmix --mock`.
 
 </div>
 
+## Other RME units on Linux
+
+Until TuxMix drives them, these projects do:
+
+- [TotalControl](https://github.com/jspx-projects/TotalControl), a fork of
+  TuxMix by jspx-projects, with its own driver: Fireface UC and UCX,
+  Babyface (classic) experimental.
+- [fireface-ucx-linux](https://github.com/realbogart/fireface-ucx-linux): a
+  kernel driver and a terminal mixer for the Fireface UCX.
+- [oscmix](https://github.com/michaelforney/oscmix): the mixer of the
+  Fireface UCX II, 802 and UFX family in class-compliant mode.
+
 ## License
 
 `tuxmix-core`, the docs and most of the tools are MIT; the applications,

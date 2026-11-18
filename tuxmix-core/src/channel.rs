@@ -20,6 +20,10 @@ pub enum ChannelType {
     Line,
     SPDIF,
     ADAT,
+    /// AES/EBU (the UFX family's XLR digital port).
+    AES,
+    /// MADI (UFX+, UFX III).
+    MADI,
 }
 
 /// A single physical hardware input channel.

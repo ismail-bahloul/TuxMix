@@ -30,9 +30,11 @@ use crate::scene::Scene;
 /// [`PROFILE`] as [`crate::BabyfacePro`], so the two can't drift apart
 /// the way the old hand-duplicated const tables did.
 ///
-/// `TUXMIX_MOCK_MODEL=ucx` runs it with the Fireface UCX's topology
-/// instead (`profiles::fireface_ucx`), to see the UI with another unit's
-/// layout; everything else stays the Babyface Pro's simulation.
+/// `TUXMIX_MOCK_MODEL=<id>` runs it with another profile's topology and
+/// capabilities instead (`ucx`, `ucx2`, `ff802`, `ufx`, `ufx2`, `ufx3`,
+/// `ufxplus`: see `crate::profiles::ALL`), to see the UI with another
+/// unit's layout; the settings and the rest of the simulation stay the
+/// Babyface Pro's.
 pub struct MockBabyfacePro {
     model_name: String,
     profile: &'static DeviceProfile,
@@ -66,6 +68,80 @@ pub struct MockBabyfacePro {
 }
 
 impl MockBabyfacePro {
+    /// The simulation with `profile`'s topology and capabilities, as
+    /// `open` builds it for `TUXMIX_MOCK_MODEL`.
+    pub fn with_profile(profile: &'static DeviceProfile) -> Result<Self, Error> {
+        // Every preamp and EQ strip the profile declares, at rest (see
+        // `DeviceProfile::build_simulated_inputs`), plus a mock-only demo
+        // default: the first two inputs start with phantom power on where
+        // they have it, so the UI has something to show immediately.
+        let mut inputs = profile.build_simulated_inputs();
+        for (i, ch) in inputs.iter_mut().enumerate() {
+            ch.phantom = i < 2 && profile.input_caps(i).phantom;
+            // Inputs start routed nowhere, as after TotalMix's "Reset
+            // mix: straight playback" (see `playbacks` below).
+            ch.volumes.fill(0.0);
+        }
+        // Each playback pair plays on its own output pair at 0 dB and
+        // nowhere else, instead of every crosspoint at 0 dB: a mock that
+        // looks like a real card's default mix, in the Matrix and in
+        // screenshots.
+        let mut playbacks = profile.build_playbacks();
+        for (i, ch) in playbacks.iter_mut().enumerate() {
+            for (pair, v) in ch.volumes.iter_mut().enumerate() {
+                *v = if pair == i / 2 { 1.0 } else { 0.0 };
+            }
+        }
+
+        Ok(Self {
+            model_name: format!("{} (mock)", profile.model_name),
+            profile,
+            hardware: Default::default(),
+            fx_sends: Default::default(),
+            fx_returns: Default::default(),
+            inputs,
+            playbacks,
+            outputs: profile.build_outputs(),
+            settings: DeviceSettings {
+                clock_source: "Internal".into(),
+                // Mocked from the real Babyface Pro FS's own enum items
+                // (see `babyface.rs::attach_mixer_elements`), so the
+                // Quick Control clock picker has something real to show
+                // in --mock too.
+                clock_sources: vec!["Internal".into(), "AutoSync".into()],
+                spdif_optical: false,
+                spdif_emphasis: false,
+                spdif_professional: false,
+                spdif_enabled: false,
+                pitch_percent: 0.0,
+                ms_proc: false,
+                an12: false,
+                eq_for_record: true,
+                optical_out_spdif: false,
+                dim: false,
+                dim_level_db: -20.0,
+                main_mono: false,
+                fx_send_db: None,
+                width: 0.0,
+                sample_rate: 48_000,
+                input_link: true,
+                output_link: Vec::new(),
+                input_pair_link: Vec::new(),
+            },
+            input_meters: vec![0.0; profile.input_count()],
+            playback_meters: vec![0.0; profile.output_pair_count() * 2],
+            tick: 0,
+            // `TUXMIX_MOCK_CC=1` (or any value) turns the mock into the
+            // class-compliant personality's feature set, which is how the
+            // gated UI is screenshotted without unplugging anything.
+            protocol_features: std::env::var_os("TUXMIX_MOCK_CC").is_none(),
+            // `TUXMIX_MOCK_DISCONNECT=1` (or any value) is how the
+            // disconnected chip is screenshotted without unplugging
+            // anything.
+            connected: std::env::var_os("TUXMIX_MOCK_DISCONNECT").is_none(),
+        })
+    }
+
     /// What the "hardware" carries at a crosspoint: the last raw write
     /// (`write_crosspoint_raw`), else the model's level and pan. Mute and
     /// solo zero the crosspoints on the real backend, so they do here too:
@@ -219,93 +295,11 @@ impl RmeDevice for MockBabyfacePro {
     }
 
     fn open() -> Result<Self, Error> {
-        let profile: &'static DeviceProfile = match std::env::var("TUXMIX_MOCK_MODEL") {
-            Ok(m) if m.eq_ignore_ascii_case("ucx") => &crate::profiles::fireface_ucx::PROFILE,
-            _ => &PROFILE,
-        };
-        // Same topology as the real device, plus a mock-only demo
-        // default: the first two (Mic) inputs start with phantom power
-        // on, so the UI has something interesting to show immediately.
-        let mut inputs = profile.build_inputs();
-        for (i, ch) in inputs.iter_mut().enumerate() {
-            ch.phantom = i < 2;
-            // Ranges matching the kernel driver's controls (2026-08-26:
-            // AN1/2 mic gain 0-65 dB, AN3/4 instrument 0-9 dB — the
-            // instrument raw is dB×2 = 0-18, cap_gain34.pcap).
-            ch.gain_max = match ch.channel_type {
-                ChannelType::Mic => Some(65),
-                ChannelType::Instrument => Some(9),
-                _ => None,
-            };
-            ch.gain = ch.gain_max.map(|_| 0);
-            // The preamp inputs have a hardware EQ strip (see
-            // `InputChannel::eq`'s doc comment and `babyface.rs`'s
-            // `eq_strip_name`: AN1-4 on the Babyface Pro) — every other
-            // input type stays `None`.
-            ch.eq = matches!(ch.channel_type, ChannelType::Mic | ChannelType::Instrument)
-                .then(InputEq::default);
-            // Inputs start routed nowhere, as after TotalMix's "Reset
-            // mix: straight playback" (see `playbacks` below).
-            ch.volumes.fill(0.0);
-        }
-        // Each playback pair plays on its own output pair at 0 dB and
-        // nowhere else, instead of every crosspoint at 0 dB: a mock that
-        // looks like a real card's default mix, in the Matrix and in
-        // screenshots.
-        let mut playbacks = profile.build_playbacks();
-        for (i, ch) in playbacks.iter_mut().enumerate() {
-            for (pair, v) in ch.volumes.iter_mut().enumerate() {
-                *v = if pair == i / 2 { 1.0 } else { 0.0 };
-            }
-        }
-
-        Ok(Self {
-            model_name: format!("{} (mock)", profile.model_name),
-            profile,
-            hardware: Default::default(),
-            fx_sends: Default::default(),
-            fx_returns: Default::default(),
-            inputs,
-            playbacks,
-            outputs: profile.build_outputs(),
-            settings: DeviceSettings {
-                clock_source: "Internal".into(),
-                // Mocked from the real Babyface Pro FS's own enum items
-                // (see `babyface.rs::attach_mixer_elements`), so the
-                // Quick Control clock picker has something real to show
-                // in --mock too.
-                clock_sources: vec!["Internal".into(), "AutoSync".into()],
-                spdif_optical: false,
-                spdif_emphasis: false,
-                spdif_professional: false,
-                spdif_enabled: false,
-                pitch_percent: 0.0,
-                ms_proc: false,
-                an12: false,
-                eq_for_record: true,
-                optical_out_spdif: false,
-                dim: false,
-                dim_level_db: -20.0,
-                main_mono: false,
-                fx_send_db: None,
-                width: 0.0,
-                sample_rate: 48_000,
-                input_link: true,
-                output_link: Vec::new(),
-                input_pair_link: Vec::new(),
-            },
-            input_meters: vec![0.0; profile.input_count()],
-            playback_meters: vec![0.0; profile.output_pair_count() * 2],
-            tick: 0,
-            // `TUXMIX_MOCK_CC=1` (or any value) turns the mock into the
-            // class-compliant personality's feature set, which is how the
-            // gated UI is screenshotted without unplugging anything.
-            protocol_features: std::env::var_os("TUXMIX_MOCK_CC").is_none(),
-            // `TUXMIX_MOCK_DISCONNECT=1` (or any value) is how the
-            // disconnected chip is screenshotted without unplugging
-            // anything.
-            connected: std::env::var_os("TUXMIX_MOCK_DISCONNECT").is_none(),
-        })
+        let profile: &'static DeviceProfile = std::env::var("TUXMIX_MOCK_MODEL")
+            .ok()
+            .and_then(|id| crate::profiles::by_id(&id))
+            .unwrap_or(&PROFILE);
+        Self::with_profile(profile)
     }
 
     fn inputs(&self) -> &[InputChannel] {
@@ -505,7 +499,7 @@ impl RmeDevice for MockBabyfacePro {
             .inputs
             .get_mut(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
-        if inp.channel_type != ChannelType::Mic {
+        if !self.profile.input_caps(idx).phantom {
             return Err(Error::InvalidChannel(format!(
                 "Input {} has no 48V phantom power",
                 idx
@@ -520,7 +514,7 @@ impl RmeDevice for MockBabyfacePro {
             .inputs
             .get_mut(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
-        if inp.channel_type != ChannelType::Mic {
+        if !self.profile.input_caps(idx).pad {
             return Err(Error::InvalidChannel(format!(
                 "Input {} has no pad switch",
                 idx
@@ -535,7 +529,7 @@ impl RmeDevice for MockBabyfacePro {
             .inputs
             .get_mut(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
-        if !matches!(inp.channel_type, ChannelType::Mic | ChannelType::Instrument) {
+        if self.profile.input_caps(idx).gain.is_none() {
             return Err(Error::InvalidChannel(format!(
                 "Input {} has no gain control",
                 idx
@@ -566,7 +560,7 @@ impl RmeDevice for MockBabyfacePro {
             .inputs
             .get_mut(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
-        if inp.channel_type != ChannelType::Instrument {
+        if !self.profile.input_caps(idx).has_sensitivity_switch() {
             return Err(Error::InvalidChannel(format!(
                 "Input {} has no sensitivity switch",
                 idx
@@ -725,7 +719,7 @@ impl RmeDevice for MockBabyfacePro {
             .inputs
             .get_mut(idx)
             .ok_or_else(|| Error::InvalidChannel(format!("Input {idx}")))?;
-        if inp.channel_type != ChannelType::Instrument {
+        if self.profile.input_caps(idx).ref_levels.is_empty() {
             return Err(Error::InvalidChannel(format!(
                 "Input {idx} has no ref-level switch"
             )));
@@ -888,6 +882,24 @@ impl RmeDevice for MockBabyfacePro {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every profile opens, and the switches answer only where the
+    /// profile declares them.
+    #[test]
+    fn every_profile_simulates_its_own_capabilities() {
+        for profile in crate::profiles::ALL {
+            let mut dev = MockBabyfacePro::with_profile(profile).unwrap();
+            assert_eq!(dev.inputs().len(), profile.input_count(), "{}", profile.id);
+            for i in 0..profile.input_count() {
+                let caps = profile.input_caps(i);
+                let at = format!("{} input {i}", profile.id);
+                assert_eq!(dev.set_phantom(i, true).is_ok(), caps.phantom, "{at}");
+                assert_eq!(dev.set_pad(i, true).is_ok(), caps.pad, "{at}");
+                assert_eq!(dev.set_gain(i, 3).is_ok(), caps.gain.is_some(), "{at}");
+                assert_eq!(dev.inputs()[i].eq.is_some(), caps.eq, "{at}");
+            }
+        }
+    }
 
     #[test]
     fn a_raw_crosspoint_write_leaves_the_model_alone() {
