@@ -3838,6 +3838,7 @@ name = "tuxmix-core"
 version = "0.3.7"
 dependencies = [
  "alsa",
+ "libc",
  "log",
  "rand",
  "serde",

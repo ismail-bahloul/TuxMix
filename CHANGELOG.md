@@ -18,6 +18,11 @@
   and write-safety rules of RME's "latter" protocol (Fireface UCX, 802,
   UFX family, UCX II), tested against values measured on a UCX by other
   projects. It sends nothing yet: the groundwork for a backend.
+- `tuxmix_core::ucx_hwdep`: the Fireface UCX's DSP through the hwdep node
+  of realbogart's `snd-fireface-ucx` driver (register table, meters,
+  status, guarded writes), and `cargo run -p tuxmix-core --example
+  ucx-probe`, a read-only check for UCX owners. No mixer backend uses it
+  yet.
 - A Presets menu in the EQ panel of an analog input, with TotalMix FX's
   fourteen factory presets (Modern Bass Treble, Telephone, Live Vocal Mic,
   Notch and the rest) and its Reset (flat bands at 50 Hz, 1 kHz and 10 kHz,

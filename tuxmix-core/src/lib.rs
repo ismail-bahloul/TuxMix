@@ -35,6 +35,7 @@ pub mod profiles;
 pub mod pw_clock;
 pub mod pw_meter;
 pub mod scene;
+pub mod ucx_hwdep;
 #[cfg(feature = "usb")]
 pub mod usb;
 pub mod usb_ids;

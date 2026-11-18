@@ -120,6 +120,17 @@ the mixer coefficient, the meter packet, and the rules a writer must
 follow (never the flash registers or requests, paced writes). It is tested
 against the values other projects measured on a UCX, and sends nothing.
 
+`tuxmix-core/src/ucx_hwdep.rs` is the transport for a Fireface UCX run by
+[snd-fireface-ucx](https://github.com/realbogart/fireface-ucx-linux): that
+driver keeps the register table and paces the writes, and exposes them on
+its hwdep node. If you own a UCX with that driver, this reads your unit
+without writing anything, and its output is the most useful thing to
+attach to an issue:
+
+```sh
+cargo run -p tuxmix-core --example ucx-probe
+```
+
 What only an owner can provide, in an issue:
 
 - `lsusb -v -d <vendor>:<product>` for the unit, in each mode it has.
