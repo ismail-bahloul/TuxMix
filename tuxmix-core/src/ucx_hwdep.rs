@@ -59,9 +59,15 @@ pub const IOCTL_STATUS: u64 = ior(b'U', 0x02, STATUS_STRUCT_BYTES);
 pub const REG_EQD_RECORD: u16 = 0x7f10;
 /// Loopback of output `n` (0 = Line 1 ... 17 = ADAT 8) is `REG_LOOPBACK + n`.
 pub const REG_LOOPBACK: u16 = 0x7f20;
+/// The driver's record of the sample clock it last sent (vendor request
+/// 0x1b), which the unit reports nowhere: `REG_CLOCK + family`, family 0 =
+/// 32k, 1 = 44.1k, 2 = 48k.
+pub const REG_CLOCK: u16 = 0x7f40;
 
 fn is_driver_register(reg: u16) -> bool {
-    reg == REG_EQD_RECORD || (REG_LOOPBACK..REG_LOOPBACK + 18).contains(&reg)
+    reg == REG_EQD_RECORD
+        || (REG_LOOPBACK..REG_LOOPBACK + 18).contains(&reg)
+        || (REG_CLOCK..REG_CLOCK + 3).contains(&reg)
 }
 
 /// What the node is opened as: a file in production, a fake in tests.
@@ -410,6 +416,12 @@ mod tests {
             dev.write(&[(REG_LOOPBACK + 3, 1)]),
             Err(HwdepError::DriverRegister(_))
         ));
+        for reg in [REG_EQD_RECORD, REG_CLOCK, REG_CLOCK + 2] {
+            assert!(
+                matches!(dev.write(&[(reg, 1)]), Err(HwdepError::DriverRegister(_))),
+                "{reg:#06x}"
+            );
+        }
         assert!(
             dev.io.writes.is_empty(),
             "the good word before it was not sent either"
