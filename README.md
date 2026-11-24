@@ -47,6 +47,8 @@ Try it without hardware: `tuxmix --mock`.
 
 [Guide](docs/guide.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Kernel driver](https://github.com/ismail-bahloul/babyface-pro-linux)
 
+Related: [Audra](https://github.com/Vyeche/Audra), a community mixer for the Babyface Pro FS built on tuxmix-core (early preview, not maintained here)
+
 </div>
 
 ## License
