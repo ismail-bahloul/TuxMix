@@ -174,7 +174,7 @@ impl AudioRing {
     /// Drops the OLDEST queued frame if the ring is full (capture
     /// overrun — keep the freshest audio).
     pub fn push_frame(&self, frame: &[u8]) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if g.data.len() / self.frame_size >= g.cap_frames {
             g.data.drain(0..self.frame_size);
             g.overflow += 1;
@@ -191,7 +191,7 @@ impl AudioRing {
     /// short count and let the app pace itself (a full ring here means
     /// the device is behind; dropping the OLDEST would skip audio).
     pub fn push_frame_if_space(&self, frame: &[u8]) -> bool {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if g.data.len() / self.frame_size >= g.cap_frames {
             return false;
         }
@@ -208,7 +208,7 @@ impl AudioRing {
     /// caller zero-fills for silence). Signals the wake when it frees
     /// space (the playback poll path).
     pub fn pull_frames(&self, out: &mut [u8]) -> usize {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let want = out.len() / self.frame_size;
         let have = g.data.len() / self.frame_size;
         let n = want.min(have);
@@ -226,17 +226,17 @@ impl AudioRing {
 
     /// OUT underruns (silence frames inserted) since creation.
     pub fn underflow_count(&self) -> u64 {
-        self.inner.lock().unwrap().underflow
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).underflow
     }
 
     /// IN overruns (frames dropped) since creation.
     pub fn overflow_count(&self) -> u64 {
-        self.inner.lock().unwrap().overflow
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).overflow
     }
 
     /// Frames currently queued.
     pub fn queued_frames(&self) -> usize {
-        let g = self.inner.lock().unwrap();
+        let g = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         g.data.len() / self.frame_size
     }
 
@@ -247,7 +247,7 @@ impl AudioRing {
 
     /// Ring capacity in frames.
     pub fn capacity_frames(&self) -> usize {
-        self.inner.lock().unwrap().cap_frames
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cap_frames
     }
 }
 
@@ -362,7 +362,7 @@ extern "system" fn on_complete(transfer: *mut libusb_transfer) {
                     b.fill(0);
                     let pulled = ring.pull_frames(b);
                     if pulled == 0 {
-                        let mut g = ring.inner.lock().unwrap();
+                        let mut g = ring.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                         g.underflow += 1;
                     }
                 }
@@ -446,7 +446,9 @@ impl IntrStream {
             unsafe {
                 let transfer = libusb_alloc_transfer(0);
                 if transfer.is_null() {
-                    free_all(&transfers, &buffers, &ctxs);
+                    // The ones already submitted are in flight: cancel and
+                    // drain them before anything is freed.
+                    stop_and_free(ctx_raw, &keep_running, &active, &transfers, &buffers, &ctxs);
                     return Err(Error::StreamAlloc);
                 }
 
@@ -481,7 +483,7 @@ impl IntrStream {
                         max_packet_size,
                     )));
                     libusb_free_transfer(transfer);
-                    free_all(&transfers, &buffers, &ctxs);
+                    stop_and_free(ctx_raw, &keep_running, &active, &transfers, &buffers, &ctxs);
                     return Err(Error::StreamSubmit(rc));
                 }
 
@@ -542,20 +544,45 @@ impl IntrStream {
 
 impl Drop for IntrStream {
     fn drop(&mut self) {
-        self.keep_running.store(false, Ordering::Release);
         unsafe {
-            for &t in &self.transfers {
-                libusb_cancel_transfer(t);
-            }
-        }
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while self.active.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
-            self.pump(Duration::from_millis(50));
-        }
-        unsafe {
-            free_all(&self.transfers, &self.buffers, &self.ctxs);
+            stop_and_free(self.ctx_raw, &self.keep_running, &self.active, &self.transfers, &self.buffers, &self.ctxs);
         }
     }
+}
+
+/// Stops `transfers`, drains them, then frees them with their buffers and
+/// contexts. A transfer libusb still holds is never freed: its completion
+/// would write into freed memory (a fault while starting, an unplug, a
+/// cancel that hangs). If they don't all come back within the deadline
+/// the memory is leaked on purpose, a few small buffers, rather than freed
+/// under a live transfer.
+///
+/// # Safety
+/// `ctx_raw` must be the live libusb context the transfers were submitted
+/// on; every pointer in the slices must come from this stream's own
+/// allocation and must not be freed elsewhere.
+unsafe fn stop_and_free(
+    ctx_raw: *mut libusb_context,
+    keep_running: &AtomicBool,
+    active: &AtomicUsize,
+    transfers: &[*mut libusb_transfer],
+    buffers: &[(*mut u8, usize)],
+    ctxs: &[*mut TransferCtx],
+) {
+    keep_running.store(false, Ordering::Release);
+    for &t in transfers {
+        libusb_cancel_transfer(t);
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let tv = libc::timeval { tv_sec: 0, tv_usec: 50_000 };
+    while active.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
+        libusb_handle_events_timeout(ctx_raw, &tv);
+    }
+    if active.load(Ordering::Acquire) > 0 {
+        eprintln!("USB stream: {} transfer(s) still in flight after 2 s; leaving their memory rather than freeing it under them", active.load(Ordering::Acquire));
+        return;
+    }
+    free_all(transfers, buffers, ctxs);
 }
 
 unsafe fn free_all(
