@@ -84,6 +84,16 @@
   the pair are written on TotalMix FX's constant-power law (centred 0x16a0 per
   side at 0 dB), and moving the fader or the phase switch keeps the pan.
 
+- Starting the USB streams could free transfers that were still in flight when
+  one of them failed to allocate or submit (an unplug during start, a rate
+  change), so their completions wrote into freed memory. The streams are now
+  cancelled and drained before anything is freed, and a poisoned lock in the
+  audio ring is recovered instead of panicking inside the libusb callback
+  (#69, thanks to Vyeche).
+- With the proprietary USB backend, a channel or submix the unit does not have
+  (from OSC or a hand-edited scene) panicked; it now returns an invalid
+  channel error (#70, thanks to Vyeche).
+
 ## 0.3.7 (2026-11-09)
 
 ### Added
