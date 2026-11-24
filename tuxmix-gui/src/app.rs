@@ -538,6 +538,22 @@ impl DeviceHandle {
             DeviceHandle::Real(d) => d.meters().unwrap_or_else(|| vec![0.0; n]),
         }
     }
+    /// Playback levels the unit measured itself, when it reports them.
+    pub fn hw_playback_levels(&self) -> Option<Vec<f32>> {
+        match self {
+            #[cfg(feature = "alsa")]
+            DeviceHandle::Real(d) => d.playback_levels(),
+            _ => None,
+        }
+    }
+    /// Output levels the unit measured itself, when it reports them.
+    pub fn hw_output_levels(&self) -> Option<Vec<f32>> {
+        match self {
+            #[cfg(feature = "alsa")]
+            DeviceHandle::Real(d) => d.output_levels(),
+            _ => None,
+        }
+    }
     pub fn playback_meters(&self) -> Vec<f32> {
         let n = self.playbacks().len();
         match self {
@@ -1065,6 +1081,8 @@ pub struct TuxMix {
     /// Monitor channel count the tap currently has (0 = not running):
     /// 2 in the stereo profile (PB1 only), 12 in Pro Audio (all pairs).
     pub playback_tap_channels: usize,
+    /// Playback levels come from the unit's own meters this tick.
+    pub playback_from_unit: bool,
     /// Host-computed output levels (power sum of routed sources ×
     /// faders) — same ballistics as the input/playback meters.
     pub output_meters: Vec<MeterAnim>,
@@ -1580,6 +1598,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         playback_meters: vec![MeterAnim::new(); n_playbacks],
         playback_tap,
         playback_tap_channels: 0,
+        playback_from_unit: false,
         output_meters: vec![MeterAnim::new(); n_outputs],
         collapsed: HashSet::new(),
         eq_low_cut_memory: HashMap::new(),
@@ -2594,7 +2613,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             // the host mixer's sink monitor through `pw_meter`.
             let (tap_levels, tap_channels) = state.playback_tap.drain();
             state.playback_tap_channels = tap_channels;
-            let pb_levels = if state.device.is_mock() {
+            let hw_pb = state.device.hw_playback_levels();
+            state.playback_from_unit = hw_pb.is_some();
+            let pb_levels = if let Some(levels) = hw_pb {
+                levels
+            } else if state.device.is_mock() {
                 state.device.playback_meters()
             } else {
                 tap_levels.to_vec()
@@ -2602,7 +2625,10 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             for (i, m) in state.playback_meters.iter_mut().enumerate() {
                 m.step_elapsed(pb_levels.get(i).copied().unwrap_or(0.0));
             }
-            let out_levels = state.device.output_meters_from(&in_levels, &pb_levels);
+            let out_levels = state
+                .device
+                .hw_output_levels()
+                .unwrap_or_else(|| state.device.output_meters_from(&in_levels, &pb_levels));
             for (i, m) in state.output_meters.iter_mut().enumerate() {
                 m.step_elapsed(out_levels.get(i).copied().unwrap_or(0.0));
             }
@@ -5086,7 +5112,9 @@ fn top_bar(state: &TuxMix) -> Element<'_, Message> {
 /// whose channel count depends on the card profile (2 = PB1 only, 12 =
 /// all six pairs). See `pw_meter`.
 fn playback_meter_available(state: &TuxMix, idx: usize) -> bool {
-    if state.device.is_mock() {
+    if state.playback_from_unit {
+        true
+    } else if state.device.is_mock() {
         state.device.has_playback_meters()
     } else {
         idx < state.playback_tap_channels
