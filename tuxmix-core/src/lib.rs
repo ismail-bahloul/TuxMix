@@ -25,6 +25,7 @@ pub(crate) mod curves;
 pub mod device;
 pub mod eq_presets;
 pub mod error;
+pub mod latter;
 #[cfg(feature = "alsa")]
 pub mod mixer;
 pub mod mock;

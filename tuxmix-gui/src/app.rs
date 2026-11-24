@@ -130,13 +130,15 @@ pub fn type_tag(t: ChannelType) -> (&'static str, iced::Color) {
     // without fighting the white "engaged" states for attention, but
     // still separable hues for scanning a long strip row. Mic, line and
     // instrument keep their console associations (blue, neutral, amber);
-    // the two digital ports share a violet.
+    // the digital ports share a violet.
     match t {
         ChannelType::Mic => ("MIC", iced::Color::from_rgb8(0x7f, 0xb3, 0xd5)),
         ChannelType::Instrument => ("INST", iced::Color::from_rgb8(0xd9, 0xa8, 0x5c)),
         ChannelType::Line => ("LINE", iced::Color::from_rgb8(0x9d, 0xa3, 0xac)),
         ChannelType::SPDIF => ("SPDIF", iced::Color::from_rgb8(0xa2, 0x92, 0xc6)),
         ChannelType::ADAT => ("ADAT", iced::Color::from_rgb8(0xa2, 0x92, 0xc6)),
+        ChannelType::AES => ("AES", iced::Color::from_rgb8(0xa2, 0x92, 0xc6)),
+        ChannelType::MADI => ("MADI", iced::Color::from_rgb8(0xa2, 0x92, 0xc6)),
     }
 }
 
@@ -5216,7 +5218,7 @@ fn strip_params<'a>(
     match cid {
         ChannelId::Input(i) => {
             let ch = &state.device.inputs()[i];
-            let has_48v = ch.channel_type == ChannelType::Mic;
+            let caps = state.device.profile().input_caps(i);
             strip::StripParams {
                 name: ch.name.clone(),
                 type_tag: Some(if input_meter_looped(state, i) {
@@ -5233,8 +5235,8 @@ fn strip_params<'a>(
                     .unwrap_or_else(|| fader::MeterFrame::still(0.0)),
                 meter_available: state.device.has_input_meter(i),
                 clip: state.input_meters.get(i).is_some_and(|m| m.clipped),
-                has_48v,
-                has_pad: has_48v,
+                has_48v: caps.phantom,
+                has_pad: caps.pad,
                 phantom: ch.phantom,
                 pad: ch.pad,
                 has_gain: ch.gain_max.is_some(),

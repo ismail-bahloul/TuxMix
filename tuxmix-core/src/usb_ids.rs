@@ -16,21 +16,53 @@
 
 use std::path::Path;
 
+use crate::profile::{Support, UsbMode};
+
 /// RME's USB vendor ID.
 pub const RME_VENDOR: u16 = 0x2a39;
 
 /// The Babyface Pro in its proprietary mode: the one TuxMix drives.
 pub const BABYFACE_PRO: (u16, u16) = (RME_VENDOR, 0x3fc0);
 
-/// Known units, by (vendor, product). The Fireface UC enumerates under
-/// SMSC's vendor ID in its PC mode, so it is listed by full ID rather than
-/// matched on RME's vendor alone.
-const KNOWN: &[((u16, u16), &str)] = &[
-    ((RME_VENDOR, 0x3fb0), "Babyface Pro in class-compliant mode"),
-    ((0x0424, 0x3fc5), "Fireface UC (PC mode)"),
-    ((RME_VENDOR, 0x3fc6), "Fireface UC (Mac mode)"),
-    ((RME_VENDOR, 0x3fc9), "Fireface UCX"),
+/// RME units with no TuxMix profile, by vendor and product, and where
+/// their owner can look instead. The units with a profile are named from
+/// it (see [`crate::profiles::by_usb`]). The Fireface UC and the Babyface
+/// classic enumerate under SMSC's vendor ID in some modes, so they are
+/// listed by full ID rather than matched on RME's vendor alone.
+///
+/// Sources: TotalControl's protocol specifications (UC, Babyface classic),
+/// and mainline `snd-usb-audio` (`sound/usb/quirks.c`,
+/// `sound/usb/mixer_quirks.c`) for the Digiface USB and the ADI-2.
+const KNOWN: &[(u16, u16, &str, Option<&str>)] = &[
+    (0x0424, 0x3fc5, "Fireface UC (PC mode)", Some(TOTALCONTROL)),
+    (0x2a39, 0x3fc5, "Fireface UC (PC mode)", Some(TOTALCONTROL)),
+    (0x2a39, 0x3fce, "Fireface UC (PC mode)", Some(TOTALCONTROL)),
+    (0x0424, 0x3fc6, "Fireface UC (Mac mode)", Some(TOTALCONTROL)),
+    (0x2a39, 0x3fc6, "Fireface UC (Mac mode)", Some(TOTALCONTROL)),
+    (0x0424, 0x3fc7, "Babyface", Some(TOTALCONTROL)),
+    (0x2a39, 0x3fc7, "Babyface", Some(TOTALCONTROL)),
+    (0x2a39, 0x3f8c, "Digiface USB", Some(SND_USB_AUDIO)),
+    (0x2a39, 0x3fa0, "Digiface USB", Some(SND_USB_AUDIO)),
+    (0x2a39, 0x3fd2, "ADI-2 Pro", Some(SND_USB_AUDIO)),
+    (0x2a39, 0x3fd3, "ADI-2 DAC", Some(SND_USB_AUDIO)),
 ];
+
+const TOTALCONTROL: &str = "TotalControl (https://github.com/jspx-projects/TotalControl) drives it";
+const SND_USB_AUDIO: &str = "the kernel's snd-usb-audio drives it";
+const REALBOGART_UCX: &str =
+    "snd-fireface-ucx (https://github.com/realbogart/fireface-ucx-linux) and TotalControl \
+     (https://github.com/jspx-projects/TotalControl) drive it";
+const OSCMIX: &str = "oscmix (https://github.com/michaelforney/oscmix) controls its mixer in \
+     class-compliant mode";
+
+/// Where the owner of a profiled but undriven unit can look, by profile id.
+fn elsewhere_for_profile(id: &str) -> Option<&'static str> {
+    match id {
+        "ucx" => Some(REALBOGART_UCX),
+        "ucx2" | "ff802" | "ufx2" | "ufx3" | "ufxplus" => Some(OSCMIX),
+        _ => None,
+    }
+}
 
 /// One USB device as sysfs describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,45 +109,90 @@ pub fn scan(root: &Path) -> Vec<UsbDevice> {
     found
 }
 
-/// What to call `dev` if it is an RME unit TuxMix does not drive.
-/// `None` for the supported Babyface Pro and for anything not RME.
-pub fn unsupported_name(dev: &UsbDevice) -> Option<String> {
+/// What TuxMix knows about an RME unit it does not drive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unsupported {
+    /// The unit's name, with its mode when that matters.
+    pub name: String,
+    /// The profile id, when the simulation can show the unit's layout.
+    pub profile: Option<&'static str>,
+    /// A project or driver that does drive it.
+    pub elsewhere: Option<&'static str>,
+}
+
+/// What TuxMix knows about `dev` if it is an RME unit TuxMix does not
+/// drive. `None` for the supported Babyface Pro and for anything not RME.
+pub fn unsupported(dev: &UsbDevice) -> Option<Unsupported> {
     let id = (dev.vendor, dev.product);
     if id == BABYFACE_PRO {
         return None;
     }
-    if let Some((_, name)) = KNOWN.iter().find(|(k, _)| *k == id) {
-        return Some((*name).to_string());
+    if let Some(p) = crate::profiles::by_usb(dev.vendor, dev.product) {
+        let cc = p.usb_mode(dev.vendor, dev.product) == Some(UsbMode::ClassCompliant);
+        return Some(Unsupported {
+            name: if cc {
+                format!("{} in class-compliant mode", p.model_name)
+            } else {
+                p.model_name.to_string()
+            },
+            profile: (p.support == Support::SimulationOnly).then_some(p.id),
+            elsewhere: elsewhere_for_profile(p.id),
+        });
+    }
+    if let Some((_, _, name, elsewhere)) = KNOWN.iter().find(|(v, p, _, _)| (*v, *p) == id) {
+        return Some(Unsupported {
+            name: (*name).to_string(),
+            profile: None,
+            elsewhere: *elsewhere,
+        });
     }
     if dev.vendor != RME_VENDOR {
         return None;
     }
-    Some(if dev.name.is_empty() {
-        "An RME unit".to_string()
-    } else {
-        format!("RME {}", dev.name.trim_start_matches("RME "))
+    Some(Unsupported {
+        name: if dev.name.is_empty() {
+            "An RME unit".to_string()
+        } else {
+            format!("RME {}", dev.name.trim_start_matches("RME "))
+        },
+        profile: None,
+        elsewhere: None,
     })
+}
+
+/// What to call `dev` if it is an RME unit TuxMix does not drive.
+/// `None` for the supported Babyface Pro and for anything not RME.
+pub fn unsupported_name(dev: &UsbDevice) -> Option<String> {
+    unsupported(dev).map(|u| u.name)
 }
 
 /// The line the no-device screen shows for the first unsupported RME unit
 /// on the bus, or `None` when there is none.
 pub fn unsupported_hint_in(root: &Path) -> Option<String> {
-    let dev = scan(root).into_iter().find_map(|d| {
-        let name = unsupported_name(&d)?;
-        Some((name, d.vendor, d.product))
-    })?;
-    let (name, vendor, product) = dev;
+    let (u, vendor, product) = scan(root)
+        .into_iter()
+        .find_map(|d| Some((unsupported(&d)?, d.vendor, d.product)))?;
+    let name = &u.name;
     if (vendor, product) == (RME_VENDOR, 0x3fb0) {
         return Some(format!(
             "{name} found (USB {vendor:04x}:{product:04x}). TuxMix needs it in its normal \
              (proprietary) mode: hold SELECT and DIM while plugging in the USB cable to switch."
         ));
     }
-    Some(format!(
+    let mut hint = format!(
         "{name} found (USB {vendor:04x}:{product:04x}). TuxMix does not support this unit \
-         yet; it drives the Babyface Pro FS today. If you own one and can help, see \
-         CONTRIBUTING.md."
-    ))
+         yet; it drives the Babyface Pro FS today."
+    );
+    if let Some(elsewhere) = u.elsewhere {
+        hint.push_str(&format!(" Meanwhile, {elsewhere}."));
+    }
+    if let Some(id) = u.profile {
+        hint.push_str(&format!(
+            " `TUXMIX_MOCK_MODEL={id} tuxmix --mock` shows its layout."
+        ));
+    }
+    hint.push_str(" If you own one and can help, see CONTRIBUTING.md.");
+    Some(hint)
 }
 
 /// [`unsupported_hint_in`] on the running system's bus.
@@ -185,6 +262,7 @@ mod tests {
             hint.starts_with("Fireface UC (PC mode) found (USB 0424:3fc5)"),
             "{hint}"
         );
+        assert!(hint.contains("TotalControl"), "{hint}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -205,6 +283,47 @@ mod tests {
         let hint = unsupported_hint_in(&root).unwrap();
         assert!(hint.contains("proprietary"), "{hint}");
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_profiled_unit_points_to_the_simulation_and_elsewhere() {
+        let root = fake_bus(
+            "ucx2",
+            &[("3-1", "2a39", "3f82", "Fireface UCX II (24000000)")],
+        );
+        let hint = unsupported_hint_in(&root).unwrap();
+        assert!(
+            hint.starts_with("Fireface UCX II found (USB 2a39:3f82)"),
+            "{hint}"
+        );
+        assert!(hint.contains("TUXMIX_MOCK_MODEL=ucx2"), "{hint}");
+        assert!(hint.contains("oscmix"), "{hint}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_class_compliant_ucx_says_so() {
+        let dev = UsbDevice {
+            vendor: RME_VENDOR,
+            product: 0x3fb9,
+            name: "Fireface UCX".into(),
+        };
+        assert_eq!(
+            unsupported_name(&dev).unwrap(),
+            "Fireface UCX in class-compliant mode"
+        );
+    }
+
+    #[test]
+    fn units_the_kernel_drives_say_so() {
+        let dev = UsbDevice {
+            vendor: RME_VENDOR,
+            product: 0x3f8c,
+            name: String::new(),
+        };
+        let u = unsupported(&dev).unwrap();
+        assert_eq!(u.name, "Digiface USB");
+        assert!(u.elsewhere.unwrap().contains("snd-usb-audio"));
     }
 
     #[test]
