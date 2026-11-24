@@ -93,6 +93,11 @@
   type: its meter shows that output, not the input (#23).
 
 ### Fixed
+- A Mixer row that scrolls sideways with a Control Room (any unit whose
+  outputs outgrow the window) laid the Control Room card out at infinite
+  height: its horizontal scrollbar was drawn off screen, and the software
+  renderer (tiny-skia) panicked building the quad. The card now keeps its
+  natural height in such a row.
 - The simulated device (`--mock`) capped a fader at 0 dB; it now goes up to
   +6 dB like both real backends.
 - With the proprietary USB backend, closing it while the audio streams were
