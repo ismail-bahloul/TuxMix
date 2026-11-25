@@ -10,6 +10,15 @@
   into AN1 and AN2 on AN1/2, over the ones set there, and recalling a scene
   did it again. A scene's saved global width is no longer applied. Checked
   with usbmon on a Babyface Pro FS.
+- On the proprietary USB backend a solo no longer puts the soloed strip at
+  0 dB on AN1/2 (-6 dB for a linked analog input), and switching CUE off no
+  longer puts every playback there: both wrote a fixed value over the
+  fader. Soloing a strip that an earlier solo had silenced brings it back on
+  all outputs, not only AN1/2.
+- On the same backend, a strip keeps its pan when it comes back from a mute
+  or a solo, moving the fader of a muted strip no longer unmutes it, and a
+  scene's mutes, solos and analog pans are written to the unit. CUE is not
+  recalled with a scene.
 
 ## 0.3.9 (2026-11-25)
 
