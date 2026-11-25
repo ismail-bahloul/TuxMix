@@ -2,18 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-- With the proprietary USB backend, a stereo source (the playbacks and the
-  AS and ADAT inputs) is now written on TotalMix FX's stereo scale, `0x2000`
-  at 0 dB and `0x4000` at +6 dB, instead of the mono one. The mono scale put
-  it 3 dB low and stopped its fader at +3 dB. The four analog inputs keep
-  their mono scale and pan law. Scenes store levels, not raw values, so a
-  stereo source in a scene saved before this sounds 3 dB louder on this
-  backend than it did, which is TotalMix's own level. Found in the captures
-  of #20.
-
-## 0.3.8 (2026-11-13)
-
 ### Added
 - The Babyface Pro FS's hardware meters: the unit streams 40 peaks and RMS
   levels on bulk IN 0x85 (interface 1, left alone by the kernel driver).
@@ -46,6 +34,25 @@
   status, guarded writes), and `cargo run -p tuxmix-core --example
   ucx-probe`, a read-only check for UCX owners. No mixer backend uses it
   yet.
+
+### Fixed
+- With the proprietary USB backend, a stereo source (the playbacks and the
+  AS and ADAT inputs) is now written on TotalMix FX's stereo scale, `0x2000`
+  at 0 dB and `0x4000` at +6 dB, instead of the mono one. The mono scale put
+  it 3 dB low and stopped its fader at +3 dB. The four analog inputs keep
+  their mono scale and pan law. Scenes store levels, not raw values, so a
+  stereo source in a scene saved before this sounds 3 dB louder on this
+  backend than it did, which is TotalMix's own level. Found in the captures
+  of #20.
+- A Mixer row that scrolls sideways with a Control Room (any unit whose
+  outputs outgrow the window) laid the Control Room card out at infinite
+  height: its horizontal scrollbar was drawn off screen, and the software
+  renderer (tiny-skia) panicked building the quad. The card now keeps its
+  natural height in such a row.
+
+## 0.3.8 (2026-11-13)
+
+### Added
 - A Presets menu in the EQ panel of an analog input, with TotalMix FX's
   fourteen factory presets (Modern Bass Treble, Telephone, Live Vocal Mic,
   Notch and the rest) and its Reset (flat bands at 50 Hz, 1 kHz and 10 kHz,
@@ -103,11 +110,6 @@
   type: its meter shows that output, not the input (#23).
 
 ### Fixed
-- A Mixer row that scrolls sideways with a Control Room (any unit whose
-  outputs outgrow the window) laid the Control Room card out at infinite
-  height: its horizontal scrollbar was drawn off screen, and the software
-  renderer (tiny-skia) panicked building the quad. The card now keeps its
-  natural height in such a row.
 - The simulated device (`--mock`) capped a fader at 0 dB; it now goes up to
   +6 dB like both real backends.
 - With the proprietary USB backend, closing it while the audio streams were
