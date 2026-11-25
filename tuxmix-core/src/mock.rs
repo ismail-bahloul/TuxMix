@@ -45,6 +45,8 @@ pub struct MockBabyfacePro {
     /// FX send per strip and FX return per output pair, in dB (absent = off).
     fx_sends: std::collections::HashMap<ChannelId, f32>,
     fx_returns: std::collections::HashMap<usize, f32>,
+    /// Widths by source: the even channel of the pair.
+    widths: std::collections::HashMap<ChannelId, f32>,
     input_meters: Vec<f32>,
     playback_meters: Vec<f32>,
     tick: u64,
@@ -68,6 +70,23 @@ pub struct MockBabyfacePro {
 }
 
 impl MockBabyfacePro {
+    /// The source a width belongs to: the playbacks and the inputs that are
+    /// neither mic nor instrument are stereo pairs, sharing their even
+    /// channel's entry.
+    fn width_key(&self, channel: ChannelId) -> Option<ChannelId> {
+        match channel {
+            ChannelId::Input(i) => {
+                let t = self.inputs.get(i)?.channel_type;
+                (!matches!(t, ChannelType::Mic | ChannelType::Instrument))
+                    .then_some(ChannelId::Input(i & !1))
+            }
+            ChannelId::Playback(i) => {
+                (i < self.playbacks.len()).then_some(ChannelId::Playback(i & !1))
+            }
+            ChannelId::Output(_) => None,
+        }
+    }
+
     /// The simulation with `profile`'s topology and capabilities, as
     /// `open` builds it for `TUXMIX_MOCK_MODEL`.
     pub fn with_profile(profile: &'static DeviceProfile) -> Result<Self, Error> {
@@ -99,6 +118,7 @@ impl MockBabyfacePro {
             hardware: Default::default(),
             fx_sends: Default::default(),
             fx_returns: Default::default(),
+            widths: Default::default(),
             inputs,
             playbacks,
             outputs: profile.build_outputs(),
@@ -707,6 +727,23 @@ impl RmeDevice for MockBabyfacePro {
         self.playbacks[pb].split = split;
         self.playbacks[pb ^ 1].split = split;
         Ok(())
+    }
+
+    fn has_source_width(&self) -> bool {
+        true
+    }
+
+    fn set_width_of(&mut self, channel: ChannelId, width: f32) -> Result<(), Error> {
+        let key = self
+            .width_key(channel)
+            .ok_or_else(|| Error::InvalidChannel(format!("{channel} has no width")))?;
+        self.widths.insert(key, width.clamp(-1.0, 1.0));
+        Ok(())
+    }
+
+    fn width_of(&self, channel: ChannelId) -> Option<f32> {
+        let key = self.width_key(channel)?;
+        Some(self.widths.get(&key).copied().unwrap_or(1.0))
     }
 
     fn set_width(&mut self, width: f32) -> Result<(), Error> {

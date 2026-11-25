@@ -823,6 +823,34 @@ pub trait RmeDevice {
         ))
     }
 
+    /// Whether the card has the one global [`Self::set_width`]. A driver
+    /// with a width per source ([`Self::has_source_width`]) does not.
+    fn has_width(&self) -> bool {
+        false
+    }
+
+    /// Whether every stereo source has its own width (TotalMix FX's width
+    /// knob on a stereo strip).
+    fn has_source_width(&self) -> bool {
+        false
+    }
+
+    /// The width of a stereo source (-1..+1): +1 is plain stereo, 0 mono,
+    /// -1 swaps the sides. Both channels of a pair share it.
+    fn set_width_of(&mut self, channel: ChannelId, width: f32) -> Result<(), Error> {
+        let _ = (channel, width);
+        Err(Error::InvalidChannel(
+            "Width per source is not supported on this backend".into(),
+        ))
+    }
+
+    /// The source's width, `None` when it has none (a mono source, an
+    /// output, or a backend without them).
+    fn width_of(&self, channel: ChannelId) -> Option<f32> {
+        let _ = channel;
+        None
+    }
+
     /// Stereo width (-1..+1, 0 = normal).
     fn set_width(&mut self, width: f32) -> Result<(), Error> {
         let _ = width;
