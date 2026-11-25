@@ -221,6 +221,20 @@ impl BabyfaceUsb {
         self.send_all(&reqs)
     }
 
+    /// Set the two sides of a stereo source's crosspoint into an output
+    /// with its width, see [`protocol::set_stereo_crosspoint`].
+    pub fn set_stereo_pair(
+        &mut self,
+        out: Output,
+        src: Source,
+        left: u16,
+        right: u16,
+        width: i8,
+    ) -> Result<(), Error> {
+        let reqs = protocol::set_stereo_crosspoint(out, src, left, right, width, &mut self.flag);
+        self.send_all(&reqs)
+    }
+
     /// The AN1/2 low-map mirror of [`Self::set_pair`].
     pub fn set_low_map_pair(&mut self, src: Source, left: u16, right: u16) -> Result<(), Error> {
         let reqs = protocol::set_low_map_pair(src, left, right, &mut self.flag);

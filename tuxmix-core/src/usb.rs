@@ -93,6 +93,45 @@ pub struct BabyfaceProUsb {
     /// (the device's default from TotalMix), false = split. Not
     /// persisted (a hardware state; the device keeps its own).
     input_link: bool,
+    /// What the stereo sources' crosspoints were last set to, and their
+    /// widths.
+    stereo: StereoMix,
+}
+
+/// The stereo sources: AS1/2, the three ADAT pairs, the six playbacks.
+const STEREO_SOURCES: usize = 10;
+
+/// The levels last written to each stereo source's crosspoints, before its
+/// width, and the widths. The unit has no readback, and a width has to be
+/// written over the levels the crosspoints already have.
+#[derive(Debug, Clone)]
+struct StereoMix {
+    /// Left and right level by source, then by output pair; `None` where
+    /// nothing was written yet, which a width leaves alone.
+    levels: [[Option<(u16, u16)>; 6]; STEREO_SOURCES],
+    /// In hundredths, 100 = plain stereo.
+    width: [i8; STEREO_SOURCES],
+}
+
+impl StereoMix {
+    fn new() -> Self {
+        Self {
+            levels: [[None; 6]; STEREO_SOURCES],
+            width: [100; STEREO_SOURCES],
+        }
+    }
+}
+
+/// The index of `src` in [`StereoMix`], `None` for the mono inputs.
+fn stereo_index(src: Source) -> Option<usize> {
+    match src {
+        Source::Input(Input::As12) => Some(0),
+        Source::Input(Input::Adat34) => Some(1),
+        Source::Input(Input::Adat56) => Some(2),
+        Source::Input(Input::Adat78) => Some(3),
+        Source::Input(_) => None,
+        Source::Playback(p) => Some(3 + p.0).filter(|&i| i < STEREO_SOURCES),
+    }
 }
 
 // ── topology helpers ────────────────────────────────────────────────
@@ -378,6 +417,7 @@ impl BabyfaceProUsb {
             panel: PanelDriver::new(),
             mix_raw: 0,
             input_link: true, // the device's linked default (TotalMix)
+            stereo: StereoMix::new(),
         };
         // Gains start at 0 dB on the preamps (no readback exists for
         // them — TotalMix re-applies its own saved gains; we have the
@@ -457,6 +497,56 @@ impl BabyfaceProUsb {
     /// kernel driver's `bf_preamp_state_write` (`babyface-pro-linux`).
     fn ref_level_commit(&self) -> u16 {
         ref_level_contribution(self.ref_level_code()).1
+    }
+
+    /// The stereo source behind `channel`, with its index in
+    /// [`StereoMix`]; `None` for a mono input or an output.
+    fn stereo_source(&self, channel: ChannelId) -> Option<(Source, usize)> {
+        self.in_range(channel, None).ok()?;
+        let src = match channel {
+            ChannelId::Input(i) => input_source(i).ok()?,
+            ChannelId::Playback(c) => playback_source(c).ok()?,
+            ChannelId::Output(_) => return None,
+        };
+        Some((src, stereo_index(src)?))
+    }
+
+    /// Writes a stereo source's two sides into `out`, through its width.
+    /// A split playback pair is two mono strips, which have none.
+    fn put_stereo(&mut self, out: Output, src: Source, l: u16, r: u16) -> Result<(), Error> {
+        let idx = stereo_index(src)
+            .ok_or_else(|| Error::InvalidChannel(format!("{src:?} is not stereo")))?;
+        let split = match src {
+            Source::Playback(p) => self
+                .playbacks
+                .get((p.0 - 1) * 2)
+                .is_some_and(|c| c.split),
+            Source::Input(_) => false,
+        };
+        let width = if split { 100 } else { self.stereo.width[idx] };
+        self.dev.set_stereo_pair(out, src, l, r, width)?;
+        self.stereo.levels[idx][out.index()] = Some((l, r));
+        Ok(())
+    }
+
+    /// Writes the same raw level to both sides of a source's crosspoint.
+    fn put(&mut self, out: Output, src: Source, raw: u16) -> Result<(), Error> {
+        if stereo_index(src).is_some() {
+            self.put_stereo(out, src, raw, raw)
+        } else {
+            self.dev.set_volume(out, src, raw).map_err(Into::into)
+        }
+    }
+
+    /// Writes again what a stereo source's crosspoints hold, after its
+    /// width changed.
+    fn rewrite_stereo(&mut self, src: Source, idx: usize) -> Result<(), Error> {
+        for o in 0..self.output_pair_count() {
+            if let Some((l, r)) = self.stereo.levels[idx][o] {
+                self.put_stereo(output_for(o)?, src, l, r)?;
+            }
+        }
+        Ok(())
     }
 
     /// Writes just the L crosspoint for `src` at `out` (`Output::An12`
@@ -713,11 +803,9 @@ impl RmeDevice for BabyfaceProUsb {
             self.inputs[i].volumes[output] = volume;
             return Ok(());
         }
-        self.dev.set_volume(out, src, raw)?;
-        // Keep the AN1/2 low-map mirror in sync (TotalMix writes both).
-        if out == Output::An12 {
-            self.dev.set_low_map_volume(src, raw)?;
-        }
+        // From here on a stereo source: the AN1/2 block is the map's first
+        // one, so there is no mirror to keep in sync.
+        self.put(out, src, raw)?;
         // If this is a phase-inverted analog input, the mono write
         // above just overwrote the L register with the PLAIN value,
         // silently un-inverting phase — re-apply the negation on top.
@@ -773,13 +861,19 @@ impl RmeDevice for BabyfaceProUsb {
             ChannelId::Playback(c) => self.playbacks[c].volumes[output],
             _ => 0.0,
         };
-        self.dev.set_balance(
-            out,
-            src,
-            balance,
-            source_raw(true, fixed_volume),
-            fixed_is_left,
-        )?;
+        let fixed = source_raw(true, fixed_volume);
+        let varied = tuxmix_usb::protocol::balance_side(fixed, balance);
+        // Only the varying side changes; the other keeps what it holds.
+        let (_, idx) = self
+            .stereo_source(channel)
+            .ok_or_else(|| Error::InvalidChannel(format!("{channel:?}")))?;
+        let (mut l, mut r) = self.stereo.levels[idx][output].unwrap_or((fixed, fixed));
+        if fixed_is_left {
+            r = varied;
+        } else {
+            l = varied;
+        }
+        self.put_stereo(out, src, l, r)?;
         match channel {
             ChannelId::Input(i) => self.inputs[i].pans[output] = pan,
             ChannelId::Playback(c) => self.playbacks[c].pans[output] = pan,
@@ -831,7 +925,9 @@ impl RmeDevice for BabyfaceProUsb {
                 } else {
                     source_raw(stereo, self.inputs[i].volumes[0])
                 };
-                self.dev.set_low_map_volume(src, low)?;
+                if !stereo {
+                    self.dev.set_low_map_volume(src, low)?;
+                }
                 for o in 0..self.output_pair_count() {
                     let raw = if mute {
                         0
@@ -839,7 +935,7 @@ impl RmeDevice for BabyfaceProUsb {
                         source_raw(stereo, self.inputs[i].volumes[o])
                     };
                     let out = output_for(o)?;
-                    self.dev.set_volume(out, src, raw)?;
+                    self.put(out, src, raw)?;
                 }
                 Ok(())
             }
@@ -856,7 +952,7 @@ impl RmeDevice for BabyfaceProUsb {
                         source_raw(true, self.playbacks[c].volumes[o])
                     };
                     let out = output_for(o)?;
-                    self.dev.set_volume(out, src, raw)?;
+                    self.put(out, src, raw)?;
                 }
                 Ok(())
             }
@@ -928,7 +1024,11 @@ impl RmeDevice for BabyfaceProUsb {
             }
             ChannelId::Output(_) => unreachable!(),
         };
-        self.dev.set_low_map_volume(soloed, marker)?;
+        if stereo_index(soloed).is_some() {
+            self.put(Output::An12, soloed, marker)?;
+        } else {
+            self.dev.set_low_map_volume(soloed, marker)?;
+        }
         // The others: mute (solo ON) or restore (solo OFF) their low
         // maps and crosspoints into every output. Exclusive solo (the
         // TotalMix default): soloing a strip clears the other strips'
@@ -948,15 +1048,18 @@ impl RmeDevice for BabyfaceProUsb {
                 source_raw(stereo, ch.volumes[0])
             };
             let src = input_source(j)?;
-            self.dev.set_low_map_volume(src, low)?;
+            if !stereo {
+                self.dev.set_low_map_volume(src, low)?;
+            }
             for o in 0..self.output_pair_count() {
+                let ch = &self.inputs[j];
                 let raw = if solo || ch.mute {
                     0
                 } else {
                     source_raw(stereo, ch.volumes[o])
                 };
                 let out = output_for(o)?;
-                self.dev.set_volume(out, src, raw)?;
+                self.put(out, src, raw)?;
             }
         }
         for j in 0..self.playbacks.len() {
@@ -966,22 +1069,16 @@ impl RmeDevice for BabyfaceProUsb {
             if solo {
                 self.playbacks[j].solo = false;
             }
-            let ch = &self.playbacks[j];
-            let low = if solo || ch.mute {
-                0
-            } else {
-                source_raw(true, ch.volumes[0])
-            };
             let src = playback_source(j)?;
-            self.dev.set_low_map_volume(src, low)?;
             for o in 0..self.output_pair_count() {
+                let ch = &self.playbacks[j];
                 let raw = if solo || ch.mute {
                     0
                 } else {
                     source_raw(true, ch.volumes[o])
                 };
                 let out = output_for(o)?;
-                self.dev.set_volume(out, src, raw)?;
+                self.put(out, src, raw)?;
             }
         }
         Ok(())
@@ -1217,20 +1314,31 @@ impl RmeDevice for BabyfaceProUsb {
         // the pair, then the right one).
         let level = |c: usize| source_raw(true, self.playbacks[c].volumes[0]);
         let joined = (level(pb & !1), level(pb | 1));
-        let reqs = tuxmix_usb::protocol::set_stereo_split(Playback(pb / 2 + 1), split, joined);
-        self.dev.send_all(&reqs)?;
+        let (l, r) = tuxmix_usb::protocol::stereo_split_levels(split, joined);
+        let src = playback_source(pb)?;
+        self.put_stereo(Output::An12, src, l, r)?;
+        // A width only applies to a joined pair.
+        if let Some(idx) = stereo_index(src).filter(|&i| self.stereo.width[i] != 100) {
+            self.rewrite_stereo(src, idx)?;
+        }
         Ok(())
     }
 
-    fn has_width(&self) -> bool {
+    fn has_source_width(&self) -> bool {
         true
     }
 
-    fn set_width(&mut self, width: f32) -> Result<(), Error> {
-        self.settings.width = width.clamp(-1.0, 1.0);
-        let reqs = tuxmix_usb::protocol::set_width(width);
-        self.dev.send_all(&reqs)?;
-        Ok(())
+    fn set_width_of(&mut self, channel: ChannelId, width: f32) -> Result<(), Error> {
+        let (src, idx) = self
+            .stereo_source(channel)
+            .ok_or_else(|| Error::InvalidChannel(format!("{channel} has no width")))?;
+        self.stereo.width[idx] = (width.clamp(-1.0, 1.0) * 100.0).round() as i8;
+        self.rewrite_stereo(src, idx)
+    }
+
+    fn width_of(&self, channel: ChannelId) -> Option<f32> {
+        let (_, idx) = self.stereo_source(channel)?;
+        Some(f32::from(self.stereo.width[idx]) / 100.0)
     }
 
     fn set_ref_level(&mut self, idx: usize, raw: u16) -> Result<(), Error> {
@@ -1307,7 +1415,7 @@ impl RmeDevice for BabyfaceProUsb {
         for pb_pair in 0..n_pairs {
             let raw = cue_low_map_value(pb_pair, idx, on);
             let src = playback_source(pb_pair * 2)?;
-            self.dev.set_low_map_volume(src, raw)?;
+            self.put(Output::An12, src, raw)?;
         }
         // Exclusive: engaging CUE on `idx` silently disengages whichever
         // other output had it (there's only one AN1/2 bus to share).
@@ -1345,8 +1453,8 @@ impl RmeDevice for BabyfaceProUsb {
             for (o, v) in inp.volumes.iter().enumerate() {
                 let out = output_for(o)?;
                 let raw = source_raw(input_is_stereo(i), *v);
-                self.dev.set_volume(out, src, raw)?;
-                if out == Output::An12 {
+                self.put(out, src, raw)?;
+                if out == Output::An12 && !input_is_stereo(i) {
                     self.dev.set_low_map_volume(src, raw)?;
                 }
             }
@@ -1356,10 +1464,7 @@ impl RmeDevice for BabyfaceProUsb {
             for (o, v) in pb.volumes.iter().enumerate() {
                 let out = output_for(o)?;
                 let raw = source_raw(true, *v);
-                self.dev.set_volume(out, src, raw)?;
-                if out == Output::An12 {
-                    self.dev.set_low_map_volume(src, raw)?;
-                }
+                self.put(out, src, raw)?;
             }
         }
         for (o, out) in scene.outputs.iter().enumerate() {
@@ -1437,9 +1542,6 @@ impl RmeDevice for BabyfaceProUsb {
         }
         if let Some(db) = self.settings.fx_send_db {
             self.set_fx_send(db)?;
-        }
-        if self.settings.width != 0.0 {
-            self.set_width(self.settings.width)?;
         }
         let inp_states: Vec<(usize, bool, u16)> = self
             .inputs
@@ -1666,7 +1768,7 @@ impl BabyfaceProUsb {
                 } else {
                     self.mix_raw
                 };
-                self.dev.set_volume(out, src, raw)?;
+                self.put(out, src, raw)?;
             }
         } else if ps.out_mode() {
             // Output level: the selected OUT's master fader, ±0.5 dB
@@ -1811,6 +1913,31 @@ mod tests {
         // display name) would have rejected this — locking that in as a
         // regression guard.
         assert!(scene.check_compatible("Babyface Pro FS (USB)").is_err());
+    }
+
+    /// Both channels of a stereo pair share one width, the four analog
+    /// inputs have none, and no two sources share one.
+    #[test]
+    fn every_stereo_source_has_its_own_width() {
+        for i in 0..4 {
+            assert_eq!(stereo_index(input_source(i).unwrap()), None, "input {i}");
+        }
+        let mut seen = Vec::new();
+        for i in (4..12).step_by(2) {
+            let idx = stereo_index(input_source(i).unwrap());
+            assert_eq!(idx, stereo_index(input_source(i + 1).unwrap()));
+            seen.push(idx.unwrap());
+        }
+        for c in (0..12).step_by(2) {
+            let idx = stereo_index(playback_source(c).unwrap());
+            assert_eq!(idx, stereo_index(playback_source(c + 1).unwrap()));
+            seen.push(idx.unwrap());
+        }
+        assert_eq!(seen, (0..STEREO_SOURCES).collect::<Vec<_>>());
+        // Plain stereo, and nothing to rewrite, until something is written.
+        let mix = StereoMix::new();
+        assert!(mix.width.iter().all(|&w| w == 100));
+        assert!(mix.levels.iter().flatten().all(Option::is_none));
     }
 
     /// A stereo source's crosspoint is `0x2000` at 0 dB and `0x4000` at

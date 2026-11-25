@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+- Width on the proprietary USB backend is now per stereo source, as with
+  kernel driver 0.2.4, and written as TotalMix FX does: each output side
+  takes `(1 + w) / 2` of its level from the source's own channel and
+  `(1 - w) / 2` from the other one. The old global knob wrote fixed levels
+  into AN1 and AN2 on AN1/2, over the ones set there, and recalling a scene
+  did it again. A scene's saved global width is no longer applied. Not tried
+  on a unit yet.
+
 ## 0.3.9 (2026-11-25)
 
 ### Added
