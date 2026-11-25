@@ -1222,6 +1222,10 @@ impl RmeDevice for BabyfaceProUsb {
         Ok(())
     }
 
+    fn has_width(&self) -> bool {
+        true
+    }
+
     fn set_width(&mut self, width: f32) -> Result<(), Error> {
         self.settings.width = width.clamp(-1.0, 1.0);
         let reqs = tuxmix_usb::protocol::set_width(width);

@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- A Width knob in the settings panel of every stereo strip (playbacks, AS
+  and ADAT inputs), as in TotalMix FX: +1.00 is plain stereo, 0 is mono and
+  -1.00 swaps the sides; double-click resets it. It drives the
+  `<source> Width` controls of kernel driver 0.2.4. That driver has no global
+  `Width` any more, so the device panel's knob only shows where it still does
+  something; it used to move without writing anything. In the TUI, `u` and
+  `j` move the selected strip's width.
 - The Babyface Pro FS's hardware meters: the unit streams 40 peaks and RMS
   levels on bulk IN 0x85 (interface 1, left alone by the kernel driver).
   `tuxmix_core::babyface_meters` decodes them (inputs, playback, outputs,

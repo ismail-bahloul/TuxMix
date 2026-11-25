@@ -94,6 +94,20 @@ fn fx_send_name(src: usize) -> String {
     format!("{} FX Send", BF_SOURCES[src])
 }
 
+/// The driver's width control for a strip: one per stereo source, so none
+/// for the four analog inputs.
+fn width_control(channel: ChannelId) -> Option<String> {
+    let src = match channel {
+        ChannelId::Input(i) => match input_crosspoint_slot(i)? {
+            (_, _, true) => return None,
+            (src, _, false) => src,
+        },
+        ChannelId::Playback(i) => playback_crosspoint_slot(i)?.0,
+        ChannelId::Output(_) => return None,
+    };
+    Some(format!("{} Width", BF_SOURCES[src]))
+}
+
 fn fx_return_name(pair: usize) -> Option<String> {
     PAIR_LABELS.get(pair).map(|l| format!("{l} FX Return"))
 }
@@ -2443,12 +2457,44 @@ impl RmeDevice for BabyfacePro {
     fn set_width(&mut self, width: f32) -> Result<(), Error> {
         self.require_proprietary("Width")?;
         let clamped = width.clamp(-1.0, 1.0);
-        if let Some(selem) = self.mixer.find_selem("Width", 0) {
-            let raw = (clamped * 100.0).round() as i64;
-            selem.set_playback_volume(SelemChannelId::mono(), raw)?;
-        }
+        let selem = self
+            .mixer
+            .find_selem("Width", 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no global Width".into()))?;
+        let raw = (clamped * 100.0).round() as i64;
+        selem.set_playback_volume(SelemChannelId::mono(), raw)?;
         self.settings.width = clamped;
         Ok(())
+    }
+
+    fn has_width(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && self.mixer.find_selem("Width", 0).is_some()
+    }
+
+    fn has_source_width(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && width_control(ChannelId::Playback(0))
+                .is_some_and(|name| self.mixer.find_selem(&name, 0).is_some())
+    }
+
+    fn set_width_of(&mut self, channel: ChannelId, width: f32) -> Result<(), Error> {
+        self.require_proprietary("Width")?;
+        let name = width_control(channel)
+            .ok_or_else(|| Error::InvalidChannel(format!("{channel} has no width")))?;
+        let selem = self
+            .mixer
+            .find_selem(&name, 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no width per source".into()))?;
+        let raw = (width.clamp(-1.0, 1.0) * 100.0).round() as i64;
+        selem.set_playback_volume(SelemChannelId::mono(), raw)?;
+        Ok(())
+    }
+
+    fn width_of(&self, channel: ChannelId) -> Option<f32> {
+        let selem = self.mixer.find_selem(&width_control(channel)?, 0)?;
+        let raw = selem.get_playback_volume(SelemChannelId::mono()).ok()?;
+        Some(raw as f32 / 100.0)
     }
 
     fn set_fx_send(&mut self, db: f32) -> Result<(), Error> {
@@ -2818,6 +2864,19 @@ mod tests {
         // top -> 0 is one press, top -> 1 two.
         assert!(dim_presses_toggle(top, 0));
         assert!(!dim_presses_toggle(top, 1));
+    }
+
+    #[test]
+    fn only_the_stereo_sources_have_a_width_control() {
+        let name = |c| width_control(c);
+        assert!((0..4).all(|i| name(ChannelId::Input(i)).is_none()));
+        // Both channels of a pair share it.
+        assert_eq!(name(ChannelId::Input(4)).as_deref(), Some("AS1/2 Width"));
+        assert_eq!(name(ChannelId::Input(5)), name(ChannelId::Input(4)));
+        assert_eq!(name(ChannelId::Input(11)).as_deref(), Some("ADAT7/8 Width"));
+        assert_eq!(name(ChannelId::Playback(0)).as_deref(), Some("PB1 Width"));
+        assert_eq!(name(ChannelId::Playback(11)).as_deref(), Some("PB6 Width"));
+        assert_eq!(name(ChannelId::Output(0)), None);
     }
 
     #[test]

@@ -376,6 +376,22 @@ impl RmeDevice for DeviceHandle {
     fn has_fx_levels(&self) -> bool {
         delegate!(self, has_fx_levels())
     }
+    fn has_width(&self) -> bool {
+        delegate!(self, has_width())
+    }
+    fn has_source_width(&self) -> bool {
+        delegate!(self, has_source_width())
+    }
+    fn set_width_of(
+        &mut self,
+        channel: ChannelId,
+        width: f32,
+    ) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_width_of(channel, width))
+    }
+    fn width_of(&self, channel: ChannelId) -> Option<f32> {
+        delegate!(self, width_of(channel))
+    }
     fn set_fx_send_of(&mut self, channel: ChannelId, db: f32) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_fx_send_of(channel, db))
     }
@@ -844,6 +860,8 @@ pub enum Message {
     EqForRecordChanged(bool),
     /// A strip's FX send, in dB (-65..0).
     FxSendChanged(ChannelId, f32),
+    /// The width of a stereo source, -1..+1 (+1 = plain stereo).
+    SourceWidthChanged(ChannelId, f32),
     /// An output pair's FX return, in dB (-65..0).
     FxReturnChanged(usize, f32),
     /// How much Dim takes off, in dB (-65..0).
@@ -2390,6 +2408,7 @@ fn is_undoable(message: &Message) -> bool {
             | Message::SidebarResize(_)
             | Message::SetRowMode(_)
             | Message::DimToggle
+            | Message::SourceWidthChanged(..)
             | Message::FxSendChanged(..)
             | Message::FxReturnChanged(..)
             | Message::MonoToggle
@@ -2462,6 +2481,7 @@ fn needs_protocol_features(message: &Message) -> bool {
             | Message::EqBandPoint(..)
             | Message::EqBandReset(..)
             | Message::EqLowCutFreq(..)
+            | Message::SourceWidthChanged(..)
             | Message::FxSendChanged(..)
             | Message::FxReturnChanged(..)
             | Message::EqPreset(..)
@@ -3112,6 +3132,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
         Message::InputLinkChanged(on) => {
             if let Err(e) = state.device.set_input_link(on) {
                 fail(state, "set_input_link", &e);
+            }
+        }
+        Message::SourceWidthChanged(cid, w) => {
+            if let Err(e) = state.device.set_width_of(cid, w) {
+                fail(state, "set_width_of", &e);
             }
         }
         Message::FxSendChanged(cid, db) => {
@@ -4482,7 +4507,11 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                     on_reset: Box::new(|| Message::PitchChanged(0.0)),
                 }),
             ),
-            knob_cell(
+        ];
+        // A driver with a width per source has no global one: the knob is
+        // in the settings panel of each stereo strip instead.
+        if state.device.has_width() {
+            output_knobs = output_knobs.push(knob_cell(
                 "Width",
                 knob(Knob {
                     tint: None,
@@ -4497,8 +4526,8 @@ fn device_panel(state: &TuxMix) -> Element<'_, Message> {
                     on_change: Box::new(|v| Message::WidthChanged(v.clamp(-1.0, 1.0))),
                     on_reset: Box::new(|| Message::WidthChanged(0.0)),
                 }),
-            ),
-        ];
+            ));
+        }
         // Only with a driver that has a Dim Level: the knob would only fail.
         if state.device.has_dim_level() {
             output_knobs = output_knobs.push(knob_cell(
@@ -5675,6 +5704,42 @@ fn settings_popover(
                     scale,
                     on_change: Box::new(move |v| on_change(v.round())),
                     on_reset: Box::new(move || on_reset.clone()),
+                }))
+                .width(Length::Fill)
+                .align_x(iced::Alignment::End),
+            ]
+            .align_y(iced::Alignment::Center)
+            .width(Length::Fill),
+        );
+    }
+
+    // TotalMix FX's width knob, on a strip that shows its pair as stereo.
+    if let Some(w) = state
+        .device
+        .width_of(cid)
+        .filter(|_| state.device.has_source_width() && p.stereo_linked)
+    {
+        col = col.push(
+            row![
+                text("Width")
+                    .size(theme::TEXT_MICRO * scale)
+                    .color(theme::TEXT_SEC)
+                    .wrapping(iced::widget::text::Wrapping::None),
+                container(knob(Knob {
+                    tint: None,
+                    value: w,
+                    range: (-1.0, 1.0),
+                    label: format!("{w:+.2}"),
+                    arc_from_center: true,
+                    interactive: true,
+                    log_scale: false,
+                    modifiers: p.modifiers,
+                    scale,
+                    on_change: Box::new(move |v| Message::SourceWidthChanged(
+                        cid,
+                        (v.clamp(-1.0, 1.0) * 100.0).round() / 100.0
+                    )),
+                    on_reset: Box::new(move || Message::SourceWidthChanged(cid, 1.0)),
                 }))
                 .width(Length::Fill)
                 .align_x(iced::Alignment::End),
@@ -8980,6 +9045,26 @@ mod tests {
         assert!(!state.device.outputs_one_per_pair());
         let pairs: Vec<_> = (0..4).map(|o| super::output_pair_of(&state, o)).collect();
         assert_eq!(pairs, [0, 0, 1, 1]);
+    }
+
+    #[test]
+    fn the_width_knob_sets_the_source_and_stays_out_of_undo() {
+        let mut state = new(true, None, None);
+        assert!(state.device.has_source_width() && !state.device.has_width());
+        let pb = ChannelId::Playback(2);
+        assert_eq!(state.device.width_of(pb), Some(1.0), "plain stereo");
+        let _ = update(&mut state, Message::SourceWidthChanged(pb, 0.25));
+        assert_eq!(state.device.width_of(pb), Some(0.25));
+        assert_eq!(
+            state.device.width_of(ChannelId::Playback(3)),
+            Some(0.25),
+            "the pair shares it"
+        );
+        assert_eq!(state.device.width_of(ChannelId::Playback(0)), Some(1.0));
+        // A mic has none, and neither has an output.
+        assert_eq!(state.device.width_of(ChannelId::Input(0)), None);
+        assert_eq!(state.device.width_of(ChannelId::Output(0)), None);
+        assert!(state.undo_stack.is_empty(), "widths are not in a scene");
     }
 
     #[test]

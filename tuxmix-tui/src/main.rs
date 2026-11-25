@@ -203,6 +203,15 @@ impl RmeDevice for DeviceHandle {
     fn set_stereo_split(&mut self, pb: usize, split: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_stereo_split(pb, split))
     }
+    fn has_width(&self) -> bool {
+        delegate!(self, has_width())
+    }
+    fn set_width_of(&mut self, ch: ChannelId, width: f32) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_width_of(ch, width))
+    }
+    fn width_of(&self, ch: ChannelId) -> Option<f32> {
+        delegate!(self, width_of(ch))
+    }
     fn set_width(&mut self, width: f32) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_width(width))
     }
@@ -597,6 +606,31 @@ fn selected_channel_id(dev: &DeviceHandle, section: usize, channel: usize) -> Ch
         1 => item_channel_id(&playback_items(dev), channel, ChannelId::Playback),
         _ => item_channel_id(&output_items(dev), channel, ChannelId::Output),
     }
+}
+
+/// The width `u`/`j` move: the selected stereo strip's, or the global one
+/// of a backend that has that instead. `None` when neither applies.
+fn shown_width(dev: &DeviceHandle, cid: ChannelId) -> Option<f32> {
+    if !dev.protocol_features() {
+        None
+    } else if dev.has_width() {
+        Some(dev.settings().width)
+    } else {
+        dev.width_of(cid)
+    }
+}
+
+fn step_width(dev: &mut DeviceHandle, cid: ChannelId, step: f32) {
+    let Some(w) = shown_width(dev, cid) else {
+        return;
+    };
+    // Whole hundredths, so repeated steps land back on the same values.
+    let w = ((w + step).clamp(-1.0, 1.0) * 100.0).round() / 100.0;
+    let _ = if dev.has_width() {
+        dev.set_width(w)
+    } else {
+        dev.set_width_of(cid, w)
+    };
 }
 
 /// The raw input-channel index the cursor currently points at — for the
@@ -1068,21 +1102,19 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
                                 let _ = dev.set_pitch((p - 1.0).max(-5.0));
                             }
                         }
-                        // Stereo width (global, -1..+1). `u`/`j` (vertically
+                        // Stereo width (-1..+1): the selected stereo strip's,
+                        // or the one global width of a backend that has that
+                        // instead. `u`/`j` (vertically
                         // adjacent on QWERTY, same up/down convention as
                         // pitch's `y`/`h`) — one step size is enough given
                         // the much narrower range than pitch's.
                         KeyCode::Char('u') => {
-                            let w = dev.settings().width;
-                            if dev.protocol_features() {
-                                let _ = dev.set_width((w + 0.05).min(1.0));
-                            }
+                            let cid = selected_channel_id(dev, section, channel);
+                            step_width(dev, cid, 0.05);
                         }
                         KeyCode::Char('j') => {
-                            let w = dev.settings().width;
-                            if dev.protocol_features() {
-                                let _ = dev.set_width((w - 0.05).max(-1.0));
-                            }
+                            let cid = selected_channel_id(dev, section, channel);
+                            step_width(dev, cid, -0.05);
                         }
                         // Global device toggles — mirrors tuxmix-gui's
                         // device_panel (MS Proc / AN 1>2 / Input Link).
@@ -1334,14 +1366,15 @@ fn ui(
     );
 
     let s = format!(
-        "HW Inputs: {}  |  SW Playbacks: {}  |  Submix: {}  |  Rate: {} kHz  |  Clock: {}  |  Pitch: {:+0.1}%  |  Width: {:+0.2}  |  MS:{}  AN1>2:{}  Link:{}  EQRec:{}  SPDIFOut:{}",
+        "HW Inputs: {}  |  SW Playbacks: {}  |  Submix: {}  |  Rate: {} kHz  |  Clock: {}  |  Pitch: {:+0.1}%  |  Width: {}  |  MS:{}  AN1>2:{}  Link:{}  EQRec:{}  SPDIFOut:{}",
         dev.inputs().len(),
         dev.playbacks().len(),
         OUT_LABELS[sel_out],
         dev.settings().sample_rate / 1000,
         dev.settings().clock_source,
         dev.settings().pitch_percent,
-        dev.settings().width,
+        shown_width(dev, selected_channel_id(dev, sel_sec, sel_chan))
+            .map_or("-".to_string(), |w| format!("{w:+0.2}")),
         if dev.settings().ms_proc { "on" } else { "off" },
         if dev.settings().an12 { "on" } else { "off" },
         if dev.settings().input_link { "on" } else { "off" },
@@ -2137,6 +2170,21 @@ mod tests {
         for level in &out[2..] {
             assert_eq!(*level, 0.0);
         }
+    }
+
+    #[test]
+    fn width_keys_move_the_selected_stereo_strip_only() {
+        let mut dev = DeviceHandle::Mock(tuxmix_core::MockBabyfacePro::open().unwrap());
+        let pb = ChannelId::Playback(0);
+        super::step_width(&mut dev, pb, 0.05);
+        assert_eq!(super::shown_width(&dev, pb), Some(1.0), "already at the top");
+        super::step_width(&mut dev, pb, -0.05);
+        super::step_width(&mut dev, pb, -0.05);
+        assert_eq!(super::shown_width(&dev, pb), Some(0.9));
+        assert_eq!(super::shown_width(&dev, ChannelId::Playback(2)), Some(1.0));
+        // A mono strip has none: the keys do nothing.
+        super::step_width(&mut dev, ChannelId::Input(0), -0.05);
+        assert_eq!(super::shown_width(&dev, ChannelId::Input(0)), None);
     }
 
     #[test]
