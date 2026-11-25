@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.9 (2026-11-25)
+
 ### Added
 - A Width knob in the settings panel of every stereo strip (playbacks, AS
   and ADAT inputs), as in TotalMix FX: +1.00 is plain stereo, 0 is mono and
@@ -62,6 +64,9 @@
   height: its horizontal scrollbar was drawn off screen, and the software
   renderer (tiny-skia) panicked building the quad. The card now keeps its
   natural height in such a row.
+- The proprietary USB backend names the instrument inputs IN3 and IN4, as
+  the kernel-driver backend and TotalMix do, instead of AN3 and AN4.
+- A fader just below 0 dB reads "0.0 dB" instead of "-0.0 dB".
 
 ## 0.3.8 (2026-11-13)
 
