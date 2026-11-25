@@ -96,21 +96,31 @@ pub struct BabyfaceProUsb {
     /// What the stereo sources' crosspoints were last set to, and their
     /// widths.
     stereo: StereoMix,
+    /// The mono inputs that are muted or left out of a solo.
+    mono_silent: [bool; 4],
 }
 
 /// The stereo sources: AS1/2, the three ADAT pairs, the six playbacks.
 const STEREO_SOURCES: usize = 10;
+/// The first playback among them.
+const FIRST_PLAYBACK: usize = 4;
 
-/// The levels last written to each stereo source's crosspoints, before its
-/// width, and the widths. The unit has no readback, and a width has to be
-/// written over the levels the crosspoints already have.
+/// The levels each stereo source's crosspoints are set to, before its
+/// width, and what else decides the words on the wire. The unit has no
+/// readback, so a width, a mute or a solo is written over (and undone from)
+/// the levels kept here.
 #[derive(Debug, Clone)]
 struct StereoMix {
-    /// Left and right level by source, then by output pair; `None` where
-    /// nothing was written yet, which a width leaves alone.
+    /// Left and right level by source, then by output pair, as the faders
+    /// and pans ask for; `None` where nothing was written yet, which a
+    /// width leaves alone.
     levels: [[Option<(u16, u16)>; 6]; STEREO_SOURCES],
     /// In hundredths, 100 = plain stereo.
     width: [i8; STEREO_SOURCES],
+    /// Muted, or left out of a solo.
+    silent: [bool; STEREO_SOURCES],
+    /// The playback pair a CUE keeps on AN1/2.
+    cue: Option<usize>,
 }
 
 impl StereoMix {
@@ -118,8 +128,48 @@ impl StereoMix {
         Self {
             levels: [[None; 6]; STEREO_SOURCES],
             width: [100; STEREO_SOURCES],
+            silent: [false; STEREO_SOURCES],
+            cue: None,
         }
     }
+
+    /// The levels to write for source `idx` into output pair `out` when its
+    /// fader and pan ask for `asked`.
+    fn written(&self, idx: usize, out: usize, asked: (u16, u16)) -> (u16, u16) {
+        if self.silent[idx] {
+            return (0, 0);
+        }
+        // CUE takes the playbacks' AN1/2 crosspoints over while it is on.
+        match (self.cue, idx.checked_sub(FIRST_PLAYBACK)) {
+            (Some(cued), Some(pb)) if out == 0 => {
+                let raw = cue_low_map_value(pb, cued);
+                (raw, raw)
+            }
+            _ => asked,
+        }
+    }
+}
+
+/// Whether a strip is silent: muted, or not in the solo that is on.
+fn strip_silent(mute: bool, solo: bool, any_solo: bool) -> bool {
+    mute || (any_solo && !solo)
+}
+
+/// The stereo source at index `idx` of [`StereoMix`], with the core channels
+/// that share it.
+fn stereo_at(idx: usize) -> Result<(Source, [ChannelId; 2]), Error> {
+    if let Some(pb) = idx.checked_sub(FIRST_PLAYBACK) {
+        let c = pb * 2;
+        return Ok((
+            playback_source(c)?,
+            [ChannelId::Playback(c), ChannelId::Playback(c + 1)],
+        ));
+    }
+    let i = 4 + idx * 2;
+    Ok((
+        input_source(i)?,
+        [ChannelId::Input(i), ChannelId::Input(i + 1)],
+    ))
 }
 
 /// The index of `src` in [`StereoMix`], `None` for the mono inputs.
@@ -154,15 +204,12 @@ fn input_source(idx: usize) -> Result<Source, Error> {
     }))
 }
 
-/// The low-map raw value one playback pair should hold while output
-/// `cued_idx` has CUE engaged (or restored, if `on` is `false`) — a
-/// pure function so the actual exclusivity/restore logic is testable
-/// without a real USB handle. Muted (`0x0000`) unless CUE is off
-/// entirely (everything restores to `0x2000`) or `pb_pair` is the
-/// dedicated source for the output being cued (`PROTOCOL.md`'s
-/// "CUE on outputs", cap_cue.pcap, hardware-verified).
-fn cue_low_map_value(pb_pair: usize, cued_idx: usize, on: bool) -> u16 {
-    if !on || pb_pair == cued_idx {
+/// The AN1/2 crosspoint value of one playback pair while output `cued_idx`
+/// has CUE engaged: muted (`0x0000`), unless it is the dedicated source for
+/// that output, which TotalMix puts at 0 dB (`PROTOCOL.md`'s "CUE on
+/// outputs", cap_cue.pcap, hardware-verified).
+fn cue_low_map_value(pb_pair: usize, cued_idx: usize) -> u16 {
+    if pb_pair == cued_idx {
         0x2000
     } else {
         0x0000
@@ -418,6 +465,7 @@ impl BabyfaceProUsb {
             mix_raw: 0,
             input_link: true, // the device's linked default (TotalMix)
             stereo: StereoMix::new(),
+            mono_silent: [false; 4],
         };
         // Gains start at 0 dB on the preamps (no readback exists for
         // them — TotalMix re-applies its own saved gains; we have the
@@ -524,8 +572,62 @@ impl BabyfaceProUsb {
             Source::Input(_) => false,
         };
         let width = if split { 100 } else { self.stereo.width[idx] };
-        self.dev.set_stereo_pair(out, src, l, r, width)?;
         self.stereo.levels[idx][out.index()] = Some((l, r));
+        let (l, r) = self.stereo.written(idx, out.index(), (l, r));
+        self.dev.set_stereo_pair(out, src, l, r, width)?;
+        Ok(())
+    }
+
+    /// Writes mono input `i`'s crosspoint into output pair `o` from the
+    /// model: fader, pan, phase, and silence.
+    fn write_mono(&mut self, i: usize, o: usize) -> Result<(), Error> {
+        let ch = &self.inputs[i];
+        let (pan, phase) = (ch.pans[o], ch.phase);
+        let raw = volume_to_raw(ch.volumes[o]);
+        if self.mono_silent[i] {
+            return self.write_mono_pair(output_for(o)?, input_source(i)?, 0, 0, false);
+        }
+        self.write_mono_pair(output_for(o)?, input_source(i)?, raw, pan, phase)
+    }
+
+    /// Brings the crosspoints in line with the mute and solo flags, writing
+    /// the strips that fall silent or come back. A strip comes back at its
+    /// own levels, pan and width.
+    fn refresh_silence(&mut self) -> Result<(), Error> {
+        let any_solo = self.inputs.iter().any(|c| c.solo) || self.playbacks.iter().any(|c| c.solo);
+        for i in 0..self.mono_silent.len().min(self.inputs.len()) {
+            let silent = strip_silent(self.inputs[i].mute, self.inputs[i].solo, any_solo);
+            if silent != self.mono_silent[i] {
+                self.mono_silent[i] = silent;
+                for o in 0..self.output_pair_count() {
+                    self.write_mono(i, o)?;
+                }
+            }
+        }
+        for idx in 0..STEREO_SOURCES {
+            // The two channels of a pair share its crosspoints.
+            let (src, channels) = stereo_at(idx)?;
+            let (mut mute, mut solo) = (false, false);
+            for ch in channels {
+                mute |= self.mute(ch)?;
+                solo |= self.solo(ch)?;
+            }
+            let silent = strip_silent(mute, solo, any_solo);
+            if silent != self.stereo.silent[idx] {
+                self.stereo.silent[idx] = silent;
+                for o in 0..self.output_pair_count() {
+                    // Never written: the model's fader is all there is.
+                    let (l, r) = match self.stereo.levels[idx][o] {
+                        Some(levels) => levels,
+                        None => (
+                            source_raw(true, self.volume(channels[0], o)?),
+                            source_raw(true, self.volume(channels[1], o)?),
+                        ),
+                    };
+                    self.put_stereo(output_for(o)?, src, l, r)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -798,10 +900,8 @@ impl RmeDevice for BabyfaceProUsb {
         if let ChannelId::Input(i @ 0..=3) = channel {
             // A mono input: the level reaches each side of the pair
             // through its pan, so a fader move keeps the pan.
-            let pan = self.inputs[i].pans[output];
-            self.write_mono_pair(out, src, raw, pan, self.inputs[i].phase)?;
             self.inputs[i].volumes[output] = volume;
-            return Ok(());
+            return self.write_mono(i, output);
         }
         // From here on a stereo source: the AN1/2 block is the map's first
         // one, so there is no mirror to keep in sync.
@@ -844,12 +944,8 @@ impl RmeDevice for BabyfaceProUsb {
                 // pair for its pan (constant-power law, centred 0x16a0 per
                 // side at 0 dB).
                 if (0..4).contains(&i) {
-                    let pan = pan.clamp(-100, 100);
-                    let raw = volume_to_raw(self.inputs[i].volumes[output]);
-                    let phase = self.inputs[i].phase;
-                    self.write_mono_pair(out, input_source(i)?, raw, pan, phase)?;
-                    self.inputs[i].pans[output] = pan;
-                    return Ok(());
+                    self.inputs[i].pans[output] = pan.clamp(-100, 100);
+                    return self.write_mono(i, output);
                 }
                 (input_source(i)?, i % 2 == 0)
             }
@@ -911,50 +1007,15 @@ impl RmeDevice for BabyfaceProUsb {
                 );
                 self.dev.send_all(&reqs).map_err(Into::into)
             }
+            // A muted strip's crosspoints go to 0 into every output
+            // (cap_mute2.pcap, 2026-08-24).
             ChannelId::Input(i) => {
                 self.inputs[i].mute = mute;
-                // cap_mute2.pcap (2026-08-24): muting an input strip
-                // zeroes its crosspoints — the low-map pair (0x1000 =
-                // the linked -6 dB default on restore) + the standard
-                // crosspoints into EVERY output (global mute). The
-                // model keeps the unmuted volumes for the restore.
-                let src = input_source(i)?;
-                let stereo = input_is_stereo(i);
-                let low = if mute {
-                    0
-                } else {
-                    source_raw(stereo, self.inputs[i].volumes[0])
-                };
-                if !stereo {
-                    self.dev.set_low_map_volume(src, low)?;
-                }
-                for o in 0..self.output_pair_count() {
-                    let raw = if mute {
-                        0
-                    } else {
-                        source_raw(stereo, self.inputs[i].volumes[o])
-                    };
-                    let out = output_for(o)?;
-                    self.put(out, src, raw)?;
-                }
-                Ok(())
+                self.refresh_silence()
             }
             ChannelId::Playback(c) => {
                 self.playbacks[c].mute = mute;
-                // Same: zero/restore the strip's crosspoints into all
-                // outputs (the capture: PB1-5's out0 pairs 0x0000 /
-                // 0x2000 = the active marker).
-                let src = Source::Playback(Playback(c / 2 + 1));
-                for o in 0..self.output_pair_count() {
-                    let raw = if mute {
-                        0
-                    } else {
-                        source_raw(true, self.playbacks[c].volumes[o])
-                    };
-                    let out = output_for(o)?;
-                    self.put(out, src, raw)?;
-                }
-                Ok(())
+                self.refresh_silence()
             }
         }
     }
@@ -970,17 +1031,13 @@ impl RmeDevice for BabyfaceProUsb {
 
     fn set_solo(&mut self, channel: ChannelId, solo: bool) -> Result<(), Error> {
         self.in_range(channel, None)?;
-        // cap_solo2.pcap (2026-08-24): solo = MUTE-THE-OTHERS — the
-        // soloed strip's AN1/2 low map goes to the "active" value
-        // (0x2000 playbacks / 0x1000 linked inputs) and every OTHER
-        // strip's crosspoints go 0x0000 (in the capture, visible as
-        // the low-map writes of the AN1/2 submix strips); un-solo
-        // restores every strip from the model, respecting its own
-        // mute button. Outputs have no solo in TotalMix.
-        //
-        // (The old "global solo registers 0x0004/0x001F/0x000C/0x0027"
-        // were AS1/2's + PB1's LOW MAPS — writing them muted those two
-        // strips on every solo toggle. Removed.)
+        // cap_solo2.pcap (2026-08-24): solo = MUTE-THE-OTHERS. The other
+        // strips' crosspoints go to 0, and un-solo brings every strip back
+        // respecting its own mute button. The soloed strip keeps its level:
+        // the 0x2000 the capture writes to it is its AN1/2 fader at 0 dB,
+        // not a marker (the "low map" is AN1/2's block), and writing it
+        // whatever the fader made a solo jump to 0 dB there. Outputs have
+        // no solo in TotalMix.
         let (solo_i, solo_c) = match channel {
             ChannelId::Input(i) => (Some(i), None),
             ChannelId::Playback(c) => (None, Some(c)),
@@ -988,100 +1045,25 @@ impl RmeDevice for BabyfaceProUsb {
         };
         // A linked pair is soloed one channel at a time
         // (`set_input_solo`/`set_playback_solo`), so the exclusive solo
-        // below must spare the strip's stereo partner: it used to clear
-        // the partner's flag and zero its sends, so a soloed linked pair
-        // played one side only and its strip (which shows the left
-        // channel) never lit.
+        // below must spare the strip's stereo partner.
         let partner_i = solo_i.filter(|i| self.input_pair_linked(i / 2)).map(|i| i ^ 1);
         let partner_c = solo_c.filter(|c| self.playback_linked(c / 2)).map(|c| c ^ 1);
-        // The soloed strip: set its flag and compute its low-map marker
-        // (or restore it from the model on un-solo). The low map is the
-        // AN1/2 submix mirror TotalMix keeps in sync.
-        let (soloed, marker) = match channel {
-            ChannelId::Input(i) => {
-                let src = input_source(i)?;
-                self.inputs[i].solo = solo;
-                let raw = if solo {
-                    if self.input_link {
-                        0x1000
-                    } else {
-                        0x2000
-                    }
-                } else {
-                    source_raw(input_is_stereo(i), self.inputs[i].volumes[0])
-                };
-                (src, raw)
+        // Exclusive solo (the TotalMix default): soloing a strip clears the
+        // other strips' solo flags.
+        if solo {
+            for (j, ch) in self.inputs.iter_mut().enumerate() {
+                ch.solo &= partner_i == Some(j);
             }
-            ChannelId::Playback(c) => {
-                let src = playback_source(c)?;
-                self.playbacks[c].solo = solo;
-                let raw = if solo {
-                    0x2000
-                } else {
-                    source_raw(true, self.playbacks[c].volumes[0])
-                };
-                (src, raw)
-            }
-            ChannelId::Output(_) => unreachable!(),
-        };
-        if stereo_index(soloed).is_some() {
-            self.put(Output::An12, soloed, marker)?;
-        } else {
-            self.dev.set_low_map_volume(soloed, marker)?;
-        }
-        // The others: mute (solo ON) or restore (solo OFF) their low
-        // maps and crosspoints into every output. Exclusive solo (the
-        // TotalMix default): soloing a strip clears the other strips'
-        // solo flags so a later un-solo restores them cleanly.
-        for j in 0..self.inputs.len() {
-            if solo_i == Some(j) || partner_i == Some(j) {
-                continue;
-            }
-            if solo {
-                self.inputs[j].solo = false;
-            }
-            let ch = &self.inputs[j];
-            let stereo = input_is_stereo(j);
-            let low = if solo || ch.mute {
-                0
-            } else {
-                source_raw(stereo, ch.volumes[0])
-            };
-            let src = input_source(j)?;
-            if !stereo {
-                self.dev.set_low_map_volume(src, low)?;
-            }
-            for o in 0..self.output_pair_count() {
-                let ch = &self.inputs[j];
-                let raw = if solo || ch.mute {
-                    0
-                } else {
-                    source_raw(stereo, ch.volumes[o])
-                };
-                let out = output_for(o)?;
-                self.put(out, src, raw)?;
+            for (j, ch) in self.playbacks.iter_mut().enumerate() {
+                ch.solo &= partner_c == Some(j);
             }
         }
-        for j in 0..self.playbacks.len() {
-            if solo_c == Some(j) || partner_c == Some(j) {
-                continue;
-            }
-            if solo {
-                self.playbacks[j].solo = false;
-            }
-            let src = playback_source(j)?;
-            for o in 0..self.output_pair_count() {
-                let ch = &self.playbacks[j];
-                let raw = if solo || ch.mute {
-                    0
-                } else {
-                    source_raw(true, ch.volumes[o])
-                };
-                let out = output_for(o)?;
-                self.put(out, src, raw)?;
-            }
+        match channel {
+            ChannelId::Input(i) => self.inputs[i].solo = solo,
+            ChannelId::Playback(c) => self.playbacks[c].solo = solo,
+            ChannelId::Output(_) => {}
         }
-        Ok(())
+        self.refresh_silence()
     }
 
     fn solo(&self, channel: ChannelId) -> Result<bool, Error> {
@@ -1272,8 +1254,7 @@ impl RmeDevice for BabyfaceProUsb {
             let out = output_for(o)?;
             if idx < 4 {
                 // A mono input keeps its pan: write both sides.
-                let pan = self.inputs[idx].pans[o];
-                self.write_mono_pair(out, src, raw, pan, invert)?;
+                self.write_mono(idx, o)?;
                 continue;
             }
             self.write_l_with_phase(out, src, raw, invert)?;
@@ -1412,10 +1393,19 @@ impl RmeDevice for BabyfaceProUsb {
             return Err(Error::InvalidChannel(format!("Output {idx}")));
         }
         let n_pairs = self.playbacks.len() / 2;
+        self.stereo.cue = on.then_some(idx);
         for pb_pair in 0..n_pairs {
-            let raw = cue_low_map_value(pb_pair, idx, on);
+            // Off, each playback comes back at its own AN1/2 fader (it used
+            // to come back at 0 dB, whatever the fader).
             let src = playback_source(pb_pair * 2)?;
-            self.put(Output::An12, src, raw)?;
+            let (l, r) = match self.stereo.levels[FIRST_PLAYBACK + pb_pair][0] {
+                Some(levels) => levels,
+                None => (
+                    source_raw(true, self.playbacks[pb_pair * 2].volumes[0]),
+                    source_raw(true, self.playbacks[pb_pair * 2 + 1].volumes[0]),
+                ),
+            };
+            self.put_stereo(Output::An12, src, l, r)?;
         }
         // Exclusive: engaging CUE on `idx` silently disengages whichever
         // other output had it (there's only one AN1/2 bus to share).
@@ -1448,15 +1438,13 @@ impl RmeDevice for BabyfaceProUsb {
         scene.check_compatible(self.canonical_model())?;
         // Write every crosspoint (standard + low map), then the masters
         // and the preamp block — mirroring a TotalMix scene load.
-        for (i, inp) in scene.inputs.iter().enumerate() {
+        // The analog inputs follow once their pan, phase and mute are
+        // adopted. CUE does not come back with a scene.
+        self.stereo.cue = None;
+        for (i, inp) in scene.inputs.iter().enumerate().skip(4) {
             let src = input_source(i)?;
             for (o, v) in inp.volumes.iter().enumerate() {
-                let out = output_for(o)?;
-                let raw = source_raw(input_is_stereo(i), *v);
-                self.put(out, src, raw)?;
-                if out == Output::An12 && !input_is_stereo(i) {
-                    self.dev.set_low_map_volume(src, raw)?;
-                }
+                self.put(output_for(o)?, src, source_raw(true, *v))?;
             }
         }
         for (c, pb) in scene.playbacks.iter().enumerate() {
@@ -1490,6 +1478,16 @@ impl RmeDevice for BabyfaceProUsb {
         self.playbacks = scene.playbacks.clone();
         self.outputs = scene.outputs.clone();
         self.settings = scene.settings.clone();
+        for out in self.outputs.iter_mut() {
+            out.cue = false;
+        }
+        // A saved mute or solo is written too, not just shown.
+        self.refresh_silence()?;
+        for i in 0..self.inputs.len().min(4) {
+            for o in 0..self.inputs[i].volumes.len().min(self.inputs[i].pans.len()) {
+                self.write_mono(i, o)?;
+            }
+        }
         // `gain_max` is a hardware property — re-derive it so a scene
         // saved by an older/gain-raw build (or a different model) can't
         // override the UI's gain range with a stale value.
@@ -1845,22 +1843,67 @@ mod tests {
     }
 
     #[test]
-    fn cue_engaged_mutes_every_pair_except_the_dedicated_source() {
-        let cued = 3; // ADAT3/4's own dedicated CUE source (PB4)
-        for pb_pair in 0..6 {
-            let raw = cue_low_map_value(pb_pair, cued, true);
-            if pb_pair == cued {
-                assert_eq!(raw, 0x2000, "the dedicated source must stay active");
-            } else {
-                assert_eq!(raw, 0x0000, "pb{pb_pair} should be muted while cue is on");
+    fn cue_takes_over_the_playbacks_on_an12_and_gives_them_back() {
+        let mut mix = StereoMix::new();
+        let asked = (0x0200, 0x0180);
+        for cued in 0..6 {
+            mix.cue = Some(cued);
+            for pb in 0..6 {
+                let want = if pb == cued { (0x2000, 0x2000) } else { (0, 0) };
+                assert_eq!(mix.written(FIRST_PLAYBACK + pb, 0, asked), want);
+                // Only on AN1/2.
+                assert_eq!(mix.written(FIRST_PLAYBACK + pb, 1, asked), asked);
+            }
+            // The digital inputs are left alone.
+            for idx in 0..FIRST_PLAYBACK {
+                assert_eq!(mix.written(idx, 0, asked), asked);
+            }
+        }
+        // A muted source stays muted under its own CUE.
+        mix.cue = Some(2);
+        mix.silent[FIRST_PLAYBACK + 2] = true;
+        assert_eq!(mix.written(FIRST_PLAYBACK + 2, 0, asked), (0, 0));
+        // Off: back at the fader, not at 0 dB.
+        mix.silent[FIRST_PLAYBACK + 2] = false;
+        mix.cue = None;
+        for idx in 0..STEREO_SOURCES {
+            assert_eq!(mix.written(idx, 0, asked), asked);
+        }
+    }
+
+    /// A solo leaves the soloed strip where its fader is, silences the
+    /// others, and never lifts a mute.
+    #[test]
+    fn solo_silences_the_others_only() {
+        assert!(!strip_silent(false, false, false));
+        assert!(!strip_silent(false, true, true), "the soloed strip");
+        assert!(strip_silent(false, false, true), "the others");
+        assert!(strip_silent(true, true, true), "a muted strip, soloed");
+        assert!(strip_silent(true, false, false));
+        let mut mix = StereoMix::new();
+        mix.silent = [true; STEREO_SOURCES];
+        mix.silent[5] = false;
+        for idx in 0..STEREO_SOURCES {
+            for out in 0..6 {
+                let want = if idx == 5 { (0x0200, 0x0180) } else { (0, 0) };
+                assert_eq!(mix.written(idx, out, (0x0200, 0x0180)), want);
             }
         }
     }
 
     #[test]
-    fn cue_disengaged_restores_every_pair_regardless_of_which_was_cued() {
-        for pb_pair in 0..6 {
-            assert_eq!(cue_low_map_value(pb_pair, 2, false), 0x2000);
+    fn stereo_at_is_the_inverse_of_stereo_index() {
+        for idx in 0..STEREO_SOURCES {
+            let (src, channels) = stereo_at(idx).unwrap();
+            assert_eq!(stereo_index(src), Some(idx));
+            for ch in channels {
+                let of = match ch {
+                    ChannelId::Input(i) => input_source(i).unwrap(),
+                    ChannelId::Playback(c) => playback_source(c).unwrap(),
+                    ChannelId::Output(_) => unreachable!(),
+                };
+                assert_eq!(of, src);
+            }
         }
     }
 
