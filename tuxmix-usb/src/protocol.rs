@@ -27,7 +27,7 @@
 //! | `0x13 0xC000` | session stop (disarm) |
 //! | `0x11/0x1C/0x1E/0x1F` | status register polling (reads) |
 
-use crate::map::{self, Output, Playback, Source};
+use crate::map::{self, Output, Source};
 
 /// A single vendor control request (OUT direction).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,8 +187,14 @@ pub fn set_crosspoint_balance(
     // estimate CALIBRATION.md later found to be wrong (0x0317 really about
     // -21 dB, 0x139E about -1.5 dB on that curve) -- this formula was never
     // a placeholder waiting on that curve, it IS the confirmed pan law.
-    let varied = (fixed_volume as f32 * (1.0 - balance.abs())) as u16;
+    let varied = balance_side(fixed_volume, balance);
     vec![VendorRequest::new(0x12, varied, (vary_reg as u16) | f)]
+}
+
+/// The level of the side a balance attenuates, see
+/// [`set_crosspoint_balance`].
+pub fn balance_side(fixed_volume: u16, balance: f32) -> u16 {
+    (f32::from(fixed_volume) * (1.0 - balance.abs())) as u16
 }
 
 /// Output master fader: 8-bit companion + 16-bit value (both L and R).
@@ -516,25 +522,21 @@ pub fn set_fx_send(value: u16) -> [VendorRequest; 2] {
     ]
 }
 
-/// Stereo split of a playback strip into the AN1/2 output (cap_ctrl3.pcap):
+/// The (left, right) levels of a playback strip into the AN1/2 output when
+/// it is split or joined (cap_ctrl3.pcap):
 /// split-mono = 0x2000 (0 dB, own side) / 0x0000 (muted, other side).
-/// Joining writes `joined` (left, right) back: the strip's own crosspoint
+/// Joining gives back `joined` (left, right) back: the strip's own crosspoint
 /// levels, which the caller keeps. It used to write a fixed 0x1000 per
 /// side, 6 dB below what TotalMix FX writes for a joined pair at 0 dB
-/// (issue #20), and it dropped whatever level the user had set. Both the
-/// low map and the standard map are rewritten, like every other fader
-/// write.
+/// (issue #20), and it dropped whatever level the user had set.
 /// (The exact "alternating per mono channel" bus mapping needs a
 /// hardware check — this writes the literal captured pattern into out0.)
-pub fn set_stereo_split(pb: Playback, split: bool, joined: (u16, u16)) -> Vec<VendorRequest> {
-    let (l, r) = if split { (0x2000, 0x0000) } else { joined };
-    let src = Source::Playback(pb);
-    vec![
-        VendorRequest::new(0x12, l, map::low_map_l(src) as u16),
-        VendorRequest::new(0x12, r, map::low_map_r(src) as u16),
-        VendorRequest::new(0x12, l, map::crosspoint_l(Output::An12, src) as u16),
-        VendorRequest::new(0x12, r, map::crosspoint_r(Output::An12, src) as u16),
-    ]
+pub fn stereo_split_levels(split: bool, joined: (u16, u16)) -> (u16, u16) {
+    if split {
+        (0x2000, 0x0000)
+    } else {
+        joined
+    }
 }
 
 /// Trim (T) write for the AN1/2 pair (cap_trim2.pcap + cap_trim3/4,
@@ -567,21 +569,42 @@ pub fn set_trim(src: Source, trim_raw: u16, standard_raw: u16) -> Vec<VendorRequ
     ]
 }
 
-/// Width knob on the AN1/2 INPUT strip (cap_width2.pcap, 2026-08-23):
-/// the knob writes the low-map AN1/AN2 crosspoints as MIRROR balance pairs
-/// (L+R = 0x2000 each; AN2 = the mirror of AN1), 0x0000/0x001A (AN1
-/// L/R) + 0x0001/0x001B (AN2 L/R). At neutral (w=0) all four = 0x1000.
-/// (The old 0x00AE/0x00C8/0x0046/0x0060 pairs from cap_ctrl belong to
-/// a different strip — mapping still TBD.)
-pub fn set_width(width: f32) -> Vec<VendorRequest> {
-    let w = width.clamp(-1.0, 1.0);
-    let l = ((0x2000u32 as f32 * (1.0 + w) / 2.0).round() as u32) as u16;
-    let r = 0x2000 - l;
-    vec![
-        VendorRequest::new(0x12, l, 0x0000), // AN1 L low map
-        VendorRequest::new(0x12, r, 0x001A), // AN1 R low map
-        VendorRequest::new(0x12, r, 0x0001), // AN2 L low map (mirror)
-        VendorRequest::new(0x12, l, 0x001B), // AN2 R low map (mirror)
+/// `(1 + w) / 2` of a level, `w` in hundredths (-100..=100), rounded:
+/// `0x2000` at 98 gives `0x1FAE` and its complement `0x0052`.
+fn width_part(level: u16, w: i32) -> u16 {
+    ((u32::from(level) * (100 + w) as u32 + 100) / 200) as u16
+}
+
+/// A stereo source's crosspoint into `out` with its width (hundredths,
+/// -100..=100: 100 is plain stereo, 0 mono, -100 swaps the sides). Each
+/// output side takes that side's level, `(1 + w) / 2` of it from the
+/// source's own channel and `(1 - w) / 2` from the other one, in the order
+/// TotalMix FX sends them. The kernel driver's `bf_xpoint_write` does the
+/// same, and its selftest holds TotalMix's captured values.
+///
+/// The cross terms are written at plain stereo too (as 0): the unit keeps
+/// the ones an earlier width left.
+pub fn set_stereo_crosspoint(
+    out: Output,
+    src: Source,
+    left: u16,
+    right: u16,
+    width: i8,
+    flag: &mut FlagCounter,
+) -> [VendorRequest; 4] {
+    let f = flag.current();
+    flag.advance();
+    let w = i32::from(width.clamp(-100, 100));
+    // `crosspoint_l`/`_r` are the source's own channel into that side; the
+    // other channel sits `index_r - index_l` away on the same side.
+    let own_l = map::crosspoint_l(out, src);
+    let own_r = map::crosspoint_r(out, src);
+    let apart = src.index_r() - src.index_l();
+    [
+        VendorRequest::new(0x12, width_part(left, w), own_l as u16 | f),
+        VendorRequest::new(0x12, width_part(right, -w), (own_r - apart) as u16 | f),
+        VendorRequest::new(0x12, width_part(left, -w), (own_l + apart) as u16 | f),
+        VendorRequest::new(0x12, width_part(right, w), own_r as u16 | f),
     ]
 }
 
@@ -958,7 +981,7 @@ pub fn streaming_init(phantom: bool) -> Vec<VendorRequest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::map::Input;
+    use crate::map::{Input, Playback};
 
     #[test]
     fn fader_writes_match_captured_values() {
@@ -1258,54 +1281,83 @@ mod tests {
     }
 
     #[test]
-    fn stereo_split_rewrites_playback_crosspoints() {
-        // cap_ctrl3.pcap: split-mono = 0x2000/0x0000. The low map is
-        // AN1/2's standard map (pair 0), so both writes carry the same
-        // registers (PB1 = 0x000C/0x0027).
-        let split = set_stereo_split(Playback(1), true, (0x16A0, 0x16A0));
-        assert_eq!(
-            split,
-            vec![
-                VendorRequest::new(0x12, 0x2000, 0x000C),
-                VendorRequest::new(0x12, 0x0000, 0x0027),
-                VendorRequest::new(0x12, 0x2000, 0x000C),
-                VendorRequest::new(0x12, 0x0000, 0x0027),
-            ]
-        );
+    fn stereo_split_levels_restore_the_strip() {
+        // cap_ctrl3.pcap: split-mono = 0x2000/0x0000.
+        assert_eq!(stereo_split_levels(true, (0x16A0, 0x16A0)), (0x2000, 0));
         // Joining puts the strip's own levels back, not a fixed constant.
-        let stereo = set_stereo_split(Playback(1), false, (0x16A0, 0x0B57));
-        assert_eq!(
-            stereo,
-            vec![
-                VendorRequest::new(0x12, 0x16A0, 0x000C),
-                VendorRequest::new(0x12, 0x0B57, 0x0027),
-                VendorRequest::new(0x12, 0x16A0, 0x000C),
-                VendorRequest::new(0x12, 0x0B57, 0x0027),
-            ]
-        );
+        assert_eq!(stereo_split_levels(false, (0x16A0, 0x0B57)), (0x16A0, 0x0B57));
     }
 
     #[test]
-    fn width_writes_low_map_mirror_pairs() {
-        // cap_width2.pcap (AN1/2 input strip): low-map AN1/AN2 as mirror
-        // balance pairs, L+R = 0x2000. At +0.75: L = 0x2000·1.75/2 =
-        // 0x1C00, R = 0x0400; AN2 = the mirror.
-        let reqs = set_width(0.75);
+    fn stereo_width_matches_totalmix() {
+        // TotalMix FX at 0 dB, the values of the kernel driver's selftest.
+        assert_eq!(width_part(0x2000, 99), 0x1FD7);
+        assert_eq!(width_part(0x2000, -99), 0x0029);
+        assert_eq!(width_part(0x2000, 98), 0x1FAE);
+        assert_eq!(width_part(0x2000, -98), 0x0052);
+        assert_eq!(width_part(0x2000, -97), 0x007B);
+        assert_eq!(width_part(0x1E14, 99), 0x1DEE);
+        assert_eq!(width_part(0x4000, 100), 0x4000);
+        assert_eq!(width_part(0x4000, -100), 0);
+        assert_eq!(width_part(u16::MAX, 100), u16::MAX);
+    }
+
+    #[test]
+    fn stereo_crosspoint_writes_own_and_cross_channels() {
+        let pb6 = Source::Playback(Playback(6));
+        // -6 dB at width 0.5 into AN1/2, as usbmon showed the kernel driver
+        // writing PB6 (75 % and 25 % of 0x100a). PB6 is sources 22 and 23.
+        let mut flag = FlagCounter::default();
+        let f = flag.current();
+        let reqs = set_stereo_crosspoint(Output::An12, pb6, 0x100A, 0x100A, 50, &mut flag);
         assert_eq!(
             reqs,
-            vec![
-                VendorRequest::new(0x12, 0x1C00, 0x0000), // AN1 L
-                VendorRequest::new(0x12, 0x0400, 0x001A), // AN1 R
-                VendorRequest::new(0x12, 0x0400, 0x0001), // AN2 L (mirror)
-                VendorRequest::new(0x12, 0x1C00, 0x001B), // AN2 R (mirror)
+            [
+                VendorRequest::new(0x12, 0x0C08, 0x0016 | f), // PB11 -> left
+                VendorRequest::new(0x12, 0x0403, 0x0030 | f), // PB11 -> right
+                VendorRequest::new(0x12, 0x0403, 0x0017 | f), // PB12 -> left
+                VendorRequest::new(0x12, 0x0C08, 0x0031 | f), // PB12 -> right
             ]
         );
-        // Neutral width = -6 dB on both sides of both pairs.
-        let neutral = set_width(0.0);
-        assert!(neutral.iter().all(|r| r.w_value == 0x1000));
-        // Clamped to ±1.
-        assert_eq!(set_width(5.0)[0].w_value, 0x2000);
-        assert_eq!(set_width(-5.0)[0].w_value, 0x0000);
+        // One transaction flag for the four, then the next one.
+        assert_ne!(flag.current(), f);
+        // Plain stereo is the plain pair, with the cross terms cleared.
+        let reqs = set_stereo_crosspoint(Output::Ph34, pb6, 0x2000, 0x1000, 100, &mut flag);
+        assert_eq!(reqs.map(|r| r.w_value), [0x2000, 0, 0, 0x1000]);
+        // -1.00 swaps the sides, 0 is mono.
+        let reqs = set_stereo_crosspoint(Output::Ph34, pb6, 0x2000, 0x1000, -100, &mut flag);
+        assert_eq!(reqs.map(|r| r.w_value), [0, 0x1000, 0x2000, 0]);
+        let reqs = set_stereo_crosspoint(Output::Ph34, pb6, 0x2000, 0x2000, 0, &mut flag);
+        assert_eq!(reqs.map(|r| r.w_value), [0x1000; 4]);
+    }
+
+    /// No stereo crosspoint write may land on an analog input: the width
+    /// used to write fixed levels into AN1 and AN2.
+    #[test]
+    fn stereo_crosspoints_never_touch_the_analog_inputs() {
+        let outs = [
+            Output::An12,
+            Output::Ph34,
+            Output::As12,
+            Output::Adat34,
+            Output::Adat56,
+            Output::Adat78,
+        ];
+        let mut sources: Vec<Source> = (1..=6).map(|n| Source::Playback(Playback(n))).collect();
+        sources.extend(
+            [Input::As12, Input::Adat34, Input::Adat56, Input::Adat78].map(Source::Input),
+        );
+        let mut flag = FlagCounter::default();
+        let mut seen = std::collections::HashSet::new();
+        for out in outs {
+            for &src in &sources {
+                for r in set_stereo_crosspoint(out, src, 1, 1, 0, &mut flag) {
+                    let reg = r.w_index & 0x3FFF;
+                    assert!(reg % 0x1A >= 4, "{out:?} {src:?} wrote {reg:#x}");
+                    assert!(seen.insert(reg), "{reg:#x} written for two sources");
+                }
+            }
+        }
     }
 
     #[test]
