@@ -209,6 +209,40 @@ pub fn mono_pair_raw(raw: u16, pan: i8) -> (u16, u16) {
     (side(a.cos()), side(a.sin()))
 }
 
+/// A mono source's crosspoint at 0 dB (the pan law's centre).
+const MONO_0DB: u16 = 0x16A0;
+/// A stereo source's crosspoint at 0 dB, and at +6 dB (the fader's top).
+/// TotalMix FX writes `0x2000` / `0x4000` for a stereo strip and only a
+/// centred mono strip sits at `0x16a0` per side, measured on captures of
+/// TotalMix FX (see the kernel driver's `bf_xpoint_mono_to_stereo`).
+const STEREO_0DB: u16 = 0x2000;
+const STEREO_TOP: u16 = 0x4000;
+
+/// The same level as the mono-scale crosspoint value `raw`, on the stereo
+/// scale (`0x16A0` is `0x2000`, the mono top `0x2D41` is `0x4000`).
+pub fn mono_to_stereo_raw(raw: u16) -> u16 {
+    let r = (u32::from(raw) * u32::from(STEREO_0DB) + u32::from(MONO_0DB) / 2)
+        / u32::from(MONO_0DB);
+    r.min(u32::from(STEREO_TOP)) as u16
+}
+
+/// Whether core input `idx` is a stereo source: the mono inputs are the
+/// four analog ones (AN1-4), the AS and ADAT pairs are stereo.
+fn input_is_stereo(idx: usize) -> bool {
+    idx >= 4
+}
+
+/// The raw crosspoint value of linear volume `v` on a source's own scale:
+/// the playbacks and the digital inputs are stereo sources.
+fn source_raw(stereo: bool, v: f32) -> u16 {
+    let raw = volume_to_raw(v);
+    if stereo {
+        mono_to_stereo_raw(raw)
+    } else {
+        raw
+    }
+}
+
 /// raw 16-bit crosspoint-fader value → f32 volume (0.0-1.0, 1.0 = 0 dB).
 pub fn raw_to_volume(raw: u16) -> f32 {
     if raw <= FADER_MUTE_RAW || raw < FADER_CURVE[0].1 {
@@ -670,7 +704,7 @@ impl RmeDevice for BabyfaceProUsb {
             ChannelId::Playback(c) => playback_source(c)?,
             ChannelId::Output(_) => unreachable!("handled above"),
         };
-        let raw = volume_to_raw(volume);
+        let raw = source_raw(!matches!(channel, ChannelId::Input(0..=3)), volume);
         if let ChannelId::Input(i @ 0..=3) = channel {
             // A mono input: the level reaches each side of the pair
             // through its pan, so a fader move keeps the pan.
@@ -743,7 +777,7 @@ impl RmeDevice for BabyfaceProUsb {
             out,
             src,
             balance,
-            volume_to_raw(fixed_volume),
+            source_raw(true, fixed_volume),
             fixed_is_left,
         )?;
         match channel {
@@ -791,17 +825,18 @@ impl RmeDevice for BabyfaceProUsb {
                 // crosspoints into EVERY output (global mute). The
                 // model keeps the unmuted volumes for the restore.
                 let src = input_source(i)?;
+                let stereo = input_is_stereo(i);
                 let low = if mute {
                     0
                 } else {
-                    volume_to_raw(self.inputs[i].volumes[0])
+                    source_raw(stereo, self.inputs[i].volumes[0])
                 };
                 self.dev.set_low_map_volume(src, low)?;
                 for o in 0..self.output_pair_count() {
                     let raw = if mute {
                         0
                     } else {
-                        volume_to_raw(self.inputs[i].volumes[o])
+                        source_raw(stereo, self.inputs[i].volumes[o])
                     };
                     let out = output_for(o)?;
                     self.dev.set_volume(out, src, raw)?;
@@ -818,7 +853,7 @@ impl RmeDevice for BabyfaceProUsb {
                     let raw = if mute {
                         0
                     } else {
-                        volume_to_raw(self.playbacks[c].volumes[o])
+                        source_raw(true, self.playbacks[c].volumes[o])
                     };
                     let out = output_for(o)?;
                     self.dev.set_volume(out, src, raw)?;
@@ -877,7 +912,7 @@ impl RmeDevice for BabyfaceProUsb {
                         0x2000
                     }
                 } else {
-                    volume_to_raw(self.inputs[i].volumes[0])
+                    source_raw(input_is_stereo(i), self.inputs[i].volumes[0])
                 };
                 (src, raw)
             }
@@ -887,7 +922,7 @@ impl RmeDevice for BabyfaceProUsb {
                 let raw = if solo {
                     0x2000
                 } else {
-                    volume_to_raw(self.playbacks[c].volumes[0])
+                    source_raw(true, self.playbacks[c].volumes[0])
                 };
                 (src, raw)
             }
@@ -906,10 +941,11 @@ impl RmeDevice for BabyfaceProUsb {
                 self.inputs[j].solo = false;
             }
             let ch = &self.inputs[j];
+            let stereo = input_is_stereo(j);
             let low = if solo || ch.mute {
                 0
             } else {
-                volume_to_raw(ch.volumes[0])
+                source_raw(stereo, ch.volumes[0])
             };
             let src = input_source(j)?;
             self.dev.set_low_map_volume(src, low)?;
@@ -917,7 +953,7 @@ impl RmeDevice for BabyfaceProUsb {
                 let raw = if solo || ch.mute {
                     0
                 } else {
-                    volume_to_raw(ch.volumes[o])
+                    source_raw(stereo, ch.volumes[o])
                 };
                 let out = output_for(o)?;
                 self.dev.set_volume(out, src, raw)?;
@@ -934,7 +970,7 @@ impl RmeDevice for BabyfaceProUsb {
             let low = if solo || ch.mute {
                 0
             } else {
-                volume_to_raw(ch.volumes[0])
+                source_raw(true, ch.volumes[0])
             };
             let src = playback_source(j)?;
             self.dev.set_low_map_volume(src, low)?;
@@ -942,7 +978,7 @@ impl RmeDevice for BabyfaceProUsb {
                 let raw = if solo || ch.mute {
                     0
                 } else {
-                    volume_to_raw(ch.volumes[o])
+                    source_raw(true, ch.volumes[o])
                 };
                 let out = output_for(o)?;
                 self.dev.set_volume(out, src, raw)?;
@@ -1135,7 +1171,7 @@ impl RmeDevice for BabyfaceProUsb {
         // the input routes into; the AN1/2 destination also gets the
         // low-map mirror (matching the capture: 0x0EA0 → 0xF15F).
         for o in 0..self.output_pair_count() {
-            let raw = volume_to_raw(self.inputs[idx].volumes[o]);
+            let raw = source_raw(input_is_stereo(idx), self.inputs[idx].volumes[o]);
             let out = output_for(o)?;
             if idx < 4 {
                 // A mono input keeps its pan: write both sides.
@@ -1179,7 +1215,7 @@ impl RmeDevice for BabyfaceProUsb {
         self.playbacks[pb ^ 1].split = split;
         // Joining restores the strip's own AN1/2 levels (left channel of
         // the pair, then the right one).
-        let level = |c: usize| volume_to_raw(self.playbacks[c].volumes[0]);
+        let level = |c: usize| source_raw(true, self.playbacks[c].volumes[0]);
         let joined = (level(pb & !1), level(pb | 1));
         let reqs = tuxmix_usb::protocol::set_stereo_split(Playback(pb / 2 + 1), split, joined);
         self.dev.send_all(&reqs)?;
@@ -1304,7 +1340,7 @@ impl RmeDevice for BabyfaceProUsb {
             let src = input_source(i)?;
             for (o, v) in inp.volumes.iter().enumerate() {
                 let out = output_for(o)?;
-                let raw = volume_to_raw(*v);
+                let raw = source_raw(input_is_stereo(i), *v);
                 self.dev.set_volume(out, src, raw)?;
                 if out == Output::An12 {
                     self.dev.set_low_map_volume(src, raw)?;
@@ -1315,7 +1351,7 @@ impl RmeDevice for BabyfaceProUsb {
             let src = playback_source(c)?;
             for (o, v) in pb.volumes.iter().enumerate() {
                 let out = output_for(o)?;
-                let raw = volume_to_raw(*v);
+                let raw = source_raw(true, *v);
                 self.dev.set_volume(out, src, raw)?;
                 if out == Output::An12 {
                     self.dev.set_low_map_volume(src, raw)?;
@@ -1619,7 +1655,14 @@ impl BabyfaceProUsb {
             for i in targets.drain(..) {
                 self.inputs[i].volumes[o] = raw_to_volume(self.mix_raw);
                 let src = input_source(i)?;
-                self.dev.set_volume(out, src, self.mix_raw)?;
+                // The wheel works on the mono scale; a stereo source
+                // (the optical pair) takes the same level on its own.
+                let raw = if input_is_stereo(i) {
+                    mono_to_stereo_raw(self.mix_raw)
+                } else {
+                    self.mix_raw
+                };
+                self.dev.set_volume(out, src, raw)?;
             }
         } else if ps.out_mode() {
             // Output level: the selected OUT's master fader, ±0.5 dB
@@ -1764,6 +1807,35 @@ mod tests {
         // display name) would have rejected this — locking that in as a
         // regression guard.
         assert!(scene.check_compatible("Babyface Pro FS (USB)").is_err());
+    }
+
+    /// A stereo source's crosspoint is `0x2000` at 0 dB and `0x4000` at
+    /// +6 dB, as TotalMix FX writes it; only a mono source sits at `0x16A0`.
+    #[test]
+    fn a_stereo_source_uses_totalmixs_stereo_scale() {
+        assert_eq!(mono_to_stereo_raw(0), 0);
+        assert_eq!(mono_to_stereo_raw(0x16A0), 0x2000);
+        assert_eq!(mono_to_stereo_raw(0x2D41), 0x4000);
+        // Never past the top, whatever the input.
+        assert_eq!(mono_to_stereo_raw(u16::MAX), 0x4000);
+        assert_eq!(source_raw(true, 1.0), 0x2000);
+        assert_eq!(source_raw(true, 2.0), 0x4000);
+        assert_eq!(source_raw(true, 0.0), 0);
+        // -6 dB is 0x1000 on the stereo scale, give or take the curve.
+        assert!((i32::from(source_raw(true, 0.5)) - 0x1000).abs() <= 2);
+        // A mono source keeps its own scale.
+        assert_eq!(source_raw(false, 1.0), 0x16A0);
+        assert_eq!(source_raw(false, 2.0), 0x2D41);
+        // Monotone: a louder fader never writes a lower value.
+        let mut last = 0;
+        for i in 0..=200 {
+            let raw = source_raw(true, i as f32 / 100.0);
+            assert!(raw >= last, "{i}");
+            last = raw;
+        }
+        // The analog inputs are the mono ones, the digital pairs stereo.
+        assert!((0..4).all(|i| !input_is_stereo(i)));
+        assert!((4..12).all(input_is_stereo));
     }
 
     #[test]

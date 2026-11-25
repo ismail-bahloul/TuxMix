@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+- With the proprietary USB backend, a stereo source (the playbacks and the
+  AS and ADAT inputs) is now written on TotalMix FX's stereo scale, `0x2000`
+  at 0 dB and `0x4000` at +6 dB, instead of the mono one. The mono scale put
+  it 3 dB low and stopped its fader at +3 dB. The four analog inputs keep
+  their mono scale and pan law. Scenes store levels, not raw values, so a
+  stereo source in a scene saved before this sounds 3 dB louder on this
+  backend than it did, which is TotalMix's own level. Found in the captures
+  of #20.
+
 ## 0.3.8 (2026-11-13)
 
 ### Added
