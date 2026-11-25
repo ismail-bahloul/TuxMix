@@ -953,7 +953,7 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
             .into()
     } else {
         let initial = if p.vol > 0.0 {
-            format!("{:.1}", 20.0 * p.vol.log10())
+            format!("{:.1}", crate::app::rounded_db(p.vol))
         } else {
             "-inf".into()
         };

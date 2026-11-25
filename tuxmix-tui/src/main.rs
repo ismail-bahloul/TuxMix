@@ -264,6 +264,10 @@ impl RmeDevice for DeviceHandle {
     fn apply_scene(&mut self, s: &tuxmix_core::Scene) -> Result<(), tuxmix_core::Error> {
         delegate!(self, apply_scene(s))
     }
+    // Not the trait's default, which would hide the ALSA backend's own.
+    fn restore_auto_scene(&mut self, s: &tuxmix_core::Scene) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, restore_auto_scene(s))
+    }
     fn poll_events(&mut self) -> Result<(), tuxmix_core::Error> {
         delegate!(self, poll_events)
     }
@@ -719,11 +723,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Restore the shared auto-saved state (the same `auto.json` the GUI
     // uses) so the two UIs stay in sync — the device has no gain/volume
     // readback. Skip in mock mode (no hardware to write to).
+    let mut loaded_json = None;
     if real_device {
-        if let Some(scene) = tuxmix_core::scene::load_auto_scene() {
-            if let Err(e) = device.apply_scene(&scene) {
+        if let Some((scene, json)) = tuxmix_core::scene::load_auto_scene() {
+            if let Err(e) = device.restore_auto_scene(&scene) {
                 eprintln!("auto scene load failed: {e:?}");
             }
+            loaded_json = Some(json);
         }
     }
     enable_raw_mode()?;
@@ -731,7 +737,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     stdout.execute(EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    let res = run(&mut terminal, &mut device);
+    let res = run(&mut terminal, &mut device, loaded_json);
     disable_raw_mode()?;
     terminal.backend_mut().execute(LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -741,7 +747,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) -> io::Result<()> {
+fn run(
+    term: &mut Terminal<CrosstermBackend<Stdout>>,
+    dev: &mut DeviceHandle,
+    loaded_json: Option<String>,
+) -> io::Result<()> {
     let mut show_matrix = false;
     let mut section: usize = 0; // 0=inputs, 1=playbacks, 2=outputs // 0=inputs, 1=playbacks
     let mut channel: usize = 0;
@@ -763,7 +773,8 @@ fn run(term: &mut Terminal<CrosstermBackend<Stdout>>, dev: &mut DeviceHandle) ->
     // Shared-state persistence (same `auto.json` as the GUI): debounced
     // auto-save in the loop + a final save on quit.
     let mut last_auto_save = Instant::now();
-    let mut last_saved_json: Option<String> = None;
+    // Starts as the file restored above, which is not the GUI's write.
+    let mut last_saved_json = loaded_json;
     // Mock has its own generated playback levels; a real backend gets
     // them from PipeWire's sink monitor (the same tap as the GUI).
     let playback_tap = if dev.is_mock() {

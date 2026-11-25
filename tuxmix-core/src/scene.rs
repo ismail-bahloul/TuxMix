@@ -25,10 +25,14 @@ pub fn auto_scene_path() -> PathBuf {
     scenes_dir().join("auto.json")
 }
 
-/// Load the last auto-saved mixer state, if any.
-pub fn load_auto_scene() -> Option<Scene> {
-    let content = std::fs::read_to_string(auto_scene_path()).ok()?;
-    Scene::from_json(&content).ok()
+/// Load the last auto-saved mixer state, if any, with the JSON it was read
+/// from. The JSON is what the UI passes to [`auto_scene_written_by_other`]
+/// until it has saved its own: a file that was already there at startup is
+/// not the other UI's write.
+pub fn load_auto_scene() -> Option<(Scene, String)> {
+    let raw = read_auto_scene_raw()?;
+    let scene = Scene::from_json(&raw).ok()?;
+    Some((scene, raw))
 }
 
 /// Save the mixer state to the shared auto file.
@@ -56,16 +60,17 @@ pub fn read_auto_scene_raw() -> Option<String> {
 /// call this: if it returns `Some`, re-apply that scene (the other UI's
 /// changes) to the device first, THEN save your own capture.
 ///
-/// `our_last_json` = the JSON string of our most recent write (pass the
-/// UI's `last_saved_json`). If the file on disk differs, another UI has
-/// written since — return the parsed scene.
+/// `our_last_json` = the JSON string of our most recent write, or the one
+/// [`load_auto_scene`] returned at startup (pass the UI's
+/// `last_saved_json`). If the file on disk differs, another UI has written
+/// since — return the parsed scene.
 pub fn auto_scene_written_by_other(our_last_json: Option<&str>) -> Option<Scene> {
     let raw = read_auto_scene_raw()?;
     if our_last_json.is_some_and(|ours| ours == raw) {
-        return None; // the file still holds OUR last write
+        return None; // the file still holds what we last wrote or loaded
     }
-    // Either we never wrote (fresh start, file pre-exists) or another UI
-    // wrote after us — reload their state.
+    // Another UI wrote after us (or created the file we did not find at
+    // startup) — reload their state.
     Scene::from_json(&raw).ok()
 }
 
@@ -186,8 +191,7 @@ mod tests {
         let theirs = Scene::new("theirs");
 
         // No file yet: nothing written by "the other" (nothing to
-        // clobber) — but a pre-existing file from a previous run IS
-        // "other" until we've written once.
+        // clobber).
         assert!(auto_scene_written_by_other(None).is_none());
 
         // We write, then the other UI overwrites with a different scene:
@@ -202,9 +206,18 @@ mod tests {
         save_auto_scene(&ours).unwrap();
         assert!(auto_scene_written_by_other(Some(&ours_json)).is_none());
 
-        // Our last_json unknown (UI restarted) but disk exists → other.
+        // There was no file when we started, and now there is one → other.
         save_auto_scene(&theirs).unwrap();
         assert!(auto_scene_written_by_other(None).is_some());
+
+        // The file a restarted UI loads is not the other's write: taking it
+        // for one pushed the saved mix over the card's a few seconds after
+        // every start. A write that comes after the load still is.
+        let (loaded, loaded_json) = load_auto_scene().unwrap();
+        assert_eq!(loaded.name, "theirs");
+        assert!(auto_scene_written_by_other(Some(&loaded_json)).is_none());
+        save_auto_scene(&ours).unwrap();
+        assert!(auto_scene_written_by_other(Some(&loaded_json)).is_some());
     }
 
     #[test]

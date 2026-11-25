@@ -43,6 +43,12 @@
   yet.
 
 ### Fixed
+- Starting the GUI or the TUI no longer writes the auto-saved mix over the
+  card's. With the kernel driver the saved mix must not be re-applied, since
+  the card already reports its levels. But the first auto-save, three seconds
+  in, took the file from the last session for a write by the other UI and
+  applied it. The TUI also applied it at startup. A mix changed since then
+  (by `alsactl`, the front panel or a driver update) went back to the old one.
 - With the proprietary USB backend, a stereo source (the playbacks and the
   AS and ADAT inputs) is now written on TotalMix FX's stereo scale, `0x2000`
   at 0 dB and `0x4000` at +6 dB, instead of the mono one. The mono scale put

@@ -173,9 +173,16 @@ pub fn parse_db_input(s: &str) -> Option<f32> {
         .map(|db| (10f32.powf(db / 20.0)).clamp(0.0, 2.0))
 }
 
+/// `vol` (linear, above 0) in dB to the 0.1 dB the labels show. A level read
+/// back from the card can sit just below unity: adding 0 turns the resulting
+/// -0.0 into 0.0.
+pub fn rounded_db(vol: f32) -> f32 {
+    (200.0 * vol.log10()).round() / 10.0 + 0.0
+}
+
 pub fn db_text(vol: f32) -> String {
     if vol > 0.0 {
-        format!("{:.1} dB", 20.0 * vol.log10())
+        format!("{:.1} dB", rounded_db(vol))
     } else {
         "-\u{221e} dB".into()
     }
@@ -1579,11 +1586,13 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
     // 48V/PAD byte is readable), so like TotalMix we re-apply our own
     // saved state (auto-saved in `Message::Tick`). The file is SHARED
     // with the TUI, so whichever UI ran last wins.
+    let mut loaded_json = None;
     if real_device {
-        if let Some(scene) = tuxmix_core::scene::load_auto_scene() {
+        if let Some((scene, json)) = tuxmix_core::scene::load_auto_scene() {
             if let Err(e) = device.restore_auto_scene(&scene) {
                 eprintln!("auto scene load failed: {e:?}");
             }
+            loaded_json = Some(json);
         }
     }
     let n_inputs = device.inputs().len();
@@ -1658,7 +1667,7 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         // State persistence (the device has no gain/volume readback —
         // TotalMix re-applies its saved state; this is our equivalent).
         last_auto_save: Instant::now(),
-        last_saved_json: None,
+        last_saved_json: loaded_json,
         undo_stack: Vec::new(),
         redo_stack: Vec::new(),
         groups: Default::default(),
@@ -1715,10 +1724,12 @@ fn adopt_device(state: &mut TuxMix, device: DeviceHandle) {
     state.no_device = None;
     state.device_hint = None;
     state.connected = state.device.is_connected();
-    if let Some(scene) = tuxmix_core::scene::load_auto_scene() {
+    state.last_saved_json = None;
+    if let Some((scene, json)) = tuxmix_core::scene::load_auto_scene() {
         if let Err(e) = state.device.restore_auto_scene(&scene) {
             fail(state, "apply_scene", &e);
         }
+        state.last_saved_json = Some(json);
     }
     state.input_meters = vec![MeterAnim::new(); state.device.inputs().len()];
     state.playback_meters = vec![MeterAnim::new(); state.device.playbacks().len()];
@@ -1731,7 +1742,6 @@ fn adopt_device(state: &mut TuxMix, device: DeviceHandle) {
     state.snapshot_dirty = false;
     state.undo_stack.clear();
     state.redo_stack.clear();
-    state.last_saved_json = None;
     state.engine = None;
     state.card_stream = None;
     state.driver_floor = None;
@@ -2588,10 +2598,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                         log::info!("Device reconnected");
                         state.device = fresh;
                         state.connected = true;
-                        if let Some(scene) = tuxmix_core::scene::load_auto_scene() {
+                        if let Some((scene, json)) = tuxmix_core::scene::load_auto_scene() {
                             if let Err(e) = state.device.restore_auto_scene(&scene) {
                                 fail(state, "apply_scene", &e);
                             }
+                            state.last_saved_json = Some(json);
                         }
                     }
                 }
@@ -7248,6 +7259,14 @@ mod tests {
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
     use tuxmix_core::RmeDevice;
+
+    #[test]
+    fn a_level_just_below_unity_reads_as_zero_db() {
+        assert_eq!(super::db_text(0.9999), "0.0 dB");
+        assert_eq!(super::db_text(1.0), "0.0 dB");
+        assert_eq!(super::db_text(0.5), "-6.0 dB");
+        assert_eq!(super::db_text(0.0), "-\u{221e} dB");
+    }
 
     #[test]
     fn pair_bus_label_joins_numbered_and_sided_pairs() {
