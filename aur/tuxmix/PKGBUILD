@@ -34,7 +34,7 @@ options=('!lto')
 # GitHub names the archive after the repo's real casing (TuxMix-*),
 # not the lowercase pkgname — build()/package() cd into that below.
 source=("${url}/archive/v${pkgver}/TuxMix-${pkgver}.tar.gz")
-sha256sums=('8f1076659016c5f470703beb9aecf1c583012722617ffee27fd652b8f6e096d3')
+sha256sums=('99230173a1e38bc32342311b5c640c677fe9bcadbaad51ba6a2fdec233570cfb')
 
 build() {
     cd "${srcdir}/TuxMix-${pkgver}"
