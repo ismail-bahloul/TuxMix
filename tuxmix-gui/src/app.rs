@@ -173,9 +173,16 @@ pub fn parse_db_input(s: &str) -> Option<f32> {
         .map(|db| (10f32.powf(db / 20.0)).clamp(0.0, 2.0))
 }
 
+/// `vol` (linear, above 0) in dB to the 0.1 dB the labels show. A level read
+/// back from the card can sit just below unity: adding 0 turns the resulting
+/// -0.0 into 0.0.
+pub fn rounded_db(vol: f32) -> f32 {
+    (200.0 * vol.log10()).round() / 10.0 + 0.0
+}
+
 pub fn db_text(vol: f32) -> String {
     if vol > 0.0 {
-        format!("{:.1} dB", 20.0 * vol.log10())
+        format!("{:.1} dB", rounded_db(vol))
     } else {
         "-\u{221e} dB".into()
     }
@@ -7252,6 +7259,14 @@ mod tests {
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
     use tuxmix_core::RmeDevice;
+
+    #[test]
+    fn a_level_just_below_unity_reads_as_zero_db() {
+        assert_eq!(super::db_text(0.9999), "0.0 dB");
+        assert_eq!(super::db_text(1.0), "0.0 dB");
+        assert_eq!(super::db_text(0.5), "-6.0 dB");
+        assert_eq!(super::db_text(0.0), "-\u{221e} dB");
+    }
 
     #[test]
     fn pair_bus_label_joins_numbered_and_sided_pairs() {
