@@ -12,6 +12,8 @@
   Checked on a Babyface Pro FS: TuxMix started with the reverb on turned
   the switch on, ran the filter, and PH3/4 played the reverb tail. On quit
   it stops both. The filter also dies with TuxMix if TuxMix is killed.
+  Picking a reverb type loads its own pre delay, room scale, cuts, smooth
+  and width, so the knobs move to the type like a preset; the volume stays.
 - `tuxmix_core::host_fx`: the reverb and echo of the Babyface Pro FS, which
   TotalMix FX computes on the host. TotalMix-like settings (reverb type,
   pre delay, room scale, low and high cut, smooth, width, volume; echo type,
