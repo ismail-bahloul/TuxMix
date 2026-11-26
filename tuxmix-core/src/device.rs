@@ -428,6 +428,21 @@ pub trait RmeDevice {
         false
     }
 
+    /// Whether the card can return host effects: kernel driver 0.2.5's
+    /// `Host FX Switch` and its 14-channel PCMs (see [`crate::host_fx`]).
+    fn has_host_fx(&self) -> bool {
+        false
+    }
+
+    /// Lets the unit mix the FX return (playback 13/14) into the outputs,
+    /// what TotalMix FX does while its reverb or echo is on.
+    fn set_host_fx(&mut self, on: bool) -> Result<(), Error> {
+        let _ = on;
+        Err(Error::InvalidChannel(
+            "Host effects are not supported on this backend".into(),
+        ))
+    }
+
     /// Whether the driver has a Dim Level. The Dim knob is hidden without
     /// it.
     fn has_dim_level(&self) -> bool {

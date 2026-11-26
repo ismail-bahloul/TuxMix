@@ -635,6 +635,15 @@ impl RmeDevice for MockBabyfacePro {
         true
     }
 
+    fn has_host_fx(&self) -> bool {
+        true
+    }
+
+    fn set_host_fx(&mut self, on: bool) -> Result<(), Error> {
+        let _ = on;
+        Ok(())
+    }
+
     fn set_dim_level(&mut self, db: f32) -> Result<(), Error> {
         self.settings.dim_level_db = db.clamp(-65.0, 0.0).round();
         Ok(())

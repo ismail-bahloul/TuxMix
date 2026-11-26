@@ -353,6 +353,12 @@ impl RmeDevice for DeviceHandle {
     fn has_main_mono(&self) -> bool {
         delegate!(self, has_main_mono())
     }
+    fn has_host_fx(&self) -> bool {
+        delegate!(self, has_host_fx())
+    }
+    fn set_host_fx(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
+        delegate!(self, set_host_fx(on))
+    }
     fn set_main_mono(&mut self, on: bool) -> Result<(), tuxmix_core::Error> {
         delegate!(self, set_main_mono(on))
     }

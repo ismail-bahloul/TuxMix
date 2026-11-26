@@ -349,6 +349,15 @@ fn parse_monitor(json: &[u8], kind: TapKind) -> Option<Monitor> {
     best
 }
 
+/// The card's pro-audio capture and playback node names, when both have the
+/// 14 channels of kernel driver 0.2.5, whose last two are the FX bus: what
+/// the host FX filter connects to (see [`crate::host_fx`]).
+pub fn fx_nodes() -> Option<(String, String)> {
+    let source = discover_monitor(TapKind::Source)?;
+    let sink = discover_monitor(TapKind::Sink)?;
+    (source.channels == 14 && sink.channels == 14).then_some((source.name, sink.name))
+}
+
 /// `"s32le 12ch 48000Hz"` -> `(48000, 12)`. Unknown tokens are ignored;
 /// a missing rate or channel count is a parse failure.
 fn parse_spec(spec: &str) -> Option<(u32, usize)> {

@@ -2504,6 +2504,22 @@ impl RmeDevice for BabyfacePro {
             && self.mixer.find_selem("Dim Level", 0).is_some()
     }
 
+    fn has_host_fx(&self) -> bool {
+        self.grammar == ControlGrammar::Proprietary
+            && self.mixer.find_selem("Host FX", 0).is_some()
+    }
+
+    fn set_host_fx(&mut self, on: bool) -> Result<(), Error> {
+        self.require_proprietary("Host FX")?;
+        // Kernel driver 0.2.5's "Host FX Switch".
+        let selem = self
+            .mixer
+            .find_selem("Host FX", 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no Host FX Switch".into()))?;
+        selem.set_playback_switch(SelemChannelId::mono(), on as i32)?;
+        Ok(())
+    }
+
     fn set_dim_level(&mut self, db: f32) -> Result<(), Error> {
         self.require_proprietary("Dim level")?;
         let db = db.clamp(-65.0, 0.0).round();
