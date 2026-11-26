@@ -123,7 +123,7 @@ const LANE_GAP: f32 = 1.0;
 const RULER_LANE_W: f32 = 12.0;
 const METER_RULER_W: f32 = METER_W + LANE_GAP + RULER_LANE_W;
 const GAP: f32 = 4.0;
-const TRACK_W: f32 = 26.0;
+const TRACK_W: f32 = 22.0;
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Gap after the last `WheelScrolled` event that means "this is a new
 /// gesture" rather than a continuation — wheel scrolling has no
@@ -879,7 +879,7 @@ fn draw_meter_bar(
 }
 
 const RAIL_W: f32 = 3.5;
-const CAP_W: f32 = 22.0;
+const CAP_W: f32 = 20.0;
 const CAP_H: f32 = 15.0;
 const CAP_RADIUS: f32 = 3.0;
 /// Half-length of the unity/default reference tick — wider than the rail

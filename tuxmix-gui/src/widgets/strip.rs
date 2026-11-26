@@ -28,9 +28,11 @@ pub(crate) const FADER_H: f32 = 170.0;
 /// icon column (gear/EQ/collapse, see `full_strip`) claiming space in
 /// the same row, 80 wasn't wide enough for both: the group overflowed
 /// into the icon column's space, clipping the ruler's two-digit ticks
-/// under the buttons (confirmed via a live screenshot). 96 gives ~5px
-/// of headroom at `scale == 1.0` after both claims.
-pub(crate) const STRIP_W: f32 = 96.0;
+/// under the buttons (confirmed via a live screenshot). 96 gave ~5px of
+/// headroom at `scale == 1.0` after both claims; 88, with the fader track
+/// narrowed from 26 to 22 (`fader::TRACK_W`), keeps a little and brings
+/// the strips closer to TotalMix's density (its strips are ~72 px).
+pub(crate) const STRIP_W: f32 = 88.0;
 /// Collapsed strips need to stand the same total height as a full strip
 /// (see `collapsed_strip`'s own doc comment) despite having far fewer
 /// rows — name/M/S/meter/expand vs. the full strip's
@@ -432,7 +434,15 @@ fn header_row<'a>(
         .size(theme::TEXT_MD * scale)
         .wrapping(advanced_text::Wrapping::None)]
     .spacing(theme::SPACE_HAIRLINE);
-    if let Some((tag, color)) = type_tag {
+    // The tag says what kind of channel this is; when the name already
+    // starts with it ("ADAT3/4" + "ADAT") it only takes room.
+    let label = short_label(name);
+    let redundant = |tag: &str| {
+        label
+            .get(..tag.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(tag))
+    };
+    if let Some((tag, color)) = type_tag.filter(|(t, _)| !redundant(t)) {
         header = header.push(
             text(tag)
                 .color(color)
