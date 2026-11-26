@@ -2861,7 +2861,7 @@ impl RmeDevice for BabyfacePro {
             if channels == 0 {
                 return None;
             }
-            peaks
+            peaks.to_vec()
         } else {
             let cm = self.capture_meter.as_ref()?;
             if !cm.is_connected() {
@@ -2869,7 +2869,7 @@ impl RmeDevice for BabyfacePro {
             }
             let peaks = cm.drain();
             crate::capture_meter::CaptureMeter::debug_log(&peaks);
-            peaks
+            peaks.to_vec()
         };
         let mut levels = vec![0.0; self.inputs.len()];
         for (cap, input) in peaks.iter().zip(crate::capture_meter::INPUT_FOR_CAPTURE) {

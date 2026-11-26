@@ -11,6 +11,9 @@
   back from both sides.
 
 ### Fixed
+- The PipeWire meters take the 14-channel devices of kernel driver 0.2.5
+  (channels 13/14 are its FX bus). They gave up on anything past 12, so with
+  that driver they showed nothing.
 - CUE on the proprietary USB backend now does what TotalMix FX does: Main
   (PH3/4) plays the cued output's submix, and gets its own back on release.
   It used to put one playback pair at 0 dB on AN1/2 and mute the others

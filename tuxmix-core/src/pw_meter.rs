@@ -40,9 +40,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-/// The Pro Audio profile's playback channel count. Anything past this
-/// is not a Babyface layout and is ignored.
-const MAX_CHANNELS: usize = 12;
+/// The Pro Audio profile's channel count: 12, or 14 with kernel driver
+/// 0.2.5, whose channels 13/14 are the FX bus. Anything past this is not a
+/// Babyface layout and is ignored.
+const MAX_CHANNELS: usize = 14;
 /// Frames per read: at 48 kHz this is ~21 ms, enough for a smooth meter
 /// and small enough to keep the mutex cheap.
 const PERIOD_FRAMES: usize = 1024;
@@ -495,6 +496,18 @@ mod tests {
         assert_eq!(monitor.channels, 12);
         assert_eq!(monitor.rate, 48_000);
         assert!(monitor.name.ends_with("pro-output-0"));
+    }
+
+    /// Kernel driver 0.2.5 has 14 channels, the last two the FX bus: the
+    /// meters used to give up on a sink past 12.
+    #[test]
+    fn takes_the_14_channel_pro_audio_devices_of_driver_0_2_5() {
+        let json = br#"[
+            {"index":66,"name":"alsa_output.usb-RME_Babyface_Pro__x.pro-output-0",
+             "sample_specification":"s32le 14ch 48000Hz"}
+        ]"#;
+        let monitor = parse_monitor(json, TapKind::Sink).expect("a Babyface sink");
+        assert_eq!(monitor.channels, 14);
     }
 
     #[test]
