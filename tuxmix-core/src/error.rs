@@ -28,10 +28,12 @@ pub enum Error {
     /// `card_substring`, or a driver too old to expose the sentinel
     /// controls. Distinct from [`Error::DeviceNotFound`] so the UI can
     /// say what to actually do about it.
-    #[error("{card}: found, but its mixer matches neither grammar TuxMix \
+    #[error(
+        "{card}: found, but its mixer matches neither grammar TuxMix \
              knows (missing: {missing}). If this really is a Babyface Pro, \
              try switching personality — hold SELECT + DIM while plugging \
-             power toggles between proprietary and Class Compliant mode.")]
+             power toggles between proprietary and Class Compliant mode."
+    )]
     UnsupportedDeviceMode { card: String, missing: String },
 
     #[error("Invalid channel: {0}")]

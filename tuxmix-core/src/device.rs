@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Ismaïl Bahloul
 
-use crate::channel::{ChannelId, ChannelType, EqBandType, InputChannel, OutputChannel, PlaybackChannel, Sensitivity};
+use crate::channel::{
+    ChannelId, ChannelType, EqBandType, InputChannel, OutputChannel, PlaybackChannel, Sensitivity,
+};
 use crate::error::Error;
 use crate::scene::Scene;
 
@@ -505,7 +507,11 @@ pub trait RmeDevice {
     /// linked stereo bus. `true` (linked) if `pair` has no explicit entry
     /// in `DeviceSettings::output_link` yet — TotalMix's own default.
     fn output_linked(&self, pair: usize) -> bool {
-        self.settings().output_link.get(pair).copied().unwrap_or(true)
+        self.settings()
+            .output_link
+            .get(pair)
+            .copied()
+            .unwrap_or(true)
     }
 
     /// Sets whether output pair `pair` is linked. Pure model state — see
@@ -652,7 +658,9 @@ pub trait RmeDevice {
     /// before a linked pair was panned this way) read as 0.
     fn input_pair_pan(&self, pair: usize, output: usize) -> i8 {
         let l = self.pan(ChannelId::Input(pair * 2), output).unwrap_or(0);
-        let r = self.pan(ChannelId::Input(pair * 2 + 1), output).unwrap_or(0);
+        let r = self
+            .pan(ChannelId::Input(pair * 2 + 1), output)
+            .unwrap_or(0);
         linked_pair_pan(l, r)
     }
 
@@ -692,7 +700,11 @@ pub trait RmeDevice {
             self.set_volume(ChannelId::Input(l), output, volume)?;
             self.set_volume(ChannelId::Input(r), output, volume)?;
         } else {
-            self.set_volume(ChannelId::Input(if which == 0 { l } else { r }), output, volume)?;
+            self.set_volume(
+                ChannelId::Input(if which == 0 { l } else { r }),
+                output,
+                volume,
+            )?;
         }
         Ok(())
     }
@@ -760,7 +772,11 @@ pub trait RmeDevice {
             self.set_volume(ChannelId::Playback(l), output, volume)?;
             self.set_volume(ChannelId::Playback(r), output, volume)?;
         } else {
-            self.set_volume(ChannelId::Playback(if which == 0 { l } else { r }), output, volume)?;
+            self.set_volume(
+                ChannelId::Playback(if which == 0 { l } else { r }),
+                output,
+                volume,
+            )?;
         }
         Ok(())
     }

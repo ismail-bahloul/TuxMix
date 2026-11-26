@@ -2,7 +2,22 @@
 
 ## Unreleased
 
+### Added
+- CUE with the kernel driver, through its new `Cue` control (driver 0.2.5).
+- Pan on the stereo strips (playbacks, AS and ADAT pairs) with the kernel
+  driver, as TotalMix FX's balance: only the far side drops, linearly, so
+  R50 puts the left side at half and leaves the right one. Measured with
+  usbmon against TotalMix FX. A stereo strip reads its level and balance
+  back from both sides.
+
 ### Fixed
+- CUE on the proprietary USB backend now does what TotalMix FX does: Main
+  (PH3/4) plays the cued output's submix, and gets its own back on release.
+  It used to put one playback pair at 0 dB on AN1/2 and mute the others
+  there.
+- The balance of a stereo strip on the USB backend went the wrong way and
+  ignored its sign: R50 and L50 both lowered the right side. Moving the fader
+  now keeps it, and so does a scene.
 - Width on the proprietary USB backend is now per stereo source, as with
   kernel driver 0.2.4, and written as TotalMix FX does: each output side
   takes `(1 + w) / 2` of its level from the source's own channel and
