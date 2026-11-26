@@ -14,6 +14,7 @@
 
 mod about;
 mod app;
+mod fx_panel;
 mod icon;
 mod layouts;
 mod matrix;

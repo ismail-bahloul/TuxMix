@@ -50,6 +50,10 @@ pub struct Prefs {
     /// Closing the window hides it in the tray instead of quitting.
     pub keep_in_tray: Option<bool>,
     pub engine_force_quantum: Option<u32>,
+    /// The reverb and echo of the FX panel.
+    pub host_fx: Option<tuxmix_core::host_fx::HostFx>,
+    /// Whether the FX panel is expanded.
+    pub fx_open: Option<bool>,
 }
 
 /// Where the preferences live. `None` only if neither `XDG_CONFIG_HOME`
@@ -111,6 +115,13 @@ mod tests {
             window_size: Some((1600.0, 900.0)),
             keep_in_tray: Some(false),
             engine_force_quantum: Some(128),
+            host_fx: Some({
+                let mut fx = tuxmix_core::host_fx::HostFx::default();
+                fx.echo.enabled = true;
+                fx.echo.high_cut_hz = Some(4_000.0);
+                fx
+            }),
+            fx_open: Some(false),
         };
         save(&file, &prefs).unwrap();
         assert_eq!(load(&file), prefs);

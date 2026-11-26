@@ -970,6 +970,8 @@ pub enum Message {
     /// Expands/collapses one of the 4 sidebar panels (each has its own
     /// "−"/"+" header, like the reference).
     ToggleSidebarPanel(sidebar::Panel),
+    /// A change in the FX panel.
+    HostFx(crate::fx_panel::FxEdit),
     /// Expands/collapses the *whole* right sidebar — distinct from
     /// `ToggleSidebarPanel`, see `TuxMix::sidebar_open`'s own doc comment.
     ToggleSidebar,
@@ -1084,6 +1086,17 @@ pub(crate) const DB_INPUT_ID: &str = "strip-db";
 
 pub struct TuxMix {
     pub device: DeviceHandle,
+    /// The reverb and echo the host computes for the card (the sidebar's
+    /// FX panel, see `fx_panel`).
+    pub host_fx: tuxmix_core::host_fx::HostFx,
+    /// Runs them; `None` for the simulation.
+    pub fx_runner: Option<tuxmix_core::host_fx::Runner>,
+    /// A change not applied yet, and when it was made.
+    pub fx_dirty: Option<Instant>,
+    /// When the running filter was last checked.
+    pub fx_checked: Option<Instant>,
+    /// Why the effect does not run, when it does not.
+    pub fx_status: Option<String>,
     pub sel_out: usize,
     /// Last front-panel OUT selection seen by `Message::Tick` — when it
     /// changes, `sel_out` follows (TotalMix highlights the panel's
@@ -1706,6 +1719,11 @@ pub fn new(mock: bool, osc_config: Option<OscConfig>, backend: Option<String>) -
         card_stream: None,
         // The mock stands for the stock driver.
         driver_floor: simulated.then_some(32),
+        host_fx: Default::default(),
+        fx_runner: (!simulated).then(tuxmix_core::host_fx::Runner::new),
+        fx_dirty: None,
+        fx_checked: None,
+        fx_status: None,
     }
 }
 
@@ -1748,6 +1766,11 @@ fn adopt_device(state: &mut TuxMix, device: DeviceHandle) {
     state.snapshot_dirty = false;
     state.undo_stack.clear();
     state.redo_stack.clear();
+    // The effect needs the card: start it now that there is one.
+    state
+        .fx_runner
+        .get_or_insert_with(tuxmix_core::host_fx::Runner::new);
+    state.fx_dirty = state.host_fx.active().then(Instant::now);
     state.engine = None;
     state.card_stream = None;
     state.driver_floor = None;
@@ -1776,6 +1799,8 @@ pub fn prefs_of(state: &TuxMix) -> crate::prefs::Prefs {
         keep_in_tray: (!state.keep_in_tray).then_some(false),
         engine_force_rate: Some(state.engine_force_rate),
         engine_force_quantum: Some(state.engine_force_quantum),
+        host_fx: Some(state.host_fx),
+        fx_open: Some(state.sidebar_panels_open.fx),
     }
 }
 
@@ -1798,6 +1823,7 @@ pub fn apply_prefs(state: &mut TuxMix, prefs: crate::prefs::Prefs) {
             snapshots,
             groups,
             layout,
+            fx: state.sidebar_panels_open.fx,
         };
     }
     // `two_row` is the older boolean key: a saved `true` still means two
@@ -1823,6 +1849,14 @@ pub fn apply_prefs(state: &mut TuxMix, prefs: crate::prefs::Prefs) {
     state.keep_in_tray = prefs.keep_in_tray.unwrap_or(true);
     state.engine_force_rate = prefs.engine_force_rate.unwrap_or(0);
     state.engine_force_quantum = prefs.engine_force_quantum.unwrap_or(0);
+    if let Some(fx) = prefs.host_fx {
+        state.host_fx = fx;
+        // Started by the first tick, once the card is there.
+        state.fx_dirty = fx.active().then(Instant::now);
+    }
+    if let Some(open) = prefs.fx_open {
+        state.sidebar_panels_open.fx = open;
+    }
 }
 
 /// Brings the audio engine in line with the preferences at launch: the
@@ -2571,6 +2605,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 });
             }
             flush_prefs(state);
+            crate::fx_panel::tick(state);
             // Resize coalescing: if the last `Resized` of a drag landed
             // inside the throttle window, flush it here so the width always
             // settles (even if no further `Resized` arrives). 50 ms is well
@@ -2604,6 +2639,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                         log::info!("Device reconnected");
                         state.device = fresh;
                         state.connected = true;
+                        // A new session: the driver's Host FX Switch is
+                        // off until told again.
+                        state.fx_dirty = state.host_fx.active().then(Instant::now);
                         if let Some((scene, json)) = tuxmix_core::scene::load_auto_scene() {
                             if let Err(e) = state.device.restore_auto_scene(&scene) {
                                 fail(state, "apply_scene", &e);
@@ -2733,7 +2771,9 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 if state.tray_active && state.keep_in_tray {
                     state.window_hidden = true;
                 } else {
-                    return Task::batch([update(state, Message::SaveNow), iced::exit()]);
+                    let saved = update(state, Message::SaveNow);
+                    crate::fx_panel::shutdown(state);
+                    return Task::batch([saved, iced::exit()]);
                 }
             }
         }
@@ -2744,6 +2784,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
                 // after a replug are this app's job (see `tray`).
                 return Task::batch([saved, hide_window(state)]);
             }
+            crate::fx_panel::shutdown(state);
             return Task::batch([saved, iced::exit()]);
         }
         Message::Tray(event) => match event {
@@ -2766,6 +2807,7 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
             crate::tray::TrayEvent::Quit => {
                 let saved = update(state, Message::SaveNow);
+                crate::fx_panel::shutdown(state);
                 return Task::batch([saved, iced::exit()]);
             }
         },
@@ -3492,6 +3534,11 @@ pub fn update(state: &mut TuxMix, message: Message) -> Task<Message> {
             }
         }
         Message::ToggleSidebarPanel(panel) => state.sidebar_panels_open.toggle(panel),
+        Message::HostFx(e) => {
+            crate::fx_panel::edit(&mut state.host_fx, e);
+            state.fx_dirty = Some(Instant::now());
+            state.prefs_dirty = true;
+        }
         Message::ToggleSidebar => {
             state.sidebar_open = !state.sidebar_open;
             state.auto_folded = false;
@@ -8680,6 +8727,28 @@ mod tests {
         );
         assert_eq!(state.sidebar_width, sidebar::MIN_WIDTH);
         assert!(sidebar::MIN_WIDTH <= sidebar::DEFAULT_WIDTH);
+    }
+
+    #[test]
+    fn the_fx_panel_edits_persist_and_apply_once_the_knob_settles() {
+        let mut state = new(true, None, None);
+        assert!(state.device.has_host_fx(), "the mock can show the panel");
+        assert!(state.fx_runner.is_none(), "the simulation runs no filter");
+        let _ = update(&mut state, Message::HostFx(crate::fx_panel::FxEdit::ReverbOn(true)));
+        let _ = update(&mut state, Message::HostFx(crate::fx_panel::FxEdit::PreDelay(120.0)));
+        assert!(state.host_fx.reverb.enabled);
+        assert!(state.fx_dirty.is_some());
+        // Saved with the window's preferences, and back on the next start.
+        let saved = prefs_of(&state);
+        assert_eq!(saved.host_fx.unwrap().reverb.pre_delay_ms, 120.0);
+        let mut again = new(true, None, None);
+        apply_prefs(&mut again, saved);
+        assert_eq!(again.host_fx, state.host_fx);
+        assert!(again.fx_dirty.is_some(), "an active effect starts again");
+        // Applied after the settle time, then nothing is pending.
+        state.fx_dirty = Some(Instant::now() - crate::fx_panel::APPLY_AFTER);
+        crate::fx_panel::tick(&mut state);
+        assert!(state.fx_dirty.is_none());
     }
 
     #[test]
