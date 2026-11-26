@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.10 (2026-11-26)
+
 ### Added
 - Reverb and echo, TotalMix FX's FX panel, in the sidebar. With kernel
   driver 0.2.5 and the Pro Audio profile, TuxMix computes them on the host
