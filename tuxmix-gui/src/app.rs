@@ -6454,10 +6454,17 @@ const ROW_SLACK: f32 = 8.0;
 /// The tallest a fader grows, as a multiple of its base height: past this
 /// a very tall window gets a long fader for no gain in resolution.
 const FADER_STRETCH_MAX: f32 = 2.0;
+/// The shortest a fader shrinks to, as a multiple of its base height, so a
+/// slightly lower window still shows every row. Any shorter and an input
+/// strip's icons (T, phase, gear, EQ) would no longer fit beside it.
+const FADER_SHRINK_MIN: f32 = 0.8;
 
-/// Extra fader height (pixels) that makes `rows` rows of strips fill
-/// `height`, the page's inner height. Zero when they already do not fit,
-/// in which case the page scrolls as before.
+/// Fader height (pixels) to add to the base one so that `rows` rows of
+/// strips fill `height`, the page's inner height. Negative when the rows
+/// are a bit too tall at the base size: the faders shrink so nothing
+/// scrolls. When even `FADER_SHRINK_MIN` would not fit, they keep their
+/// base size and the page scrolls: shorter faders would only cost
+/// resolution there.
 fn mixer_fader_extra(height: f32, rows: usize, scale: f32) -> f32 {
     let rows_f = rows as f32;
     // Each row has a header and the gap under it; the first one also has
@@ -6468,7 +6475,11 @@ fn mixer_fader_extra(height: f32, rows: usize, scale: f32) -> f32 {
         + (rows_f - 1.0) * theme::SPACE_LG;
     let strips = rows_f * (STRIP_CARD_H * scale + ROW_SLACK);
     let spare = (height - chrome - strips) / rows_f;
-    spare.clamp(0.0, strip::FADER_H * scale * (FADER_STRETCH_MAX - 1.0))
+    let base = strip::FADER_H * scale;
+    if spare < base * (FADER_SHRINK_MIN - 1.0) {
+        return 0.0;
+    }
+    spare.min(base * (FADER_STRETCH_MAX - 1.0))
 }
 
 /// The width an open Settings, EQ or Trim panel adds beside a strip in the
@@ -7302,7 +7313,7 @@ fn quick_view(state: &TuxMix) -> Element<'_, Message> {
 mod tests {
     use super::{
         any_channel_muted, any_channel_soloed, apply_pending_resize, apply_prefs, channel_is_muted,
-        channel_is_soloed, is_undoable, mixer_fader_extra, mute_armed, new,
+        channel_is_soloed, is_undoable, mixer_fader_extra, mute_armed, FADER_SHRINK_MIN, new,
         power_sum_output_meters, prefs_of, route_popover_open, shown_channels, title, update, window, zoom, ChannelId, EditField, Message, MeterAnim,
         NoDevice, ResetMix, RowMode, TuxMix, View, LOW_CUT_ON_HZ, RESET_MIX, ZOOM_STEP,
     };
@@ -9313,9 +9324,13 @@ mod tests {
     }
 
     #[test]
-    fn mixer_faders_grow_into_spare_height_and_stop_at_the_cap() {
-        // Too short for the rows at their base size: nothing is added and
-        // the page scrolls as before.
+    fn mixer_faders_fit_the_height_between_the_floor_and_the_cap() {
+        // A bit short for two rows at their base size: the faders shrink
+        // instead of the page scrolling.
+        let short = mixer_fader_extra(730.0, 2, 1.0);
+        assert!(short < 0.0 && short >= -strip::FADER_H * (1.0 - FADER_SHRINK_MIN), "{short}");
+        // Far too short: shrinking would not save the scroll, so the
+        // faders keep their base size.
         assert_eq!(mixer_fader_extra(500.0, 2, 1.0), 0.0);
         // 1080p, two rows: some room, under the cap.
         let extra = mixer_fader_extra(1024.0, 2, 1.0);

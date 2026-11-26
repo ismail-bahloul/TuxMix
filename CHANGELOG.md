@@ -40,6 +40,14 @@
   usbmon against TotalMix FX. A stereo strip reads its level and balance
   back from both sides.
 
+### Changed
+- The Mixer fits a slightly lower window without scrolling: the faders
+  shorten, down to 80 % of their size, when that is enough for every row
+  to show. When it is not, they keep their size and the page scrolls as
+  before. The thin FX fader beside them shortens too, so every card in a
+  row stays as tall as its neighbours. Checked at 818x846 (75 %), where
+  the outputs used to fall below the fold, and at 1700x820.
+
 ### Fixed
 - The PipeWire meters take the 14-channel devices of kernel driver 0.2.5
   (channels 13/14 are its FX bus). They gave up on anything past 12, so with
