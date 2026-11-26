@@ -90,6 +90,7 @@ pub enum Panel {
     Snapshots,
     Groups,
     Layout,
+    Fx,
 }
 
 /// Which of a group's three independent links (`GroupLinkToggle`
@@ -126,6 +127,7 @@ pub struct PanelsOpen {
     pub snapshots: bool,
     pub groups: bool,
     pub layout: bool,
+    pub fx: bool,
 }
 
 impl Default for PanelsOpen {
@@ -135,6 +137,7 @@ impl Default for PanelsOpen {
             snapshots: true,
             groups: true,
             layout: true,
+            fx: true,
         }
     }
 }
@@ -146,6 +149,7 @@ impl PanelsOpen {
             Panel::Snapshots => &mut self.snapshots,
             Panel::Groups => &mut self.groups,
             Panel::Layout => &mut self.layout,
+            Panel::Fx => &mut self.fx,
         };
         *slot = !*slot;
     }
@@ -299,6 +303,7 @@ pub fn sidebar(state: &TuxMix) -> Element<'_, Message> {
         device_chip(state, scale),
         undo_redo_row(state, scale),
         msf_row(state, scale),
+        fx_panel(state, scale),
         panel(options_panel(state, scale), scale),
         panel(snapshots_panel(state, scale), scale),
         panel(groups_panel(state, scale), scale),
@@ -1145,6 +1150,31 @@ const LAYOUT_COUNT: u8 = 6;
 /// persisted to disk per slot (see `layouts.rs`, mirroring `scenes.rs`'s
 /// own file-per-slot pattern). TotalMix's "all/submix" scope row is not
 /// here: a layout is not scoped per submix in this app's model.
+/// TotalMix FX's reverb and echo (see `fx_panel`), for a card that can
+/// return them; nothing otherwise.
+fn fx_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
+    if !state.device.has_host_fx() {
+        return iced::widget::Space::new().height(0.0).into();
+    }
+    let header = panel_header(
+        "fx",
+        state.sidebar_panels_open.fx,
+        Message::ToggleSidebarPanel(Panel::Fx),
+        scale,
+    );
+    let content: Element<'_, Message> = if state.sidebar_panels_open.fx {
+        column![
+            header,
+            container(crate::fx_panel::body(state, scale)).padding(indent(CONTENT_INDENT * scale))
+        ]
+        .spacing(theme::SPACE_SM * scale)
+        .into()
+    } else {
+        header
+    };
+    panel(content, scale)
+}
+
 fn layout_panel(state: &TuxMix, scale: f32) -> Element<'_, Message> {
     let header = panel_header(
         "mixer layout",

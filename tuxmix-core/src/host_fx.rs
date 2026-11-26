@@ -706,9 +706,23 @@ impl Runner {
         let text = filter_chain_conf(&ir.to_string_lossy(), &capture, &playback);
         std::fs::write(&conf, text).map_err(|e| RunError::Io(e.to_string()))?;
         self.stop();
-        let child = std::process::Command::new("pipewire")
-            .arg("-c")
-            .arg(&conf)
+        let mut cmd = std::process::Command::new("pipewire");
+        cmd.arg("-c").arg(&conf);
+        // The filter dies with TuxMix, even when TuxMix is killed: an
+        // effect nothing can turn off any more is worse than none.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            // SAFETY: prctl(2) is async-signal-safe, which is all pre_exec
+            // asks of the closure.
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                    Ok(())
+                });
+            }
+        }
+        let child = cmd
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())

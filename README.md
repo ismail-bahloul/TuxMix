@@ -25,6 +25,7 @@ validated on real hardware.
 
 - **Three views**: Quick, Mixer and Matrix
 - **The whole DSP mixer**: preamp, trim, EQ, width, loopback, mute/solo groups
+- **Reverb and echo**, computed on the computer as TotalMix FX does (kernel driver 0.2.5)
 - **Snapshots and layouts**, undo/redo, custom channel names
 - **Lives in the tray**: the front-panel DIM button and your mix survive a replug
 - **GUI and TUI**, over the [kernel driver](https://github.com/ismail-bahloul/babyface-pro-linux) or plain libusb
