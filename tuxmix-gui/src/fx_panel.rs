@@ -17,7 +17,14 @@ use tuxmix_core::RmeDevice;
 
 use crate::app::{Message, TuxMix};
 use crate::theme;
-use crate::widgets::knob::{knob, Knob};
+use crate::widgets::fx_slider::fx_slider_to;
+use crate::widgets::knob::{knob, Knob, BOX_SIZE};
+
+/// The panel's knobs are drawn smaller than the strips' pan knob, as in
+/// TotalMix FX, so three fit in a row beside the volume fader.
+const KNOB_SCALE: f32 = 0.8;
+/// The volume fader's column width, at scale 1.
+const VOLUME_W: f32 = 30.0;
 
 /// How long after the last change the filter restarts with it.
 pub const APPLY_AFTER: Duration = Duration::from_millis(250);
@@ -154,11 +161,12 @@ fn fx_knob<'a>(
             interactive: true,
             log_scale,
             modifiers: state.modifiers,
-            scale,
+            scale: scale * KNOB_SCALE,
             on_change: Box::new(move |v| Message::HostFx(on(v))),
             on_reset: Box::new(move || Message::HostFx(reset)),
         }),
-        text(caption).size(theme::TEXT_XS * scale).color(theme::TEXT_SEC),
+        text(caption).size(theme::TEXT_XS * scale).color(theme::TEXT_SEC)
+            .wrapping(iced::advanced::text::Wrapping::None),
     ]
     .spacing(theme::SPACE_TIGHT * scale)
     .align_x(iced::Alignment::Center)
@@ -166,18 +174,60 @@ fn fx_knob<'a>(
     .into()
 }
 
-fn knob_row<'a>(cells: Vec<Element<'a, Message>>, scale: f32) -> Element<'a, Message> {
-    let mut r = row![].spacing(theme::SPACE_SM * scale).width(Length::Fill);
-    let n = cells.len();
-    for c in cells {
-        r = r.push(c);
-    }
-    // Short rows keep the grid's columns.
-    for _ in n..3 {
-        r = r.push(iced::widget::Space::new().width(Length::Fill));
-    }
-    r.into()
+/// One knob cell's height: the knob and its caption.
+fn cell_h(scale: f32) -> f32 {
+    BOX_SIZE * KNOB_SCALE * scale + theme::TEXT_XS * 1.3 * scale + theme::SPACE_TIGHT * scale
 }
+
+/// An effect's knobs, three to a row, and its volume fader on their right
+/// as in TotalMix FX (which has two to a row: three keeps each effect to
+/// two rows in the narrower sidebar).
+fn effect_body<'a>(
+    cells: Vec<Element<'a, Message>>,
+    volume_db: f32,
+    on_volume: fn(f32) -> FxEdit,
+    default_volume: f32,
+    scale: f32,
+) -> Element<'a, Message> {
+    let rows = cells.len().div_ceil(COLUMNS);
+    let mut grid = column![].spacing(theme::SPACE_SM * scale).width(Length::Fill);
+    let mut cells = cells.into_iter();
+    for _ in 0..rows {
+        let mut r = row![].spacing(theme::SPACE_SM * scale).width(Length::Fill);
+        for _ in 0..COLUMNS {
+            r = r.push(cells.next().unwrap_or_else(|| iced::widget::Space::new().width(Length::Fill).into()));
+        }
+        grid = grid.push(r);
+    }
+    let grid_h = rows as f32 * cell_h(scale) + (rows as f32 - 1.0) * theme::SPACE_SM * scale;
+    let readout_h = theme::TEXT_XS * 1.3 * scale;
+    let volume = column![
+        fx_slider_to(
+            volume_db,
+            VOLUME_TOP,
+            VOLUME_W * scale,
+            (grid_h - readout_h - theme::SPACE_TIGHT * scale).max(0.0),
+            scale,
+            move |v| Message::HostFx(on_volume(v)),
+            Message::HostFx(on_volume(default_volume)),
+        ),
+        text(format!("{volume_db:.1}"))
+            .size(theme::TEXT_XS * scale)
+            .color(theme::TEXT_SEC),
+    ]
+    .spacing(theme::SPACE_TIGHT * scale)
+    .align_x(iced::Alignment::Center)
+    .width(Length::Fixed(VOLUME_W * scale));
+    row![grid, volume]
+        .spacing(theme::SPACE_SM * scale)
+        .width(Length::Fill)
+        .into()
+}
+
+/// Knobs in a row.
+const COLUMNS: usize = 3;
+/// The top of the volume faders, dB.
+const VOLUME_TOP: f32 = 6.0;
 
 /// The on/off button and the type list of one effect.
 fn effect_head<'a, T>(
@@ -193,7 +243,16 @@ where
     T: Clone + PartialEq + std::fmt::Display + 'a,
 {
     row![
-        button(text(name).size(theme::TEXT_XS * scale).center())
+        button(
+            row![
+                text("●")
+                    .size(theme::TEXT_XS * scale)
+                    .color(if on { theme::FX_COLOR } else { theme::TEXT_SEC }),
+                text(name).size(theme::TEXT_XS * scale),
+            ]
+            .spacing(theme::SPACE_SM * scale)
+            .align_y(iced::Alignment::Center)
+        )
             .padding([theme::SPACE_TIGHT * scale, theme::SPACE_SM * scale])
             .width(Length::Fixed(64.0 * scale))
             .style(theme::toggle_button(on, theme::ACCENT))
@@ -266,24 +325,18 @@ pub fn body(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         |k: Kind<ReverbType>| FxEdit::ReverbKind(k.0),
         scale,
     ));
-    col = col.push(knob_row(
+    col = col.push(effect_body(
         vec![
             fx_knob(state, "pre delay", r.pre_delay_ms, (0.0, 999.0), format!("{:.0}", r.pre_delay_ms), false, false, FxEdit::PreDelay, FxEdit::PreDelay(d.0.pre_delay_ms), scale),
             fx_knob(state, "room scale", r.room_scale, (0.5, 3.0), format!("{:.2}", r.room_scale), false, false, FxEdit::RoomScale, FxEdit::RoomScale(d.0.room_scale), scale),
-            fx_knob(state, "smooth", r.smooth, (0.0, 1.0), format!("{:.0}%", r.smooth * 100.0), false, false, FxEdit::Smooth, FxEdit::Smooth(d.0.smooth), scale),
-        ],
-        scale,
-    ));
-    col = col.push(knob_row(
-        vec![
             fx_knob(state, "low cut", r.low_cut_hz, (20.0, 500.0), hz(r.low_cut_hz), true, false, FxEdit::ReverbLowCut, FxEdit::ReverbLowCut(d.0.low_cut_hz), scale),
             fx_knob(state, "high cut", r.high_cut_hz, (5_000.0, 20_000.0), hz(r.high_cut_hz), true, false, FxEdit::ReverbHighCut, FxEdit::ReverbHighCut(d.0.high_cut_hz), scale),
+            fx_knob(state, "smooth", r.smooth, (0.0, 1.0), format!("{:.0}%", r.smooth * 100.0), false, false, FxEdit::Smooth, FxEdit::Smooth(d.0.smooth), scale),
             fx_knob(state, "width", r.width, (-1.0, 1.0), format!("{:+.2}", r.width), false, true, FxEdit::ReverbWidth, FxEdit::ReverbWidth(d.0.width), scale),
         ],
-        scale,
-    ));
-    col = col.push(knob_row(
-        vec![fx_knob(state, "volume", r.volume_db, (-65.0, 6.0), format!("{:.1}", r.volume_db), false, false, FxEdit::ReverbVolume, FxEdit::ReverbVolume(d.0.volume_db), scale)],
+        r.volume_db,
+        FxEdit::ReverbVolume,
+        d.0.volume_db,
         scale,
     ));
 
@@ -298,16 +351,11 @@ pub fn body(state: &TuxMix, scale: f32) -> Element<'_, Message> {
         scale,
     ));
     let cut = x.high_cut_hz.unwrap_or(ECHO_CUT_OFF);
-    col = col.push(knob_row(
+    col = col.push(effect_body(
         vec![
             fx_knob(state, "delay", x.delay_s, (0.01, 2.0), format!("{:.2}", x.delay_s), false, false, FxEdit::Delay, FxEdit::Delay(d.1.delay_s), scale),
             fx_knob(state, "bpm", x.bpm(), (30.0, 300.0), format!("{:.0}", x.bpm()), false, false, FxEdit::Bpm, FxEdit::Delay(d.1.delay_s), scale),
             fx_knob(state, "feedback", x.feedback, (0.0, 0.99), format!("{:.0}%", x.feedback * 100.0), false, false, FxEdit::Feedback, FxEdit::Feedback(d.1.feedback), scale),
-        ],
-        scale,
-    ));
-    col = col.push(knob_row(
-        vec![
             fx_knob(
                 state,
                 "high cut",
@@ -321,8 +369,10 @@ pub fn body(state: &TuxMix, scale: f32) -> Element<'_, Message> {
                 scale,
             ),
             fx_knob(state, "width", x.width, (-1.0, 1.0), format!("{:+.2}", x.width), false, true, FxEdit::EchoWidth, FxEdit::EchoWidth(d.1.width), scale),
-            fx_knob(state, "volume", x.volume_db, (-65.0, 6.0), format!("{:.1}", x.volume_db), false, false, FxEdit::EchoVolume, FxEdit::EchoVolume(d.1.volume_db), scale),
         ],
+        x.volume_db,
+        FxEdit::EchoVolume,
+        d.1.volume_db,
         scale,
     ));
 

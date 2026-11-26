@@ -4,7 +4,9 @@
 //! The thin FX fader at the top of a strip's right column, as TotalMix FX
 //! has it: the strip's send into the effects (inputs, playback) or the
 //! return of the effects into an output. -65 .. 0 dB, linear in dB;
-//! double-click turns it off, the wheel nudges it a dB at a time.
+//! double-click turns it off, the wheel nudges it a dB at a time. The FX
+//! panel's reverb and echo volumes use it too, up to +6 dB
+//! (`fx_slider_to`).
 
 use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path, Stroke};
 use iced::{mouse, Element, Length, Point, Rectangle, Renderer, Size, Theme};
@@ -12,13 +14,14 @@ use iced::{mouse, Element, Length, Point, Rectangle, Renderer, Size, Theme};
 use crate::theme;
 
 const DB_MIN: f32 = -65.0;
-const DB_MAX: f32 = 0.0;
 const RAIL_W: f32 = 4.0;
 const CAP_W: f32 = 12.0;
 const CAP_H: f32 = 16.0;
 
 struct FxSlider<Message> {
     db: f32,
+    /// The top of the travel, dB.
+    top: f32,
     scale: f32,
     on_change: Box<dyn Fn(f32) -> Message>,
     on_reset: Message,
@@ -36,7 +39,7 @@ impl<Message> FxSlider<Message> {
         let cap = CAP_H * self.scale;
         let span = (height - cap).max(1.0);
         let t = 1.0 - ((y - cap / 2.0) / span).clamp(0.0, 1.0);
-        (DB_MIN + t * (DB_MAX - DB_MIN)).round()
+        (DB_MIN + t * (self.top - DB_MIN)).round()
     }
 }
 
@@ -84,7 +87,7 @@ impl<Message: Clone> canvas::Program<Message> for FxSlider<Message> {
                 if dy == 0.0 {
                     return None;
                 }
-                let db = (self.db + dy.signum()).clamp(DB_MIN, DB_MAX);
+                let db = (self.db + dy.signum()).clamp(DB_MIN, self.top);
                 Some(canvas::Action::publish((self.on_change)(db)).and_capture())
             }
             _ => None,
@@ -105,7 +108,7 @@ impl<Message: Clone> canvas::Program<Message> for FxSlider<Message> {
         let cap_w = CAP_W * s;
         let rail_w = RAIL_W * s;
         let x = bounds.width / 2.0;
-        let t = ((self.db - DB_MIN) / (DB_MAX - DB_MIN)).clamp(0.0, 1.0);
+        let t = ((self.db - DB_MIN) / (self.top - DB_MIN)).clamp(0.0, 1.0);
         let cap_y = (1.0 - t) * (bounds.height - cap_h);
 
         let rail = Path::rectangle(
@@ -171,8 +174,22 @@ pub fn fx_slider<'a, Message: Clone + 'a>(
     on_change: impl Fn(f32) -> Message + 'static,
     on_reset: Message,
 ) -> Element<'a, Message> {
+    fx_slider_to(db, 0.0, width, height, scale, on_change, on_reset)
+}
+
+/// `fx_slider` with its travel going up to `top` dB instead of 0.
+pub fn fx_slider_to<'a, Message: Clone + 'a>(
+    db: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+    scale: f32,
+    on_change: impl Fn(f32) -> Message + 'static,
+    on_reset: Message,
+) -> Element<'a, Message> {
     Canvas::new(FxSlider {
         db,
+        top,
         scale,
         on_change: Box::new(on_change),
         on_reset,

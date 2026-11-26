@@ -47,6 +47,12 @@
   before. The thin FX fader beside them shortens too, so every card in a
   row stays as tall as its neighbours. Checked at 818x846 (75 %), where
   the outputs used to fall below the fold, and at 1700x820.
+- The sidebar follows the zoom down to 85 % instead of stopping at 100 %,
+  so it keeps the strips' proportions when zooming out.
+- The FX panel is compact, closer to TotalMix FX: smaller knobs, three to
+  a row, and each effect's volume on a fader beside them. Each effect now
+  takes two rows instead of three, and the whole sidebar fits on a 1080p
+  screen. The on/off buttons carry a light that turns orange when on.
 
 ### Fixed
 - The PipeWire meters take the 14-channel devices of kernel driver 0.2.5
