@@ -123,6 +123,34 @@ impl Default for ReverbParams {
     }
 }
 
+impl ReverbParams {
+    /// Switches to `kind` and loads its typical settings, like a preset:
+    /// pre delay, room scale, cuts, smooth and width move to suit the
+    /// type. On/off and the volume stay as they are. Large Room loads the
+    /// defaults.
+    pub fn load_type(&mut self, kind: ReverbType) {
+        let (pre_delay_ms, room_scale, low_cut_hz, high_cut_hz, smooth, width) = match kind {
+            ReverbType::SmallRoom => (5.0, 1.0, 100.0, 12_000.0, 0.6, 0.6),
+            ReverbType::MediumRoom => (15.0, 1.0, 90.0, 14_000.0, 0.8, 0.7),
+            ReverbType::LargeRoom => (35.0, 1.0, 80.0, 18_000.0, 1.0, 0.8),
+            ReverbType::Hall => (40.0, 1.2, 60.0, 16_000.0, 1.0, 1.0),
+            ReverbType::Plate => (10.0, 1.0, 150.0, 20_000.0, 0.5, 0.9),
+            ReverbType::Space => (80.0, 1.5, 50.0, 12_000.0, 1.0, 1.0),
+            ReverbType::Gated => (0.0, 1.0, 120.0, 18_000.0, 0.2, 0.7),
+        };
+        *self = Self {
+            kind,
+            pre_delay_ms,
+            room_scale,
+            low_cut_hz,
+            high_cut_hz,
+            smooth,
+            width,
+            ..*self
+        };
+    }
+}
+
 /// How the echo's repeats move between the sides, TotalMix FX's echo
 /// "Type".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1041,5 +1069,29 @@ mod tests {
         assert_eq!(c.matches("node.passive").count(), 1);
         let i = c.find("playback.props").unwrap();
         assert!(c[i..].contains("node.passive = true"));
+    }
+    #[test]
+    fn a_reverb_type_loads_its_settings() {
+        let mut r = ReverbParams {
+            enabled: true,
+            volume_db: -10.0,
+            ..ReverbParams::default()
+        };
+        r.load_type(ReverbType::Space);
+        assert_eq!(
+            (r.kind, r.pre_delay_ms, r.room_scale),
+            (ReverbType::Space, 80.0, 1.5)
+        );
+        assert!(r.enabled);
+        assert_eq!(r.volume_db, -10.0);
+        r.load_type(ReverbType::LargeRoom);
+        assert_eq!(
+            r,
+            ReverbParams {
+                enabled: true,
+                volume_db: -10.0,
+                ..ReverbParams::default()
+            }
+        );
     }
 }

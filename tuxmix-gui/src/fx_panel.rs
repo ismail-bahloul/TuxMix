@@ -56,7 +56,7 @@ pub fn edit(fx: &mut HostFx, e: FxEdit) {
     let (r, x) = (&mut fx.reverb, &mut fx.echo);
     match e {
         FxEdit::ReverbOn(on) => r.enabled = on,
-        FxEdit::ReverbKind(k) => r.kind = k,
+        FxEdit::ReverbKind(k) => r.load_type(k),
         FxEdit::PreDelay(v) => r.pre_delay_ms = v.clamp(0.0, 999.0).round(),
         FxEdit::RoomScale(v) => r.room_scale = (v.clamp(0.5, 3.0) * 100.0).round() / 100.0,
         FxEdit::ReverbLowCut(v) => r.low_cut_hz = v.clamp(20.0, 500.0).round(),
@@ -366,6 +366,15 @@ mod tests {
         assert_eq!(fx.echo.high_cut_hz, Some(4_300.0));
         edit(&mut fx, FxEdit::EchoHighCut(ECHO_CUT_OFF));
         assert_eq!(fx.echo.high_cut_hz, None);
+    }
+
+    #[test]
+    fn picking_a_reverb_type_moves_the_knobs() {
+        let mut fx = HostFx::default();
+        edit(&mut fx, FxEdit::ReverbKind(ReverbType::Hall));
+        assert_eq!(fx.reverb.kind, ReverbType::Hall);
+        assert_eq!(fx.reverb.room_scale, 1.2);
+        assert_eq!(fx.reverb.low_cut_hz, 60.0);
     }
 
 }
