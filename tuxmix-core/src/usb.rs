@@ -119,7 +119,7 @@ struct StereoMix {
     width: [i8; STEREO_SOURCES],
     /// Muted, or left out of a solo.
     silent: [bool; STEREO_SOURCES],
-    /// The playback pair a CUE keeps on AN1/2.
+    /// The output pair whose submix Main (PH3/4) plays while a CUE is on.
     cue: Option<usize>,
 }
 
@@ -133,22 +133,28 @@ impl StereoMix {
         }
     }
 
-    /// The levels to write for source `idx` into output pair `out` when its
-    /// fader and pan ask for `asked`.
-    fn written(&self, idx: usize, out: usize, asked: (u16, u16)) -> (u16, u16) {
+    /// The levels to write for source `idx` when its fader and pan ask for
+    /// `asked`.
+    fn written(&self, idx: usize, asked: (u16, u16)) -> (u16, u16) {
         if self.silent[idx] {
-            return (0, 0);
-        }
-        // CUE takes the playbacks' AN1/2 crosspoints over while it is on.
-        match (self.cue, idx.checked_sub(FIRST_PLAYBACK)) {
-            (Some(cued), Some(pb)) if out == 0 => {
-                let raw = cue_low_map_value(pb, cued);
-                (raw, raw)
-            }
-            _ => asked,
+            (0, 0)
+        } else {
+            asked
         }
     }
 }
+
+/// A stereo strip's two sides for raw level `raw` at balance `pan`: only
+/// the far side drops, linearly (TotalMix FX, usbmon 2026-11-26: R50 puts
+/// the left side at half and leaves the right one).
+fn balanced_raw(raw: u16, pan: i8) -> (u16, u16) {
+    let (gl, gr) = crate::babyface::balance_gains(pan);
+    let side = |g: f32| (f32::from(raw) * g).round() as u16;
+    (side(gl), side(gr))
+}
+
+/// Main (PH3/4), the pair a CUE feeds.
+const MAIN: usize = 1;
 
 /// Whether a strip is silent: muted, or not in the solo that is on.
 fn strip_silent(mute: bool, solo: bool, any_solo: bool) -> bool {
@@ -202,18 +208,6 @@ fn input_source(idx: usize) -> Result<Source, Error> {
         10 | 11 => Input::Adat78,
         _ => return Err(Error::InvalidChannel(format!("Input {idx}"))),
     }))
-}
-
-/// The AN1/2 crosspoint value of one playback pair while output `cued_idx`
-/// has CUE engaged: muted (`0x0000`), unless it is the dedicated source for
-/// that output, which TotalMix puts at 0 dB (`PROTOCOL.md`'s "CUE on
-/// outputs", cap_cue.pcap, hardware-verified).
-fn cue_low_map_value(pb_pair: usize, cued_idx: usize) -> u16 {
-    if pb_pair == cued_idx {
-        0x2000
-    } else {
-        0x0000
-    }
 }
 
 /// Whether `apply_scene` should re-issue a clock-source write for a
@@ -307,8 +301,8 @@ const STEREO_TOP: u16 = 0x4000;
 /// The same level as the mono-scale crosspoint value `raw`, on the stereo
 /// scale (`0x16A0` is `0x2000`, the mono top `0x2D41` is `0x4000`).
 pub fn mono_to_stereo_raw(raw: u16) -> u16 {
-    let r = (u32::from(raw) * u32::from(STEREO_0DB) + u32::from(MONO_0DB) / 2)
-        / u32::from(MONO_0DB);
+    let r =
+        (u32::from(raw) * u32::from(STEREO_0DB) + u32::from(MONO_0DB) / 2) / u32::from(MONO_0DB);
     r.min(u32::from(STEREO_TOP)) as u16
 }
 
@@ -383,12 +377,24 @@ impl BabyfaceProUsb {
     /// (OSC, a scene file) can name any number.
     fn in_range(&self, channel: ChannelId, output: Option<usize>) -> Result<(), Error> {
         let (ok, subs) = match channel {
-            ChannelId::Input(i) => (i < self.inputs.len(), self.inputs.get(i).map_or(0, |c| c.volumes.len().min(c.pans.len()))),
-            ChannelId::Playback(c) => (c < self.playbacks.len(), self.playbacks.get(c).map_or(0, |c| c.volumes.len().min(c.pans.len()))),
+            ChannelId::Input(i) => (
+                i < self.inputs.len(),
+                self.inputs
+                    .get(i)
+                    .map_or(0, |c| c.volumes.len().min(c.pans.len())),
+            ),
+            ChannelId::Playback(c) => (
+                c < self.playbacks.len(),
+                self.playbacks
+                    .get(c)
+                    .map_or(0, |c| c.volumes.len().min(c.pans.len())),
+            ),
             ChannelId::Output(o) => (o < self.outputs.len(), usize::MAX),
         };
         if !ok || output.is_some_and(|o| o >= subs) {
-            return Err(Error::InvalidChannel(format!("{channel:?} (submix {output:?})")));
+            return Err(Error::InvalidChannel(format!(
+                "{channel:?} (submix {output:?})"
+            )));
         }
         Ok(())
     }
@@ -564,30 +570,72 @@ impl BabyfaceProUsb {
     fn put_stereo(&mut self, out: Output, src: Source, l: u16, r: u16) -> Result<(), Error> {
         let idx = stereo_index(src)
             .ok_or_else(|| Error::InvalidChannel(format!("{src:?} is not stereo")))?;
+        self.stereo.levels[idx][out.index()] = Some((l, r));
+        // CUE (TotalMix FX, usbmon 2026-11-26): Main's block plays the cued
+        // output's submix, and Main's own levels wait here until release.
+        let cue = self.stereo.cue;
+        if out.index() == MAIN && cue.is_some() {
+            return Ok(());
+        }
+        self.wire_stereo(out, src, idx, (l, r))?;
+        if cue == Some(out.index()) {
+            self.wire_stereo(Output::Ph34, src, idx, (l, r))?;
+        }
+        Ok(())
+    }
+
+    /// Sends a stereo source's levels into block `wire`, through its width
+    /// and silence.
+    fn wire_stereo(
+        &mut self,
+        wire: Output,
+        src: Source,
+        idx: usize,
+        asked: (u16, u16),
+    ) -> Result<(), Error> {
         let split = match src {
-            Source::Playback(p) => self
-                .playbacks
-                .get((p.0 - 1) * 2)
-                .is_some_and(|c| c.split),
+            Source::Playback(p) => self.playbacks.get((p.0 - 1) * 2).is_some_and(|c| c.split),
             Source::Input(_) => false,
         };
         let width = if split { 100 } else { self.stereo.width[idx] };
-        self.stereo.levels[idx][out.index()] = Some((l, r));
-        let (l, r) = self.stereo.written(idx, out.index(), (l, r));
-        self.dev.set_stereo_pair(out, src, l, r, width)?;
+        let (l, r) = self.stereo.written(idx, asked);
+        self.dev.set_stereo_pair(wire, src, l, r, width)?;
         Ok(())
+    }
+
+    /// The two raw levels stereo `channel`'s fader and balance ask for in
+    /// output pair `o` (TotalMix FX's balance: only the far side drops).
+    fn stereo_raw(&self, channel: ChannelId, o: usize) -> Result<(u16, u16), Error> {
+        Ok(balanced_raw(
+            source_raw(true, self.volume(channel, o)?),
+            self.pan(channel, o)?,
+        ))
     }
 
     /// Writes mono input `i`'s crosspoint into output pair `o` from the
     /// model: fader, pan, phase, and silence.
     fn write_mono(&mut self, i: usize, o: usize) -> Result<(), Error> {
+        // CUE, as for the stereo sources (see `put_stereo`).
+        let cue = self.stereo.cue;
+        if o == MAIN && cue.is_some() {
+            return Ok(());
+        }
+        self.write_mono_to(i, o, output_for(o)?)?;
+        if cue == Some(o) {
+            self.write_mono_to(i, o, Output::Ph34)?;
+        }
+        Ok(())
+    }
+
+    /// Writes mono input `i`'s levels for output pair `o` into block `wire`.
+    fn write_mono_to(&mut self, i: usize, o: usize, wire: Output) -> Result<(), Error> {
         let ch = &self.inputs[i];
         let (pan, phase) = (ch.pans[o], ch.phase);
         let raw = volume_to_raw(ch.volumes[o]);
         if self.mono_silent[i] {
-            return self.write_mono_pair(output_for(o)?, input_source(i)?, 0, 0, false);
+            return self.write_mono_pair(wire, input_source(i)?, 0, 0, false);
         }
-        self.write_mono_pair(output_for(o)?, input_source(i)?, raw, pan, phase)
+        self.write_mono_pair(wire, input_source(i)?, raw, pan, phase)
     }
 
     /// Brings the crosspoints in line with the mute and solo flags, writing
@@ -619,10 +667,7 @@ impl BabyfaceProUsb {
                     // Never written: the model's fader is all there is.
                     let (l, r) = match self.stereo.levels[idx][o] {
                         Some(levels) => levels,
-                        None => (
-                            source_raw(true, self.volume(channels[0], o)?),
-                            source_raw(true, self.volume(channels[1], o)?),
-                        ),
+                        None => self.stereo_raw(channels[0], o)?,
                     };
                     self.put_stereo(output_for(o)?, src, l, r)?;
                 }
@@ -634,10 +679,17 @@ impl BabyfaceProUsb {
     /// Writes the same raw level to both sides of a source's crosspoint.
     fn put(&mut self, out: Output, src: Source, raw: u16) -> Result<(), Error> {
         if stereo_index(src).is_some() {
-            self.put_stereo(out, src, raw, raw)
-        } else {
-            self.dev.set_volume(out, src, raw).map_err(Into::into)
+            return self.put_stereo(out, src, raw, raw);
         }
+        let cue = self.stereo.cue;
+        if out.index() == MAIN && cue.is_some() {
+            return Ok(());
+        }
+        self.dev.set_volume(out, src, raw)?;
+        if cue == Some(out.index()) {
+            self.dev.set_volume(Output::Ph34, src, raw)?;
+        }
+        Ok(())
     }
 
     /// Writes again what a stereo source's crosspoints hold, after its
@@ -903,9 +955,12 @@ impl RmeDevice for BabyfaceProUsb {
             self.inputs[i].volumes[output] = volume;
             return self.write_mono(i, output);
         }
-        // From here on a stereo source: the AN1/2 block is the map's first
-        // one, so there is no mirror to keep in sync.
-        self.put(out, src, raw)?;
+        // From here on a stereo source, at its strip's balance. The AN1/2
+        // block is the map's first one, so there is no mirror to keep in
+        // sync.
+        let pan = self.pan(channel, output)?;
+        let (l, r) = balanced_raw(raw, pan);
+        self.put_stereo(out, src, l, r)?;
         // If this is a phase-inverted analog input, the mono write
         // above just overwrote the L register with the PLAIN value,
         // silently un-inverting phase — re-apply the negation on top.
@@ -937,8 +992,7 @@ impl RmeDevice for BabyfaceProUsb {
     fn set_pan(&mut self, channel: ChannelId, output: usize, pan: i8) -> Result<(), Error> {
         self.in_range(channel, Some(output))?;
         let out = output_for(output)?;
-        let balance = (pan.clamp(-100, 100) as f32) / 100.0;
-        let (src, fixed_is_left) = match channel {
+        let src = match channel {
             ChannelId::Input(i) => {
                 // A mono input: TotalMix FX writes both crosspoints of the
                 // pair for its pan (constant-power law, centred 0x16a0 per
@@ -947,35 +1001,27 @@ impl RmeDevice for BabyfaceProUsb {
                     self.inputs[i].pans[output] = pan.clamp(-100, 100);
                     return self.write_mono(i, output);
                 }
-                (input_source(i)?, i % 2 == 0)
+                input_source(i)?
             }
-            ChannelId::Playback(c) => (playback_source(c)?, c % 2 == 0),
+            ChannelId::Playback(c) => playback_source(c)?,
             ChannelId::Output(_) => return Ok(()),
         };
-        let fixed_volume = match channel {
-            ChannelId::Input(i) => self.inputs[i].volumes[output],
-            ChannelId::Playback(c) => self.playbacks[c].volumes[output],
-            _ => 0.0,
+        // A stereo strip: TotalMix FX's balance (`balanced_raw`), shared by
+        // both channels of the pair, written on both sides.
+        let partner = match channel {
+            ChannelId::Input(i) => ChannelId::Input(i ^ 1),
+            ChannelId::Playback(c) => ChannelId::Playback(c ^ 1),
+            ChannelId::Output(_) => return Ok(()),
         };
-        let fixed = source_raw(true, fixed_volume);
-        let varied = tuxmix_usb::protocol::balance_side(fixed, balance);
-        // Only the varying side changes; the other keeps what it holds.
-        let (_, idx) = self
-            .stereo_source(channel)
-            .ok_or_else(|| Error::InvalidChannel(format!("{channel:?}")))?;
-        let (mut l, mut r) = self.stereo.levels[idx][output].unwrap_or((fixed, fixed));
-        if fixed_is_left {
-            r = varied;
-        } else {
-            l = varied;
+        for cid in [channel, partner] {
+            match cid {
+                ChannelId::Input(i) => self.inputs[i].pans[output] = pan.clamp(-100, 100),
+                ChannelId::Playback(c) => self.playbacks[c].pans[output] = pan.clamp(-100, 100),
+                ChannelId::Output(_) => {}
+            }
         }
-        self.put_stereo(out, src, l, r)?;
-        match channel {
-            ChannelId::Input(i) => self.inputs[i].pans[output] = pan,
-            ChannelId::Playback(c) => self.playbacks[c].pans[output] = pan,
-            _ => {}
-        }
-        Ok(())
+        let (l, r) = self.stereo_raw(channel, output)?;
+        self.put_stereo(out, src, l, r)
     }
 
     fn pan(&self, channel: ChannelId, output: usize) -> Result<i8, Error> {
@@ -1046,8 +1092,12 @@ impl RmeDevice for BabyfaceProUsb {
         // A linked pair is soloed one channel at a time
         // (`set_input_solo`/`set_playback_solo`), so the exclusive solo
         // below must spare the strip's stereo partner.
-        let partner_i = solo_i.filter(|i| self.input_pair_linked(i / 2)).map(|i| i ^ 1);
-        let partner_c = solo_c.filter(|c| self.playback_linked(c / 2)).map(|c| c ^ 1);
+        let partner_i = solo_i
+            .filter(|i| self.input_pair_linked(i / 2))
+            .map(|i| i ^ 1);
+        let partner_c = solo_c
+            .filter(|c| self.playback_linked(c / 2))
+            .map(|c| c ^ 1);
         // Exclusive solo (the TotalMix default): soloing a strip clears the
         // other strips' solo flags.
         if solo {
@@ -1382,37 +1432,32 @@ impl RmeDevice for BabyfaceProUsb {
     }
 
     fn set_cue(&mut self, idx: usize, on: bool) -> Result<(), Error> {
-        // CUE always targets the AN1/2 monitor bus's own low-map
-        // registers, whichever output strip's button was pressed —
-        // `idx` only selects which playback pair (`PB{idx+1}`, the
-        // same numbering `output_for`/`OUT_LABELS` already use) stays
-        // live as this output's dedicated CUE source. See
-        // `PROTOCOL.md`'s "CUE on outputs" (cap_cue.pcap,
-        // hardware-verified): 0x0000 = muted, 0x2000 = active/restored.
+        // TotalMix FX (usbmon, 2026-11-26): CUE on an output strip puts that
+        // output's submix on Main's (PH3/4) block, and CUE off puts Main's
+        // own back. Cueing Main changes nothing.
         if idx >= self.output_pair_count() {
             return Err(Error::InvalidChannel(format!("Output {idx}")));
         }
-        let n_pairs = self.playbacks.len() / 2;
-        self.stereo.cue = on.then_some(idx);
-        for pb_pair in 0..n_pairs {
-            // Off, each playback comes back at its own AN1/2 fader (it used
-            // to come back at 0 dB, whatever the fader).
-            let src = playback_source(pb_pair * 2)?;
-            let (l, r) = match self.stereo.levels[FIRST_PLAYBACK + pb_pair][0] {
+        let feed = (on && idx != MAIN).then_some(idx);
+        self.stereo.cue = feed;
+        let from = feed.unwrap_or(MAIN);
+        for s_idx in 0..STEREO_SOURCES {
+            let (src, channels) = stereo_at(s_idx)?;
+            let asked = match self.stereo.levels[s_idx][from] {
                 Some(levels) => levels,
-                None => (
-                    source_raw(true, self.playbacks[pb_pair * 2].volumes[0]),
-                    source_raw(true, self.playbacks[pb_pair * 2 + 1].volumes[0]),
-                ),
+                None => self.stereo_raw(channels[0], from)?,
             };
-            self.put_stereo(Output::An12, src, l, r)?;
+            self.wire_stereo(Output::Ph34, src, s_idx, asked)?;
+        }
+        for i in 0..self.mono_silent.len().min(self.inputs.len()) {
+            self.write_mono_to(i, from, Output::Ph34)?;
         }
         // Exclusive: engaging CUE on `idx` silently disengages whichever
-        // other output had it (there's only one AN1/2 bus to share).
+        // other output had it (there's only one Main to feed).
         for out in self.outputs.iter_mut() {
             out.cue = false;
         }
-        if on {
+        if feed.is_some() {
             if let Some(l) = self.outputs.get_mut(idx * 2) {
                 l.cue = true;
             }
@@ -1444,15 +1489,17 @@ impl RmeDevice for BabyfaceProUsb {
         for (i, inp) in scene.inputs.iter().enumerate().skip(4) {
             let src = input_source(i)?;
             for (o, v) in inp.volumes.iter().enumerate() {
-                self.put(output_for(o)?, src, source_raw(true, *v))?;
+                let pan = inp.pans.get(o).copied().unwrap_or(0);
+                let (l, r) = balanced_raw(source_raw(true, *v), pan);
+                self.put_stereo(output_for(o)?, src, l, r)?;
             }
         }
         for (c, pb) in scene.playbacks.iter().enumerate() {
             let src = playback_source(c)?;
             for (o, v) in pb.volumes.iter().enumerate() {
-                let out = output_for(o)?;
-                let raw = source_raw(true, *v);
-                self.put(out, src, raw)?;
+                let pan = pb.pans.get(o).copied().unwrap_or(0);
+                let (l, r) = balanced_raw(source_raw(true, *v), pan);
+                self.put_stereo(output_for(o)?, src, l, r)?;
             }
         }
         for (o, out) in scene.outputs.iter().enumerate() {
@@ -1842,33 +1889,18 @@ mod tests {
         assert!(near(l, 0x4000) && r <= 1, "{l:#x} {r:#x}");
     }
 
+    /// TotalMix FX's balance on a stereo strip, as measured with usbmon:
+    /// R05 puts the left side at 0x1e66 of 0x2000, R50 at 0x1000, and L50
+    /// puts the right side at 0x1000; the near side stays.
     #[test]
-    fn cue_takes_over_the_playbacks_on_an12_and_gives_them_back() {
-        let mut mix = StereoMix::new();
-        let asked = (0x0200, 0x0180);
-        for cued in 0..6 {
-            mix.cue = Some(cued);
-            for pb in 0..6 {
-                let want = if pb == cued { (0x2000, 0x2000) } else { (0, 0) };
-                assert_eq!(mix.written(FIRST_PLAYBACK + pb, 0, asked), want);
-                // Only on AN1/2.
-                assert_eq!(mix.written(FIRST_PLAYBACK + pb, 1, asked), asked);
-            }
-            // The digital inputs are left alone.
-            for idx in 0..FIRST_PLAYBACK {
-                assert_eq!(mix.written(idx, 0, asked), asked);
-            }
-        }
-        // A muted source stays muted under its own CUE.
-        mix.cue = Some(2);
-        mix.silent[FIRST_PLAYBACK + 2] = true;
-        assert_eq!(mix.written(FIRST_PLAYBACK + 2, 0, asked), (0, 0));
-        // Off: back at the fader, not at 0 dB.
-        mix.silent[FIRST_PLAYBACK + 2] = false;
-        mix.cue = None;
-        for idx in 0..STEREO_SOURCES {
-            assert_eq!(mix.written(idx, 0, asked), asked);
-        }
+    fn stereo_balance_matches_totalmix() {
+        assert_eq!(balanced_raw(0x2000, 0), (0x2000, 0x2000));
+        assert_eq!(balanced_raw(0x2000, 5), (0x1e66, 0x2000));
+        assert_eq!(balanced_raw(0x2000, 50), (0x1000, 0x2000));
+        assert_eq!(balanced_raw(0x2000, -50), (0x2000, 0x1000));
+        assert_eq!(balanced_raw(0x2000, 100), (0, 0x2000));
+        assert_eq!(balanced_raw(0x2000, -100), (0x2000, 0));
+        assert_eq!(balanced_raw(0, 30), (0, 0));
     }
 
     /// A solo leaves the soloed strip where its fader is, silences the
@@ -1884,9 +1916,9 @@ mod tests {
         mix.silent = [true; STEREO_SOURCES];
         mix.silent[5] = false;
         for idx in 0..STEREO_SOURCES {
-            for out in 0..6 {
+            {
                 let want = if idx == 5 { (0x0200, 0x0180) } else { (0, 0) };
-                assert_eq!(mix.written(idx, out, (0x0200, 0x0180)), want);
+                assert_eq!(mix.written(idx, (0x0200, 0x0180)), want);
             }
         }
     }

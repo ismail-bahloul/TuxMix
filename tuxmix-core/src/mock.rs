@@ -185,9 +185,7 @@ impl MockBabyfacePro {
     /// solo goes on, and spares the soloed strip and its partner.
     fn soloed_elsewhere(&self, channel: ChannelId) -> bool {
         let partner = match channel {
-            ChannelId::Input(i) if self.input_pair_linked(i / 2) => {
-                Some(ChannelId::Input(i ^ 1))
-            }
+            ChannelId::Input(i) if self.input_pair_linked(i / 2) => Some(ChannelId::Input(i ^ 1)),
             ChannelId::Playback(c) if self.playback_linked(c / 2) => {
                 Some(ChannelId::Playback(c ^ 1))
             }
@@ -420,8 +418,10 @@ impl RmeDevice for MockBabyfacePro {
         if matches!(channel, ChannelId::Output(_)) || output >= self.output_pair_count() {
             return Err(Error::InvalidChannel(format!("{channel:?} into {output}")));
         }
-        self.hardware
-            .insert((channel, output), (volume.clamp(0.0, 2.0), pan.clamp(-100, 100)));
+        self.hardware.insert(
+            (channel, output),
+            (volume.clamp(0.0, 2.0), pan.clamp(-100, 100)),
+        );
         Ok(())
     }
 
@@ -493,9 +493,7 @@ impl RmeDevice for MockBabyfacePro {
         // backend skips the soloed strip and its linked partner, so their
         // cells stay.
         let partner = match channel {
-            ChannelId::Input(i) if self.input_pair_linked(i / 2) => {
-                Some(ChannelId::Input(i ^ 1))
-            }
+            ChannelId::Input(i) if self.input_pair_linked(i / 2) => Some(ChannelId::Input(i ^ 1)),
             ChannelId::Playback(c) if self.playback_linked(c / 2) => {
                 Some(ChannelId::Playback(c ^ 1))
             }
@@ -589,7 +587,6 @@ impl RmeDevice for MockBabyfacePro {
         inp.sensitivity = Some(sensitivity);
         Ok(())
     }
-
 
     fn set_pitch(&mut self, pitch_percent: f32) -> Result<(), Error> {
         self.settings.pitch_percent = pitch_percent.clamp(-5.0, 5.0);
@@ -875,8 +872,6 @@ impl RmeDevice for MockBabyfacePro {
         Ok(())
     }
 
-
-
     fn set_clock_source(&mut self, source: &str) -> Result<(), Error> {
         if !self.settings.clock_sources.iter().any(|s| s == source) {
             return Err(Error::InvalidChannel(format!(
@@ -945,12 +940,18 @@ mod tests {
         dev.set_volume(mic, 1, 0.2).unwrap();
         dev.write_crosspoint_raw(mic, 1, 0.7, -50).unwrap();
         assert_eq!(dev.hardware_crosspoint(mic, 1), (0.7, -50));
-        assert_eq!(dev.volume(mic, 1).unwrap(), 0.2, "the model keeps the user's level");
+        assert_eq!(
+            dev.volume(mic, 1).unwrap(),
+            0.2,
+            "the model keeps the user's level"
+        );
         // A model write rewrites the real crosspoint, replacing the override.
         dev.set_volume(mic, 1, 0.3).unwrap();
         assert_eq!(dev.hardware_crosspoint(mic, 1).0, 0.3);
         // Outputs have no crosspoint of their own.
-        assert!(dev.write_crosspoint_raw(ChannelId::Output(0), 1, 0.5, 0).is_err());
+        assert!(dev
+            .write_crosspoint_raw(ChannelId::Output(0), 1, 0.5, 0)
+            .is_err());
     }
 
     #[test]
@@ -1236,7 +1237,10 @@ mod tests {
 
         dev.set_input_phantom(0, true).unwrap();
         assert!(dev.inputs()[0].phantom);
-        assert!(dev.inputs()[1].phantom, "phantom must mirror across a linked pair");
+        assert!(
+            dev.inputs()[1].phantom,
+            "phantom must mirror across a linked pair"
+        );
 
         dev.set_input_pad(0, true).unwrap();
         assert!(dev.inputs()[0].pad);
@@ -1244,7 +1248,11 @@ mod tests {
 
         dev.set_input_gain(0, 20).unwrap();
         assert_eq!(dev.inputs()[0].gain, Some(20));
-        assert_eq!(dev.inputs()[1].gain, Some(20), "gain must mirror across a linked pair");
+        assert_eq!(
+            dev.inputs()[1].gain,
+            Some(20),
+            "gain must mirror across a linked pair"
+        );
     }
 
     #[test]

@@ -308,6 +308,40 @@ fn decode_volume_pan(l_raw: i64, r_raw: i64, max: f32) -> (f32, i8) {
 
 /// The inverse of [`pan_split`]: the volume is the power sum of the two
 /// sides and the pan is their angle.
+/// The share of a stereo strip's level each side keeps at balance `pan`
+/// (-100..=100), as TotalMix FX writes it: only the far side drops, and
+/// linearly. R50 halves the left side and leaves the right one alone
+/// (usbmon on TotalMix FX, 2026-11-26).
+pub(crate) fn balance_gains(pan: i8) -> (f32, f32) {
+    let p = f32::from(pan.clamp(-100, 100)) / 100.0;
+    (1.0 - p.max(0.0), 1.0 - (-p).max(0.0))
+}
+
+/// The share `side` keeps, see [`balance_gains`].
+fn balance_gain(pan: i8, side: SelemChannelId) -> f32 {
+    let (l, r) = balance_gains(pan);
+    if side == SelemChannelId::FrontRight {
+        r
+    } else {
+        l
+    }
+}
+
+/// A stereo strip's (level, balance) back from its two sides: the louder
+/// side is the level, the quieter one tells the balance.
+fn balance_join(l: f32, r: f32) -> (f32, i8) {
+    let level = l.max(r);
+    if level <= 0.0 {
+        return (0.0, 0);
+    }
+    let pan = if l < r {
+        (1.0 - l / r) * 100.0
+    } else {
+        -(1.0 - r / l) * 100.0
+    };
+    (level, pan.round().clamp(-100.0, 100.0) as i8)
+}
+
 fn pan_join(l: f32, r: f32) -> (f32, i8) {
     let volume = l.hypot(r);
     let pan = if volume > 0.0 {
@@ -605,7 +639,8 @@ impl BabyfacePro {
                     return Ok(());
                 };
                 let max = selem.get_playback_volume_range().1 as f32;
-                selem.set_playback_volume(mono, (volume.clamp(0.0, 1.0) * max) as i64)?;
+                let level = volume.clamp(0.0, 1.0) * balance_gain(pan, ch);
+                selem.set_playback_volume(mono, (level * max) as i64)?;
             }
             return Ok(());
         }
@@ -621,7 +656,8 @@ impl BabyfacePro {
             set_tlv_volume(&selem, SelemChannelId::FrontLeft, l)?;
             set_tlv_volume(&selem, SelemChannelId::FrontRight, r)?;
         } else {
-            set_tlv_volume(&selem, ch, volume)?;
+            // A stereo source's `pan` is its strip's balance.
+            set_tlv_volume(&selem, ch, volume * balance_gain(pan, ch))?;
         }
         Ok(())
     }
@@ -753,7 +789,12 @@ impl BabyfacePro {
         card_volume: f32,
     ) -> bool {
         if self.grammar == ControlGrammar::ClassCompliant {
-            return !resync_differs(model_volume, card_volume);
+            let model = if is_mono {
+                model_volume
+            } else {
+                model_volume * balance_gain(model_pan, ch)
+            };
+            return !resync_differs(model, card_volume);
         }
         let Some(selem) = self.crosspoint_selem(src, output) else {
             return false;
@@ -764,8 +805,16 @@ impl BabyfacePro {
             tlv_matches(&selem, SelemChannelId::FrontLeft, l)
                 && tlv_matches(&selem, SelemChannelId::FrontRight, r)
         } else {
-            tlv_matches(&selem, ch, volume)
+            tlv_matches(&selem, ch, volume * balance_gain(model_pan, ch))
         }
+    }
+
+    /// Both sides of a stereo source's crosspoint into `output`, as linear
+    /// levels.
+    fn read_stereo_sides(&self, src: usize, output: usize) -> Option<(f32, f32)> {
+        let (l, _) = self.read_crosspoint(src, SelemChannelId::FrontLeft, false, output)?;
+        let (r, _) = self.read_crosspoint(src, SelemChannelId::FrontRight, false, output)?;
+        Some((l, r))
     }
 
     /// Reads a crosspoint back as `(volume, pan)`, in whichever
@@ -854,6 +903,15 @@ impl BabyfacePro {
                     self.settings.clock_sources = (0..count)
                         .filter_map(|i| selem.get_enum_item_name(i).ok())
                         .collect();
+                }
+                continue;
+            }
+            if name == "Cue" {
+                // Item 0 is Off, item n the output pair n - 1 (driver 0.2.5).
+                if let Ok(item) = selem.get_enum_item(mono) {
+                    for (o, out) in self.outputs.iter_mut().enumerate() {
+                        out.cue = item > 0 && o / 2 + 1 == item as usize;
+                    }
                 }
                 continue;
             }
@@ -1021,8 +1079,21 @@ impl BabyfacePro {
             if resync && (self.inputs[i].mute || any_solo) {
                 continue;
             }
+            // A linked stereo pair reads as one strip: its level and its
+            // balance come from both sides together.
+            let balanced = !is_mono && self.input_pair_linked(i / 2);
             for out in 0..self.profile.output_pair_count() {
-                if let Some((volume, pan)) = self.read_crosspoint(src, ch, is_mono, out) {
+                let read = if balanced {
+                    let card = self.read_crosspoint(src, ch, false, out);
+                    self.read_stereo_sides(src, out)
+                        .map(|(l, r)| balance_join(l, r))
+                        .zip(card)
+                        .map(|((v, p), (side, _))| (v, p, side))
+                } else {
+                    self.read_crosspoint(src, ch, is_mono, out)
+                        .map(|(v, p)| (v, p, v))
+                };
+                if let Some((volume, pan, side)) = read {
                     if resync
                         && self.crosspoint_matches(
                             src,
@@ -1031,7 +1102,7 @@ impl BabyfacePro {
                             out,
                             self.inputs[i].volumes[out],
                             self.inputs[i].pans[out],
-                            volume,
+                            side,
                         )
                     {
                         continue;
@@ -1040,7 +1111,7 @@ impl BabyfacePro {
                     // A silent crosspoint carries no pan: keep the
                     // model's, so a fader pulled down and back up does
                     // not come back centred.
-                    if is_mono && (!resync || volume > 0.0) {
+                    if (is_mono || balanced) && (!resync || volume > 0.0) {
                         self.inputs[i].pans[out] = pan;
                     }
                 }
@@ -1054,22 +1125,35 @@ impl BabyfacePro {
             if resync && (self.playbacks[i].mute || any_solo) {
                 continue;
             }
+            let balanced = self.playback_linked(i / 2);
             for out in 0..self.profile.output_pair_count() {
-                if let Some((volume, _)) = self.read_crosspoint(src, ch, false, out) {
-                    if resync
-                        && self.crosspoint_matches(
-                            src,
-                            ch,
-                            false,
-                            out,
-                            self.playbacks[i].volumes[out],
-                            0,
-                            volume,
-                        )
-                    {
-                        continue;
+                let Some((side, _)) = self.read_crosspoint(src, ch, false, out) else {
+                    continue;
+                };
+                let (volume, pan) = if balanced {
+                    match self.read_stereo_sides(src, out) {
+                        Some((l, r)) => balance_join(l, r),
+                        None => continue,
                     }
-                    self.playbacks[i].volumes[out] = volume;
+                } else {
+                    (side, 0)
+                };
+                if resync
+                    && self.crosspoint_matches(
+                        src,
+                        ch,
+                        false,
+                        out,
+                        self.playbacks[i].volumes[out],
+                        self.playbacks[i].pans[out],
+                        side,
+                    )
+                {
+                    continue;
+                }
+                self.playbacks[i].volumes[out] = volume;
+                if balanced && (!resync || volume > 0.0) {
+                    self.playbacks[i].pans[out] = pan;
                 }
             }
         }
@@ -1630,10 +1714,11 @@ impl RmeDevice for BabyfacePro {
         // is really two independent ALSA channels, so writing volume
         // alone must re-encode with the cached pan rather than
         // flattening it to center.
-        let pan = if let ChannelId::Input(idx) = channel {
-            self.inputs[idx].pans[output]
-        } else {
-            0
+        // A stereo strip's pan is its balance (see `balance_gains`).
+        let pan = match channel {
+            ChannelId::Input(idx) => self.inputs[idx].pans[output],
+            ChannelId::Playback(idx) => self.playbacks[idx].pans[output],
+            ChannelId::Output(_) => 0,
         };
         // The driver's crosspoints reach +6 dB, the model's 2.0.
         let vol = if self.grammar == ControlGrammar::ClassCompliant {
@@ -1683,42 +1768,59 @@ impl RmeDevice for BabyfacePro {
 
     fn set_pan(&mut self, channel: ChannelId, output: usize, pan: i8) -> Result<(), Error> {
         let pan = pan.clamp(-100, 100);
-
-        // Only the 4 true-mono sources (AN1-AN4) have an independent
-        // left/right crosspoint pair to pan across — AS1/2, the ADAT
-        // pairs and every PCM playback channel are hardware-linked
-        // stereo sources with one ALSA channel each, no cross-routing
-        // possible (see `BF_SOURCES`/`input_crosspoint_slot`).
-        let (idx, volume) = match channel {
+        if output >= self.profile.output_pair_count() {
+            return Err(Error::InvalidChannel(format!("Output {}", output)));
+        }
+        let (src, ch, is_mono, linked) = match channel {
             ChannelId::Input(idx) => {
-                let ch = self
-                    .inputs
-                    .get(idx)
+                let (src, ch, is_mono) = input_crosspoint_slot(idx)
                     .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
-                if output >= ch.pans.len() {
-                    return Err(Error::InvalidChannel(format!("Output {}", output)));
-                }
-                (idx, ch.volumes[output])
+                (src, ch, is_mono, is_mono || self.input_pair_linked(idx / 2))
             }
-            ChannelId::Playback(_) => {
-                return Err(Error::InvalidChannel(
-                    "Playback channels are linked stereo pairs and have no independent pan".into(),
-                ));
+            ChannelId::Playback(idx) => {
+                let (src, ch) = playback_crosspoint_slot(idx)
+                    .ok_or_else(|| Error::InvalidChannel(format!("Playback {}", idx)))?;
+                (src, ch, false, self.playback_linked(idx / 2))
             }
             ChannelId::Output(_) => return Err(Error::InvalidChannel("Output has no pan".into())),
         };
-        let (src, _ch, is_mono) = input_crosspoint_slot(idx)
-            .ok_or_else(|| Error::InvalidChannel(format!("Input {}", idx)))?;
-        if !is_mono {
+        if !linked {
             return Err(Error::InvalidChannel(format!(
-                "Input {} is a linked stereo source and has no independent pan",
-                idx
+                "{channel:?} is one side of an unlinked pair and has no pan"
             )));
         }
-
-        self.write_crosspoint(src, SelemChannelId::FrontLeft, true, output, volume, pan)?;
-
-        self.inputs[idx].pans[output] = pan;
+        if is_mono {
+            // AN1-4: the pan law across the pair's two sides.
+            let ChannelId::Input(idx) = channel else {
+                unreachable!("only inputs are mono")
+            };
+            let volume = self.inputs[idx].volumes[output];
+            self.write_crosspoint(src, ch, true, output, volume, pan)?;
+            self.inputs[idx].pans[output] = pan;
+            return Ok(());
+        }
+        // A linked stereo strip: its balance, on both sides, as TotalMix
+        // FX does (`balance_gains`). Both channels of the pair keep it.
+        let pair = match channel {
+            ChannelId::Input(idx) => [ChannelId::Input(idx & !1), ChannelId::Input(idx | 1)],
+            ChannelId::Playback(idx) => {
+                [ChannelId::Playback(idx & !1), ChannelId::Playback(idx | 1)]
+            }
+            ChannelId::Output(_) => unreachable!("rejected above"),
+        };
+        let _ = ch;
+        for (cid, side) in pair
+            .into_iter()
+            .zip([SelemChannelId::FrontLeft, SelemChannelId::FrontRight])
+        {
+            let volume = self.volume(cid, output)?;
+            self.write_crosspoint(src, side, false, output, volume, pan)?;
+            match cid {
+                ChannelId::Input(i) => self.inputs[i].pans[output] = pan,
+                ChannelId::Playback(c) => self.playbacks[c].pans[output] = pan,
+                ChannelId::Output(_) => {}
+            }
+        }
         Ok(())
     }
 
@@ -1823,7 +1925,8 @@ impl RmeDevice for BabyfacePro {
                     } else {
                         self.playbacks[idx].volumes[out]
                     };
-                    self.write_crosspoint(src, ch, false, out, level, 0)?;
+                    let pan = self.playbacks[idx].pans[out];
+                    self.write_crosspoint(src, ch, false, out, level, pan)?;
                 }
             }
             ChannelId::Output(_) => unreachable!("handled above"),
@@ -1913,7 +2016,8 @@ impl RmeDevice for BabyfacePro {
                 } else {
                     self.playbacks[j].volumes[out]
                 };
-                self.write_crosspoint(src, ch, false, out, level, 0)?;
+                let pan = self.playbacks[j].pans[out];
+                self.write_crosspoint(src, ch, false, out, level, pan)?;
             }
         }
         Ok(())
@@ -2359,6 +2463,28 @@ impl RmeDevice for BabyfacePro {
         Ok(())
     }
 
+    /// CUE on output pair `idx`: Main plays that pair's submix, through the
+    /// driver's `Cue` control (TotalMix FX's CUE, driver 0.2.5).
+    fn set_cue(&mut self, idx: usize, on: bool) -> Result<(), Error> {
+        self.require_proprietary("Cue")?;
+        if idx >= self.profile.output_pair_count() {
+            return Err(Error::InvalidChannel(format!("Output {idx}")));
+        }
+        let selem = self
+            .mixer
+            .find_selem("Cue", 0)
+            .ok_or_else(|| Error::InvalidChannel("The driver has no Cue".into()))?;
+        let item = if on { idx as u32 + 1 } else { 0 };
+        selem.set_enum_item(SelemChannelId::mono(), item)?;
+        // Exclusive, and cueing Main is no cue: the driver reads it back as
+        // Off.
+        let main = idx == 1;
+        for (o, out) in self.outputs.iter_mut().enumerate() {
+            out.cue = on && !main && o / 2 == idx;
+        }
+        Ok(())
+    }
+
     fn set_dim(&mut self, on: bool) -> Result<(), Error> {
         self.require_proprietary("Dim")?;
         if let Some(selem) = self.mixer.find_selem("Dim", 0) {
@@ -2468,8 +2594,7 @@ impl RmeDevice for BabyfacePro {
     }
 
     fn has_width(&self) -> bool {
-        self.grammar == ControlGrammar::Proprietary
-            && self.mixer.find_selem("Width", 0).is_some()
+        self.grammar == ControlGrammar::Proprietary && self.mixer.find_selem("Width", 0).is_some()
     }
 
     fn has_source_width(&self) -> bool {
@@ -2647,7 +2772,9 @@ impl RmeDevice for BabyfacePro {
                 (src, ch, false)
             }
             ChannelId::Output(idx) => {
-                return Err(Error::InvalidChannel(format!("Output {idx} has no crosspoint")))
+                return Err(Error::InvalidChannel(format!(
+                    "Output {idx} has no crosspoint"
+                )))
             }
         };
         // Same ranges `set_volume` writes: the driver's crosspoints reach
@@ -2789,6 +2916,31 @@ impl BabyfacePro {
 
 #[cfg(test)]
 mod tests {
+    /// A stereo strip's balance, as TotalMix FX writes it (usbmon,
+    /// 2026-11-26): R50 halves the left side and leaves the right one.
+    #[test]
+    fn stereo_balance_drops_the_far_side_only() {
+        assert_eq!(balance_gains(0), (1.0, 1.0));
+        assert_eq!(balance_gains(50), (0.5, 1.0));
+        assert_eq!(balance_gains(-50), (1.0, 0.5));
+        assert_eq!(balance_gains(100), (0.0, 1.0));
+        assert_eq!(balance_gain(50, SelemChannelId::FrontLeft), 0.5);
+        assert_eq!(balance_gain(50, SelemChannelId::FrontRight), 1.0);
+        // Read back from the two sides, level and balance come out again.
+        for &level in &[0.25f32, 1.0, 2.0] {
+            for &pan in &[-100i8, -50, -5, 0, 5, 50, 99] {
+                let (gl, gr) = balance_gains(pan);
+                assert_eq!(
+                    balance_join(level * gl, level * gr),
+                    (level, pan),
+                    "{level} {pan}"
+                );
+            }
+        }
+        // Silence has no balance.
+        assert_eq!(balance_join(0.0, 0.0), (0.0, 0));
+    }
+
     #[test]
     fn pan_split_and_join_round_trip_in_linear_levels() {
         // The dB-converted crosspoints pan on TotalMix's constant-power
