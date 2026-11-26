@@ -12,6 +12,16 @@
   0.2.5) and the FX return (playback 13/14). The reverb types are modelled,
   not RME's sound. `cargo run -p tuxmix-core --example host-fx-files` writes
   the files to try by hand.
+- `host_fx::Runner` runs the effect: it writes the response and the config
+  to `$XDG_RUNTIME_DIR/tuxmix`, starts `pipewire -c` on them, and restarts it
+  when the settings change. A filter left by a TuxMix that crashed is
+  stopped first, so two never add up. `RmeDevice::set_host_fx` drives the
+  driver's `Host FX Switch`, and `pw_meter::fx_nodes` finds the card's
+  14-channel nodes. `cargo run -p tuxmix-core --example host-fx-run -- reverb
+  10` tries it on the card. Measured on a Babyface Pro FS: the reverb tail
+  falls about 45 dB in a second, and the default echo repeats every 0.6 s,
+  14 dB down each time. The effect also follows the volume of the card's
+  PipeWire sink, so keep that at 100 % for TotalMix's levels.
 - CUE with the kernel driver, through its new `Cue` control (driver 0.2.5).
 - Pan on the stereo strips (playbacks, AS and ADAT pairs) with the kernel
   driver, as TotalMix FX's balance: only the far side drops, linearly, so

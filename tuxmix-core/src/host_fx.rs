@@ -605,6 +605,194 @@ pub fn filter_chain_conf(ir_path: &str, capture_node: &str, playback_node: &str)
     c
 }
 
+/// Runs the filter-chain for the current settings: writes the response and
+/// the config, and starts `pipewire -c` on them as a child process. A
+/// convolver reads its response once, so a change of settings restarts it,
+/// with a short gap in the effect.
+///
+/// The effect goes back through the card's PipeWire sink, whose volume
+/// scales it: with the sink at 80 %, the effect came out 5.8 dB low on the
+/// unit, even with channels 13/14 at 100 %. At 100 % the levels are
+/// TotalMix's (an echo at -3 dB came back 3 dB under the FX bus).
+///
+/// The child's pid is kept in the runtime directory: a TuxMix that crashed
+/// leaves its filter running, and the next one stops it before starting its
+/// own, so two filters never add their effects.
+pub struct Runner {
+    dir: std::path::PathBuf,
+    child: Option<std::process::Child>,
+    running: Option<HostFx>,
+    generation: u64,
+}
+
+/// Why the filter could not run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunError {
+    /// The card's pro-audio nodes are missing or have 12 channels: the
+    /// effect needs kernel driver 0.2.5 and PipeWire's Pro Audio profile.
+    NoFxChannels,
+    /// Writing the files or starting `pipewire` failed.
+    Io(String),
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunError::NoFxChannels => write!(
+                f,
+                "No FX channels: reverb and echo need kernel driver 0.2.5 and the Pro Audio profile"
+            ),
+            RunError::Io(e) => write!(f, "Host FX: {e}"),
+        }
+    }
+}
+
+const PID_FILE: &str = "fx.pid";
+const CONF_STEM: &str = "tuxmix-fx";
+
+impl Runner {
+    /// A runner writing to `$XDG_RUNTIME_DIR/tuxmix`, after stopping a
+    /// filter an earlier TuxMix left there.
+    pub fn new() -> Self {
+        let base = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        Self::in_dir(base.join("tuxmix"))
+    }
+
+    /// A runner writing to `dir`.
+    pub fn in_dir(dir: std::path::PathBuf) -> Self {
+        let runner = Self {
+            dir,
+            child: None,
+            running: None,
+            generation: 0,
+        };
+        runner.stop_stale();
+        runner
+    }
+
+    /// The settings the filter runs now, if it runs.
+    pub fn running(&self) -> Option<&HostFx> {
+        self.running.as_ref()
+    }
+
+    /// Runs `fx`, or stops the filter when nothing is on. Does nothing when
+    /// these settings already run. `nodes` are the capture and playback
+    /// node names (see [`crate::pw_meter::fx_nodes`]); `None` asks
+    /// PipeWire.
+    pub fn apply(&mut self, fx: &HostFx, nodes: Option<(String, String)>) -> Result<(), RunError> {
+        if !fx.active() {
+            self.stop();
+            return Ok(());
+        }
+        if self.running.as_ref() == Some(fx) && self.alive() {
+            return Ok(());
+        }
+        let (capture, playback) = nodes
+            .or_else(crate::pw_meter::fx_nodes)
+            .ok_or(RunError::NoFxChannels)?;
+        std::fs::create_dir_all(&self.dir).map_err(|e| RunError::Io(e.to_string()))?;
+        // A new response file each time: the old filter may still read its
+        // own while this one starts.
+        self.generation += 1;
+        let ir = self
+            .dir
+            .join(format!("{CONF_STEM}-{}.wav", self.generation));
+        let conf = self
+            .dir
+            .join(format!("{CONF_STEM}-{}.conf", self.generation));
+        std::fs::write(&ir, wav(&responses(fx))).map_err(|e| RunError::Io(e.to_string()))?;
+        let text = filter_chain_conf(&ir.to_string_lossy(), &capture, &playback);
+        std::fs::write(&conf, text).map_err(|e| RunError::Io(e.to_string()))?;
+        self.stop();
+        let child = std::process::Command::new("pipewire")
+            .arg("-c")
+            .arg(&conf)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| RunError::Io(format!("cannot start pipewire: {e}")))?;
+        let _ = std::fs::write(self.dir.join(PID_FILE), child.id().to_string());
+        self.child = Some(child);
+        self.running = Some(*fx);
+        self.clean_files();
+        Ok(())
+    }
+
+    /// Stops the filter, if it runs.
+    pub fn stop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.running = None;
+        let _ = std::fs::remove_file(self.dir.join(PID_FILE));
+    }
+
+    /// Whether the child still runs: `pipewire` exits when PipeWire goes
+    /// away, and the next [`Self::apply`] starts it again.
+    pub fn alive(&mut self) -> bool {
+        match self.child.as_mut().map(|c| c.try_wait()) {
+            Some(Ok(None)) => true,
+            Some(_) => {
+                self.child = None;
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Stops a filter whose pid an earlier TuxMix left, if that process
+    /// still runs one of our configs.
+    fn stop_stale(&self) {
+        let Ok(text) = std::fs::read_to_string(self.dir.join(PID_FILE)) else {
+            return;
+        };
+        let Ok(pid) = text.trim().parse::<i32>() else {
+            return;
+        };
+        let ours = std::fs::read(format!("/proc/{pid}/cmdline"))
+            .map(|c| String::from_utf8_lossy(&c).contains(CONF_STEM))
+            .unwrap_or(false);
+        if ours && pid > 0 {
+            // SAFETY: plain kill(2) on a pid we checked runs our config.
+            unsafe {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        }
+        let _ = std::fs::remove_file(self.dir.join(PID_FILE));
+    }
+
+    /// Removes the files of earlier generations.
+    fn clean_files(&self) {
+        let keep = format!("{CONF_STEM}-{}.", self.generation);
+        let Ok(entries) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with(CONF_STEM) && !name.starts_with(&keep) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+}
+
+impl Default for Runner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for Runner {
+    fn drop(&mut self) {
+        self.stop();
+        self.clean_files();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,6 +803,33 @@ mod tests {
             .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
             .map(|(i, _)| i)
             .unwrap()
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("tuxmix-fx-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn nothing_on_runs_nothing() {
+        let dir = scratch("off");
+        let mut r = Runner::in_dir(dir.clone());
+        assert_eq!(r.apply(&HostFx::default(), None), Ok(()));
+        assert!(r.running().is_none());
+        assert!(!r.alive());
+        assert!(!dir.join(PID_FILE).exists());
+    }
+
+    #[test]
+    fn a_stale_pid_that_is_not_ours_is_left_alone() {
+        let dir = scratch("stale");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Our own pid runs the test binary, not a filter: never killed.
+        std::fs::write(dir.join(PID_FILE), std::process::id().to_string()).unwrap();
+        let _r = Runner::in_dir(dir.clone());
+        assert!(!dir.join(PID_FILE).exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
