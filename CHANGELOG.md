@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Added
+- `tuxmix_core::host_fx`: the reverb and echo of the Babyface Pro FS, which
+  TotalMix FX computes on the host. TotalMix-like settings (reverb type,
+  pre delay, room scale, low and high cut, smooth, width, volume; echo type,
+  delay or BPM, feedback, high cut, width, volume) give four impulse
+  responses, one per input and output side, for a PipeWire filter-chain of
+  convolvers between the FX bus (capture channels 13/14 of kernel driver
+  0.2.5) and the FX return (playback 13/14). The reverb types are modelled,
+  not RME's sound. `cargo run -p tuxmix-core --example host-fx-files` writes
+  the files to try by hand.
 - CUE with the kernel driver, through its new `Cue` control (driver 0.2.5).
 - Pan on the stereo strips (playbacks, AS and ADAT pairs) with the kernel
   driver, as TotalMix FX's balance: only the far side drops, linearly, so

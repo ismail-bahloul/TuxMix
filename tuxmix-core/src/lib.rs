@@ -25,6 +25,7 @@ pub mod channel;
 pub(crate) mod curves;
 pub mod device;
 pub mod eq_presets;
+pub mod host_fx;
 pub mod error;
 pub mod latter;
 #[cfg(feature = "alsa")]
