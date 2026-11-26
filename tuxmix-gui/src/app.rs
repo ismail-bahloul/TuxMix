@@ -5496,9 +5496,9 @@ const SIDEBAR_SCALE_MAX: f32 = 1.25;
 /// rumble filter, where 20 Hz would do nothing audible and read as a switch
 /// that does not work.
 const LOW_CUT_ON_HZ: u16 = 80;
-/// Nor does it shrink below 100 %: zooming out is for fitting more
-/// strips, and at 75 % the sidebar's labels were 6 px.
-const SIDEBAR_SCALE_MIN: f32 = 1.0;
+/// It follows the zoom down to 85 %, so it keeps the strips' proportions
+/// when zooming out, but no further: at 75 % its smallest labels were 6 px.
+const SIDEBAR_SCALE_MIN: f32 = 0.85;
 /// A starting zoom for a monitor of `height` logical pixels (the OS scale
 /// factor is already in it): 100 % at 1080p and below, more on bigger
 /// screens, where the 10-13 px text is small. Only used at the first
@@ -9041,14 +9041,16 @@ mod tests {
     }
 
     #[test]
-    fn the_sidebar_stops_growing_with_the_zoom() {
+    fn the_sidebar_follows_the_zoom_between_its_bounds() {
         let mut state = new(true, None, None);
         state.ui_scale = 1.75;
         assert_eq!(super::sidebar_scale(&state), 1.25);
         state.ui_scale = 1.0;
         assert_eq!(super::sidebar_scale(&state), 1.0);
+        state.ui_scale = 0.9;
+        assert_eq!(super::sidebar_scale(&state), 0.9);
         state.ui_scale = 0.75;
-        assert_eq!(super::sidebar_scale(&state), 1.0);
+        assert_eq!(super::sidebar_scale(&state), 0.85);
     }
 
     #[test]
