@@ -53,6 +53,11 @@
   a row, and each effect's volume on a fader beside them. Each effect now
   takes two rows instead of three, and the whole sidebar fits on a 1080p
   screen. The on/off buttons carry a light that turns orange when on.
+- Mixer strips are narrower, 88 px instead of 96 at 100 %, closer to
+  TotalMix's density: the fader track went from 26 to 22 px. Inputs and
+  playbacks now sit side by side from about 1500 px wide. A strip's type
+  tag is left out when its name already starts with it ("ADAT3/4" no
+  longer reads "ADAT3/4 ADAT").
 
 ### Fixed
 - The PipeWire meters take the 14-channel devices of kernel driver 0.2.5
