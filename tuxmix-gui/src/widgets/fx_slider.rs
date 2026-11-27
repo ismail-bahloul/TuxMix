@@ -3,8 +3,11 @@
 
 //! The thin FX fader at the top of a strip's right column, as TotalMix FX
 //! has it: the strip's send into the effects (inputs, playback) or the
-//! return of the effects into an output. -65 .. 0 dB, linear in dB;
-//! double-click turns it off, the wheel nudges it a dB at a time. The FX
+//! return of the effects into an output. -65 .. 0 dB, linear in dB.
+//! It moves only by dragging, from wherever it is: a plain click leaves it
+//! alone, since it is thin enough that a click meant for something else
+//! lands on it and used to throw the level to that spot. Double-click
+//! turns it off, the wheel nudges it a dB at a time. The FX
 //! panel's reverb and echo volumes use it too, up to +6 dB
 //! (`fx_slider_to`).
 
@@ -29,17 +32,19 @@ struct FxSlider<Message> {
 
 #[derive(Default)]
 struct State {
-    dragging: bool,
+    /// Where a drag started: the cursor's height and the level then.
+    grab: Option<(f32, f32)>,
     last_click: Option<std::time::Instant>,
 }
 
 impl<Message> FxSlider<Message> {
-    /// dB at cursor height `y` (canvas-local): the cap's centre follows it.
-    fn db_at(&self, y: f32, height: f32) -> f32 {
-        let cap = CAP_H * self.scale;
-        let span = (height - cap).max(1.0);
-        let t = 1.0 - ((y - cap / 2.0) / span).clamp(0.0, 1.0);
-        (DB_MIN + t * (self.top - DB_MIN)).round()
+    /// The level after dragging `dy` pixels (down is positive) from `from`
+    /// dB, on a slider `height` pixels tall: the cap moves with the cursor.
+    fn dragged(&self, from: f32, dy: f32, height: f32) -> f32 {
+        let span = (height - CAP_H * self.scale).max(1.0);
+        (from - dy / span * (self.top - DB_MIN))
+            .clamp(DB_MIN, self.top)
+            .round()
     }
 }
 
@@ -62,21 +67,21 @@ impl<Message: Clone> canvas::Program<Message> for FxSlider<Message> {
                     .is_some_and(|t| now.duration_since(t) < super::fader::DOUBLE_CLICK);
                 state.last_click = Some(now);
                 if double {
-                    state.dragging = false;
+                    state.grab = None;
                     return Some(canvas::Action::publish(self.on_reset.clone()).and_capture());
                 }
-                state.dragging = true;
-                let db = self.db_at(pos.y - bounds.y, bounds.height);
-                Some(canvas::Action::publish((self.on_change)(db)).and_capture())
+                state.grab = Some((pos.y, self.db.clamp(DB_MIN, self.top)));
+                Some(canvas::Action::capture())
             }
-            canvas::Event::Mouse(mouse::Event::CursorMoved { position }) if state.dragging => {
-                let db = self.db_at(position.y - bounds.y, bounds.height);
+            canvas::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                let (y0, from) = state.grab?;
+                let db = self.dragged(from, position.y - y0, bounds.height);
                 Some(canvas::Action::publish((self.on_change)(db)).and_capture())
             }
             canvas::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-                if state.dragging =>
+                if state.grab.is_some() =>
             {
-                state.dragging = false;
+                state.grab = None;
                 Some(canvas::Action::capture())
             }
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
@@ -125,7 +130,7 @@ impl<Message: Clone> canvas::Program<Message> for FxSlider<Message> {
             frame.fill(&fill, theme::FX_COLOR);
         }
 
-        let hot = state.dragging || cursor.is_over(bounds);
+        let hot = state.grab.is_some() || cursor.is_over(bounds);
         let cap = Path::rounded_rectangle(
             Point::new(x - cap_w / 2.0, cap_y),
             Size::new(cap_w, cap_h),
@@ -155,7 +160,7 @@ impl<Message: Clone> canvas::Program<Message> for FxSlider<Message> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> mouse::Interaction {
-        if state.dragging {
+        if state.grab.is_some() {
             mouse::Interaction::Grabbing
         } else if cursor.is_over(bounds) {
             mouse::Interaction::Grab
@@ -197,4 +202,28 @@ pub fn fx_slider_to<'a, Message: Clone + 'a>(
     .width(Length::Fixed(width))
     .height(Length::Fixed(height))
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slider(db: f32) -> FxSlider<()> {
+        FxSlider { db, top: 0.0, scale: 1.0, on_change: Box::new(|_| ()), on_reset: () }
+    }
+
+    #[test]
+    fn a_drag_moves_from_the_level_not_to_the_cursor() {
+        let s = slider(-10.0);
+        // No movement, no change: a click does not jump.
+        assert_eq!(s.dragged(-10.0, 0.0, 56.0), -10.0);
+        // The whole travel down takes it from the top to the floor.
+        let span = 56.0 - CAP_H;
+        assert_eq!(s.dragged(0.0, span, 56.0), DB_MIN);
+        // Up past the top stops there.
+        assert_eq!(s.dragged(-10.0, -500.0, 56.0), 0.0);
+        // A few pixels down lowers it a little.
+        let d = s.dragged(-10.0, 4.0, 56.0);
+        assert!(d < -10.0 && d > -20.0, "{d}");
+    }
 }

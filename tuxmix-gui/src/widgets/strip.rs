@@ -50,8 +50,9 @@ const PEAK_ROW_H: f32 = 12.0;
 const FADER_BOTTOM_GAP: f32 = 5.0;
 /// Height of the thin FX fader in a strip's right column.
 const FX_SLIDER_H: f32 = 56.0;
-/// The shortest the FX fader gets when the strip's fader is shortened.
-const FX_SLIDER_MIN_H: f32 = 24.0;
+/// The shortest the FX fader gets when the strip's fader is shortened:
+/// shorter, and it is too small to grab without catching it by mistake.
+const FX_SLIDER_MIN_H: f32 = 32.0;
 
 /// What a full strip stacks above its fader: the name line, the pan knob
 /// and the M/S row (`full_strip`, at scale 1, hairline spacings aside).
@@ -845,10 +846,10 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     // it — the user caught this directly). `STRIP_W` was widened (see
     // its own doc comment) specifically so this column has room without
     // pushing the meter/ruler group past the fader canvas's own bounds.
-    let mut icon_col = column![].spacing(theme::SPACE_SM * scale).align_x(iced::Alignment::Center);
     // The buttons under the FX fader. When the mixer shortens the faders
     // to fit the window, the FX fader gives up the height so the column
-    // never runs past the fader and every card in a row stays as tall.
+    // never runs past the fader and every card in a row stays as tall;
+    // past its floor the gaps in the column tighten instead.
     let buttons = [
         p.has_trim && p.protocol_features,
         p.has_phase && p.protocol_features,
@@ -858,8 +859,14 @@ fn full_strip<'a>(p: StripParams<'a>, w: f32) -> Element<'a, Message> {
     .iter()
     .filter(|&&b| b)
     .count() as f32;
-    let fx_slider_h = (fader_h - buttons * (SIDE_BTN_H + theme::SPACE_SM) * scale)
-        .clamp(FX_SLIDER_MIN_H * scale, FX_SLIDER_H * scale);
+    let room = |gap: f32| fader_h - buttons * (SIDE_BTN_H + gap) * scale;
+    let gap = if room(theme::SPACE_SM) < FX_SLIDER_MIN_H * scale {
+        theme::SPACE_TIGHT
+    } else {
+        theme::SPACE_SM
+    };
+    let fx_slider_h = room(gap).clamp(FX_SLIDER_MIN_H * scale, FX_SLIDER_H * scale);
+    let mut icon_col = column![].spacing(gap * scale).align_x(iced::Alignment::Center);
     // The thin FX fader heading the column, as in TotalMix: the strip's
     // send into the effects, or an output's return from them.
     if let Some(db) = p.fx_db {

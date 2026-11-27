@@ -2,7 +2,16 @@
 
 ## Unreleased
 
-## 0.3.10 (2026-11-26)
+### Changed
+- The thin FX fader in a strip (send, or an output's FX return) moves only
+  by dragging, from where it is. A plain click used to throw it to the
+  clicked spot, and it is thin enough that a click meant for something
+  else could cut an effect's return without anyone noticing. Double-click
+  still turns it off and the wheel still nudges it. When the mixer
+  shortens the faders it no longer gets shorter than 32 px (at 100 %);
+  the icons under it close up instead.
+
+## 0.3.10 (2026-11-27)
 
 ### Added
 - Reverb and echo, TotalMix FX's FX panel, in the sidebar. With kernel
