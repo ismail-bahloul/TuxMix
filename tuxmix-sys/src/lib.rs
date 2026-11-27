@@ -122,8 +122,15 @@ pub extern "C" fn tuxmix_audio_rate(h: *mut c_void) -> u32 {
 /// Push `frames` of interleaved S24_LE (`channels` 2 or 4) playback
 /// audio. Returns the frames accepted (== frames unless the ring is
 /// full — then the caller returns the short count so the app paces).
+///
+/// # Safety
+///
+/// - `h` must be a handle returned by [`tuxmix_audio_open`] that has not
+///   been released by [`tuxmix_audio_close`].
+/// - `buf` must be NULL, or valid for reads of `frames * channels * 3`
+///   bytes (with `channels` 2 or 4) that nothing writes during the call.
 #[no_mangle]
-pub extern "C" fn tuxmix_audio_write_playback(
+pub unsafe extern "C" fn tuxmix_audio_write_playback(
     h: *mut c_void,
     buf: *const u8,
     frames: usize,
@@ -144,8 +151,16 @@ pub extern "C" fn tuxmix_audio_write_playback(
 
 /// Read up to `frames` of interleaved S24_LE (`channels` 2 or 4) into
 /// `buf`. Returns the frames actually read (< requested = drained).
+///
+/// # Safety
+///
+/// - `h` must be a handle returned by [`tuxmix_audio_open`] that has not
+///   been released by [`tuxmix_audio_close`].
+/// - `buf` must be NULL, or valid for writes of `frames * channels * 3`
+///   bytes (with `channels` 2 or 4) that nothing else accesses during the
+///   call.
 #[no_mangle]
-pub extern "C" fn tuxmix_audio_read_capture(
+pub unsafe extern "C" fn tuxmix_audio_read_capture(
     h: *mut c_void,
     buf: *mut u8,
     frames: usize,
