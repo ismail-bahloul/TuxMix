@@ -750,24 +750,22 @@ pub fn set_low_cut(
 /// EQ band filter type (the 3-band channel EQ: Low/Mid/High).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EqType {
-    /// Parametric bell (peaking) — cap_eq8a/b/c, EXACT RBJ cookbook fit
-    /// (verified to ~1 LSB on the labeled gain/Q/freq sweeps).
+    /// Parametric bell (peaking) — the RBJ cookbook biquad with
+    /// α = sin(w0/(2Q)) (see [`eq_band_storage`]).
     Bell,
-    /// Low shelf — cap_eq8d (shelf sweep) PINNED 2026-08-24: RBJ low
-    /// shelf with α = sin(w0)/(2Q) (the S=1 shelf used before was ~4e-4
-    /// off; the Q-driven α matches the stored words to ~1e-6 at ≤1 kHz,
-    /// the residual is the shared high-freq warping — see eq_biquad.md).
+    /// Low shelf — the RBJ cookbook low shelf, with the same α as the
+    /// bell.
     LowShelf,
-    /// High shelf — same formula family as [`EqType::LowShelf`]
-    /// (a1 sign mirrored per the RBJ cookbook; no labeled high-shelf
-    /// capture yet to confirm to LSB).
+    /// High shelf — the RBJ cookbook high shelf, with the same α as the
+    /// bell. No labeled high-shelf capture confirms it to the LSB.
     HighShelf,
 }
 
 /// The 5 stored words for one EQ band slot (c0..c3 @ slot + c4 @ 0x34).
 ///
 /// The storage is NOT the biquad directly — it is the RBJ cookbook
-/// biquad split as a NORMALIZED numerator / NORMALIZED denominator with
+/// biquad (except for α, below) split as a NORMALIZED numerator /
+/// NORMALIZED denominator with
 /// the leading numerator coeff stored separately (decoded 2026-08-24,
 /// see `tools/usbdump/eq_biquad.md`):
 ///
@@ -784,9 +782,12 @@ pub enum EqType {
 /// `gain_db = 0` → identity ([0,0,0,0, 0x0800_0000]), matching TotalMix
 /// (0 dB band = all-zero slot + the neutral b0 = 2²⁷ word).
 ///
-/// Verified: cap_eq8c gain sweep −20..+20 dB reproduces the EXACT
-/// labeled peak/notch (200 Hz, ±0.000 dB); cap_eq8b Q sweep (0.7..5)
-/// and cap_eq8a freq sweep (50..10 kHz) match to ~1 LSB at low freq.
+/// TotalMix FX uses α = sin(w0/(2Q)) for the bell and both shelves,
+/// not the cookbook's sin(w0)/(2Q): the two agree at low frequency and
+/// drift apart towards Nyquist (point 9 of issue #20). The comparison
+/// with TotalMix FX is recorded in the kernel driver's notes
+/// (babyface-pro-linux); this USB backend has not been checked on a
+/// unit.
 pub fn eq_band_storage(eq_type: EqType, freq_hz: f32, q: f32, gain_db: f32, fs: f32) -> [i32; 5] {
     let s = (1i64 << 27) as f32;
     if gain_db.abs() < 1e-6 {
@@ -795,46 +796,34 @@ pub fn eq_band_storage(eq_type: EqType, freq_hz: f32, q: f32, gain_db: f32, fs: 
     let a = 10f32.powf(gain_db / 40.0);
     let w0 = 2.0 * std::f32::consts::PI * freq_hz / fs;
     let c = w0.cos();
-    // RBJ cookbook. Bell: α = sin(w0)/(2Q). Shelves: SAME Q-driven α
-    // (cap_eq8d shelf sweep 2026-08-24: the implied α from the stored
-    // a1'/a2' = sin(w0)/(2Q) to ~1e-5, vs the old S=1 which was ~4e-4
-    // off; the residual is the same high-freq warping as the bell).
+    // RBJ cookbook biquads, with TotalMix FX's α for all three types.
+    let alpha = (w0 / (2.0 * q)).sin();
+    let sq = 2.0 * a.sqrt() * alpha; // shelves only
     let (b0, b1, b2, a0, a1, a2) = match eq_type {
-        EqType::Bell => {
-            let alpha = w0.sin() / (2.0 * q);
-            (
-                1.0 + alpha * a,
-                -2.0 * c,
-                1.0 - alpha * a,
-                1.0 + alpha / a,
-                -2.0 * c,
-                1.0 - alpha / a,
-            )
-        }
-        EqType::LowShelf => {
-            let alpha = w0.sin() / (2.0 * q);
-            let sq = 2.0 * a.sqrt() * alpha;
-            (
-                a * ((a + 1.0) - (a - 1.0) * c + sq),
-                2.0 * a * ((a - 1.0) - (a + 1.0) * c),
-                a * ((a + 1.0) - (a - 1.0) * c - sq),
-                (a + 1.0) + (a - 1.0) * c + sq,
-                -2.0 * ((a - 1.0) + (a + 1.0) * c),
-                (a + 1.0) + (a - 1.0) * c - sq,
-            )
-        }
-        EqType::HighShelf => {
-            let alpha = w0.sin() / (2.0 * q);
-            let sq = 2.0 * a.sqrt() * alpha;
-            (
-                a * ((a + 1.0) + (a - 1.0) * c + sq),
-                -2.0 * a * ((a - 1.0) + (a + 1.0) * c),
-                a * ((a + 1.0) + (a - 1.0) * c - sq),
-                (a + 1.0) - (a - 1.0) * c + sq,
-                -2.0 * ((a - 1.0) - (a + 1.0) * c),
-                (a + 1.0) - (a - 1.0) * c - sq,
-            )
-        }
+        EqType::Bell => (
+            1.0 + alpha * a,
+            -2.0 * c,
+            1.0 - alpha * a,
+            1.0 + alpha / a,
+            -2.0 * c,
+            1.0 - alpha / a,
+        ),
+        EqType::LowShelf => (
+            a * ((a + 1.0) - (a - 1.0) * c + sq),
+            2.0 * a * ((a - 1.0) - (a + 1.0) * c),
+            a * ((a + 1.0) - (a - 1.0) * c - sq),
+            (a + 1.0) + (a - 1.0) * c + sq,
+            -2.0 * ((a - 1.0) + (a + 1.0) * c),
+            (a + 1.0) + (a - 1.0) * c - sq,
+        ),
+        EqType::HighShelf => (
+            a * ((a + 1.0) + (a - 1.0) * c + sq),
+            -2.0 * a * ((a - 1.0) + (a + 1.0) * c),
+            a * ((a + 1.0) + (a - 1.0) * c - sq),
+            (a + 1.0) - (a - 1.0) * c + sq,
+            2.0 * ((a - 1.0) - (a + 1.0) * c),
+            (a + 1.0) - (a - 1.0) * c - sq,
+        ),
     };
     let (b0n, b1n, b2n) = (b0 / a0, b1 / a0, b2 / a0);
     let (a1n, a2n) = (a1 / a0, a2 / a0);
@@ -1468,7 +1457,7 @@ mod tests {
     fn eq_band_storage_matches_cap_eq8d_low_shelf() {
         // cap_eq8d (shelf sweep, 2026-08-24): the stored words for the
         // +6 dB / -6 dB @ 200 Hz Q=0.7 low shelves match the RBJ low
-        // shelf (α = sin(w0)/(2Q)) to ~1e-6 (vs ~4e-4 with the old S=1).
+        // shelf with α = sin(w0/(2Q)) within the 1e-5 asserted here.
         // Captured words (value = word/2^27):
         //   +6: c0=-1.968542 c1=+0.969020 c2=-1.955575 c3=+0.956522 c4=+1.006509
         //   -6: c0=-1.955575 c1=+0.956522 c2=-1.968542 c3=+0.969020 c4=+0.993533
@@ -1487,6 +1476,29 @@ mod tests {
             assert!(
                 (*w as f64 / s - cap).abs() < 1e-5,
                 "-6 shelf word {w:08X} vs captured {cap}"
+            );
+        }
+    }
+
+    #[test]
+    fn eq_band_storage_high_shelf_boosts_the_top_only() {
+        // |H| in dB at DC (z = 1) or at Nyquist (z = -1), from the
+        // stored words: b0=c4, b1=c2·c4, b2=c3·c4, a1=c0, a2=c1.
+        fn gain_at(w: [i32; 5], z: f64) -> f64 {
+            let [a1, a2, c2, c3, b0] = w.map(|v| v as f64 / (1i64 << 27) as f64);
+            let h = b0 * (1.0 + c2 * z + c3) / (1.0 + a1 * z + a2);
+            20.0 * h.abs().log10()
+        }
+        // 1 kHz keeps the DC sums far enough from zero for the stored
+        // precision.
+        for gain in [-12.0, -6.0, 6.0, 12.0] {
+            let w = eq_band_storage(EqType::HighShelf, 1000.0, 0.7, gain, 48000.0);
+            let low = gain_at(w, 1.0);
+            let high = gain_at(w, -1.0);
+            assert!(low.abs() < 0.01, "gain {gain}: {low:.3} dB at DC");
+            assert!(
+                (high - gain as f64).abs() < 0.01,
+                "gain {gain}: {high:.3} dB at Nyquist"
             );
         }
     }
