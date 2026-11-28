@@ -11,6 +11,15 @@
   shortens the faders it no longer gets shorter than 32 px (at 100 %);
   the icons under it close up instead.
 
+### Fixed
+- `tuxmix-usb`: the band EQ words (`protocol::eq_band_storage`) now use
+  TotalMix FX's alpha, sin(w0 / (2 Q)) instead of sin(w0) / (2 Q), for the
+  bell and both shelves (point 9 of issue #20), and the high shelf's `a1`
+  has the sign of the RBJ cookbook, so it applies its gain to the top of the
+  spectrum and none to the bottom. The kernel driver (babyface-pro-linux)
+  already had both fixes, and its notes record the comparison with TotalMix
+  FX; the USB backend has not been checked on a unit.
+
 ## 0.3.10 (2026-11-27)
 
 ### Added
