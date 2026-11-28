@@ -347,11 +347,11 @@ pub fn set_pitch(pitch_percent: f32) -> Vec<VendorRequest> {
     let b1 = (dds16 as f32 * 0.72562).round() as u16;
     let b2 = (dds16 as f32 * 2.0 / 3.0).round() as u16;
     vec![
-        VendorRequest::new(0x1B, dds16, (frac << 8) | 0), // bank 0 = DDS 16.8
-        VendorRequest::new(0x1B, b1, 0x0001),             // bank 1
-        VendorRequest::new(0x1B, b2, 0x0002),             // bank 2
-        VendorRequest::new(0x1B, 0x7CFF, 0x0003),         // bank 3 (0% value)
-        VendorRequest::new(0x10, 0x0001, 0x05CF),         // clock keepalive
+        VendorRequest::new(0x1B, dds16, frac << 8), // bank 0 = DDS 16.8
+        VendorRequest::new(0x1B, b1, 0x0001),       // bank 1
+        VendorRequest::new(0x1B, b2, 0x0002),       // bank 2
+        VendorRequest::new(0x1B, 0x7CFF, 0x0003),   // bank 3 (0% value)
+        VendorRequest::new(0x10, 0x0001, 0x05CF),   // clock keepalive
     ]
 }
 
@@ -463,9 +463,9 @@ pub fn set_loopback(channel: u16, on: bool) -> VendorRequest {
 /// commit left the AN1→AN2 route half-live at ≈ -41 dBFS).
 /// Input-strip stereo-link state for the AN1/2 pair (`0x17` wIdx=0x1000,
 /// cap_an2.pcap): 0x0000 = split (individual AN1/AN2 buses), 0x0400 =
-/// linked (default — TotalMix's state; the pair moves together),
-/// + 0x1000 = the AN 1>2 copy mode (only composed with linked, the
-/// cap shows 0x1400 = linked + copy). Followed by the 0x21 commit.
+/// linked (default — TotalMix's state; the pair moves together).
+/// Adding 0x1000 selects the AN 1>2 copy mode (only composed with linked,
+/// the cap shows 0x1400 = linked + copy). Followed by the 0x21 commit.
 pub fn set_input_link(linked: bool, an12: bool) -> Vec<VendorRequest> {
     let mut v = if linked { 0x0400 } else { 0x0000 };
     if an12 {
@@ -762,6 +762,19 @@ pub enum EqType {
     /// (a1 sign mirrored per the RBJ cookbook; no labeled high-shelf
     /// capture yet to confirm to LSB).
     HighShelf,
+}
+
+/// The user-facing settings of one EQ band.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EqBandParams {
+    /// Filter shape.
+    pub eq_type: EqType,
+    /// Centre (bell) or corner (shelf) frequency in Hz.
+    pub freq_hz: f32,
+    /// Quality factor.
+    pub q: f32,
+    /// Boost or cut in dB (0 = the band is neutral).
+    pub gain_db: f32,
 }
 
 /// The 5 stored words for one EQ band slot (c0..c3 @ slot + c4 @ 0x34).
