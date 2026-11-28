@@ -81,6 +81,11 @@ pub const AUDIO_INTERFACE: u8 = 5;
 /// `set_sample_rate` switches alt 1/2/3 via SET_INTERFACE — see
 /// [`protocol::rate_to_alt`].
 pub const AUDIO_ALT_SETTING: u8 = 1;
+/// `wMaxPacketSize` for [`AUDIO_EP_OUT`]/[`AUDIO_EP_IN`] at
+/// [`AUDIO_ALT_SETTING`] is 448 bytes, but the audio URBs must be
+/// **14336 bytes** (256 frames × 56 B, the Windows driver's URB size):
+/// with 448-B URBs the DSP never starts producing audio and 48V never
+/// engages (verified on hardware).
 pub const AUDIO_EP_OUT: u8 = 0x01;
 pub const AUDIO_EP_IN: u8 = 0x82;
 
@@ -89,11 +94,6 @@ pub const AUDIO_EP_IN: u8 = 0x82;
 /// EQ/FX parameter uploads are BULK OUT, not vendor control.
 pub const DSP_INTERFACE: u8 = 1;
 pub const DSP_EP_OUT: u8 = 0x0A;
-/// `wMaxPacketSize` for [`AUDIO_EP_OUT`]/[`AUDIO_EP_IN`] at
-/// [`AUDIO_ALT_SETTING`] is 448 bytes, but the audio URBs must be
-/// **14336 bytes** (256 frames × 56 B, the Windows driver's URB size):
-/// with 448-B URBs the DSP never starts producing audio and 48V never
-/// engages (verified on hardware).
 
 const CONTROL_TIMEOUT: Duration = Duration::from_millis(200);
 
@@ -367,18 +367,21 @@ impl BabyfaceUsb {
     /// Set one EQ band (0 = Low, 1 = Mid, 2 = High) on the device DSP:
     /// RBJ bell/shelf → the 5 stored words (see
     /// [`protocol::eq_band_storage`]), written on bulk ep 0x0A as the
-    /// L+R block pair. `current` = the other slots' stored words so a
-    /// single-band change preserves them.
+    /// L+R block pair. `fs` is the sample rate in Hz. `current` = the
+    /// other slots' stored words so a single-band change preserves them.
     pub fn set_eq_band(
         &mut self,
         slot: usize,
-        eq_type: protocol::EqType,
-        freq_hz: f32,
-        q: f32,
-        gain_db: f32,
+        band: protocol::EqBandParams,
         fs: f32,
         current: &[[i32; 4]; 3],
     ) -> Result<(), Error> {
+        let protocol::EqBandParams {
+            eq_type,
+            freq_hz,
+            q,
+            gain_db,
+        } = band;
         let blocks = protocol::set_eq_band(slot, eq_type, freq_hz, q, gain_db, fs, current);
         self.write_eq_block(&blocks[0])?;
         self.write_eq_block(&blocks[1])
